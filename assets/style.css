@@ -1,50 +1,49 @@
-/* Vibewatch Panel — Catppuccin Mocha, compact modern design */
+/* Vibewatch Panel — Vibe Island inspired, Catppuccin Mocha palette */
 
 .main-box {
-    background-color: rgba(30, 30, 46, 0.95);
+    background-color: rgba(24, 24, 37, 0.96);
     border-radius: 16px;
-    border: 1px solid rgba(69, 71, 90, 0.6);
-    padding: 8px 0;
-    min-width: 280px;
+    border: 1px solid rgba(69, 71, 90, 0.4);
+    padding: 6px 0;
+    min-width: 340px;
 }
-
-/* No header — panel is minimal */
 
 .session-list {
     background: transparent;
 }
 
+/* ── Session card ────────────────────────────────── */
+
 .session-row {
     background: transparent;
-    margin: 0 8px;
-    border-radius: 10px;
-    transition: background-color 200ms;
+    margin: 2px 6px;
+    border-radius: 12px;
 }
 
 .session-row:hover {
-    background-color: rgba(49, 50, 68, 0.5);
+    background-color: rgba(49, 50, 68, 0.45);
 }
 
-/* Top line */
+/* Indicator dot */
 .indicator {
-    font-size: 10px;
-    min-width: 16px;
+    font-size: 11px;
+    min-width: 14px;
 }
 
 .indicator.executing,
 .indicator.running {
     color: #a6e3a1;
-    text-shadow: 0 0 6px rgba(166, 227, 161, 0.5);
+    text-shadow: 0 0 8px rgba(166, 227, 161, 0.6);
 }
 
 .indicator.waiting-approval {
     color: #fab387;
-    text-shadow: 0 0 6px rgba(250, 179, 135, 0.5);
+    text-shadow: 0 0 8px rgba(250, 179, 135, 0.6);
 }
 
 .indicator.thinking {
     color: #89b4fa;
-    text-shadow: 0 0 6px rgba(137, 180, 250, 0.5);
+    text-shadow: 0 0 8px rgba(137, 180, 250, 0.6);
 }
 
 .indicator.idle,
@@ -52,66 +51,78 @@
     color: #585b70;
 }
 
-.agent-name {
+/* Project name (primary text) */
+.project-name {
     color: #cdd6f4;
-    font-weight: 600;
+    font-weight: 700;
     font-size: 13px;
 }
 
-.status-badge {
+/* ── Pill badges (Agent, Terminal, Time) ─────────── */
+
+.pill-badge {
     font-size: 10px;
     font-weight: 500;
-    padding: 1px 6px;
-    border-radius: 4px;
-    color: #a6adc8;
-    background-color: rgba(108, 112, 134, 0.2);
+    padding: 1px 7px;
+    border-radius: 6px;
+    min-height: 18px;
 }
 
-.status-badge.executing {
-    color: #a6e3a1;
-    background-color: rgba(166, 227, 161, 0.12);
+.agent-badge {
+    color: #cba6f7;
+    background-color: rgba(203, 166, 247, 0.12);
 }
 
-.status-badge.waiting-approval {
-    color: #fab387;
-    background-color: rgba(250, 179, 135, 0.12);
-}
-
-.status-badge.thinking {
+.terminal-badge {
     color: #89b4fa;
-    background-color: rgba(137, 180, 250, 0.12);
+    background-color: rgba(137, 180, 250, 0.10);
 }
 
-.status-badge.running {
-    color: #a6e3a1;
-    background-color: rgba(166, 227, 161, 0.12);
-}
-
-.tool-detail {
-    color: #7f849c;
-    font-size: 11px;
-    font-family: monospace;
-    margin-left: 22px;
-}
-
-.jump-button {
-    background: rgba(49, 50, 68, 0.6);
+.time-badge {
     color: #a6adc8;
-    border: none;
-    border-radius: 8px;
-    min-width: 32px;
-    min-height: 32px;
-    padding: 0;
-    font-size: 14px;
+    background-color: rgba(166, 173, 200, 0.10);
 }
 
-.jump-button:hover {
-    background: rgba(69, 71, 90, 0.8);
-    color: #cdd6f4;
+/* ── Status description (secondary text) ─────────── */
+
+.status-desc {
+    color: #6c7086;
+    font-size: 11px;
+    margin-left: 0;
 }
+
+/* ── Action line (current tool activity) ─────────── */
+
+.action-line {
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.action-line.executing {
+    color: #a6e3a1;
+}
+
+.action-line.thinking {
+    color: #89b4fa;
+}
+
+.action-line.waiting-approval {
+    color: #fab387;
+}
+
+.action-line.running {
+    color: #a6e3a1;
+}
+
+.action-line.idle,
+.action-line.stopped {
+    color: #585b70;
+}
+
+/* ── Empty state ─────────────────────────────────── */
 
 .empty-state {
     color: #585b70;
-    padding: 24px 16px;
+    padding: 28px 20px;
     font-size: 12px;
 }

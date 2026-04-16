@@ -14,7 +14,7 @@ pub fn build_window(app: &adw::Application) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("vibewatch")
-        .default_width(280)
+        .default_width(360)
         .default_height(-1)
         .build();
 
