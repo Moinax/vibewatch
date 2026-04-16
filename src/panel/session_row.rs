@@ -3,85 +3,105 @@ use gtk::prelude::*;
 
 use crate::session::{Session, SessionStatus};
 
-/// Build a ListBoxRow widget for a single session, styled like Vibe Island cards.
+/// Build a ListBoxRow widget for a single session.
 ///
-/// Layout:
-/// ┌─────────────────────────────────────────────┐
-/// │ ● project-name          Claude  Kitty  27m  │
-/// │   Status description text                   │
-/// │   Writing src/main.rs                       │
-/// └─────────────────────────────────────────────┘
+/// Active layout (executing/thinking/approval):
+/// ┌──────────────────────────────────────────────────┐
+/// │  ●  VibeWatch              Claude  Kitty   27m   │
+/// │     You: "fix the auth bug"                      │
+/// │     Writing middleware.ts                         │
+/// └──────────────────────────────────────────────────┘
+///
+/// Idle layout (compact):
+/// ┌──────────────────────────────────────────────────┐
+/// │  ●  dotfiles               Claude  Kitty    1h   │
+/// └──────────────────────────────────────────────────┘
 pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.add_css_class("session-row");
     row.set_activatable(false);
 
-    let card = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    card.set_margin_start(14);
-    card.set_margin_end(14);
-    card.set_margin_top(10);
-    card.set_margin_bottom(10);
+    let is_active = matches!(
+        session.status,
+        SessionStatus::Executing | SessionStatus::Thinking | SessionStatus::WaitingApproval
+    );
 
-    // Indicator dot (left side, vertically centered)
+    let card = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    card.add_css_class("card-box");
+    card.set_margin_start(12);
+    card.set_margin_end(12);
+    card.set_margin_top(if is_active { 10 } else { 8 });
+    card.set_margin_bottom(if is_active { 10 } else { 8 });
+
+    // Indicator dot
     let indicator = gtk::Label::new(Some("\u{25cf}"));
     indicator.add_css_class("indicator");
     indicator.add_css_class(session.status.css_class());
     indicator.set_valign(gtk::Align::Start);
-    indicator.set_margin_top(4);
+    indicator.set_margin_top(3);
     card.append(&indicator);
 
     // Content area
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, if is_active { 2 } else { 0 });
     content.set_hexpand(true);
 
-    // Row 1: project name + badges
-    let row1 = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    // Row 1: session name + badges
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 5);
 
-    let project_name = project_label(session);
-    project_name.add_css_class("project-name");
-    project_name.set_hexpand(true);
-    project_name.set_halign(gtk::Align::Start);
-    project_name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    row1.append(&project_name);
+    let name_label = gtk::Label::new(Some(&session.display_name()));
+    name_label.add_css_class("session-name");
+    name_label.set_hexpand(true);
+    name_label.set_halign(gtk::Align::Start);
+    name_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name_label.set_max_width_chars(22);
+    header.append(&name_label);
 
     // Agent badge
     let agent_badge = gtk::Label::new(Some(session.agent.short_name()));
     agent_badge.add_css_class("pill-badge");
     agent_badge.add_css_class("agent-badge");
-    row1.append(&agent_badge);
+    header.append(&agent_badge);
 
     // Terminal badge
     let terminal = detect_terminal(session.pid);
     let term_badge = gtk::Label::new(Some(&terminal));
     term_badge.add_css_class("pill-badge");
     term_badge.add_css_class("terminal-badge");
-    row1.append(&term_badge);
+    header.append(&term_badge);
 
-    // Elapsed time badge
+    // Elapsed time
     let elapsed = format_elapsed(session);
-    let time_badge = gtk::Label::new(Some(&elapsed));
-    time_badge.add_css_class("pill-badge");
-    time_badge.add_css_class("time-badge");
-    row1.append(&time_badge);
+    let time_label = gtk::Label::new(Some(&elapsed));
+    time_label.add_css_class("pill-badge");
+    time_label.add_css_class("time-badge");
+    header.append(&time_label);
 
-    content.append(&row1);
+    content.append(&header);
 
-    // Row 2: status description
-    let status_desc = status_description(session);
-    let desc_label = gtk::Label::new(Some(&status_desc));
-    desc_label.add_css_class("status-desc");
-    desc_label.set_halign(gtk::Align::Start);
-    desc_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    content.append(&desc_label);
+    // For active sessions: show description + action line
+    if is_active {
+        // Row 2: status description with context
+        let desc_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
 
-    // Row 3: current action (only if executing with tool info)
-    if let Some(action_text) = action_line(session) {
-        let action_label = gtk::Label::new(Some(&action_text));
-        action_label.add_css_class("action-line");
-        action_label.add_css_class(session.status.css_class());
-        action_label.set_halign(gtk::Align::Start);
-        action_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        content.append(&action_label);
+        let desc_text = status_description(session);
+        let desc_label = gtk::Label::new(Some(&desc_text));
+        desc_label.add_css_class("status-desc");
+        desc_label.set_halign(gtk::Align::Start);
+        desc_label.set_hexpand(true);
+        desc_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        desc_box.append(&desc_label);
+
+        content.append(&desc_box);
+
+        // Row 3: current action (colored, link-style)
+        if let Some(action_text) = action_line(session) {
+            let action_label = gtk::Label::new(Some(&action_text));
+            action_label.add_css_class("action-line");
+            action_label.add_css_class(session.status.css_class());
+            action_label.set_halign(gtk::Align::Start);
+            action_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            content.append(&action_label);
+        }
     }
 
     card.append(&content);
@@ -89,8 +109,6 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     // Make the whole row clickable to jump
     let pid = session.pid;
     let window_id = session.window_id.clone();
-
-    // Use a GestureClick on the row for jump
     let gesture = gtk::GestureClick::new();
     gesture.connect_released(move |_, _, _, _| {
         let wid = window_id.clone();
@@ -103,11 +121,6 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     row.set_child(Some(&card));
     row
-}
-
-/// Get the session display name.
-fn project_label(session: &Session) -> gtk::Label {
-    gtk::Label::new(Some(&session.display_name()))
 }
 
 /// Detect which terminal the process runs in by walking up the process tree.
@@ -127,7 +140,6 @@ fn detect_terminal(pid: u32) -> String {
                 _ => {}
             }
         }
-        // Walk up
         match std::fs::read_to_string(format!("/proc/{}/stat", current)) {
             Ok(stat) => {
                 if let Some(after_paren) = stat.rfind(')') {
@@ -161,26 +173,26 @@ fn format_elapsed(session: &Session) -> String {
             format!("{}h", secs / 3600)
         }
     } else {
-        // Fallback: check /proc/{pid}/stat start time
-        "—".to_string()
+        "\u{2014}".to_string()
     }
 }
 
 /// Build the status description line.
 fn status_description(session: &Session) -> String {
     let prompt_ctx = session.last_prompt.as_deref().map(|p| {
-        // Show first line, truncated
         let first_line = p.lines().next().unwrap_or(p);
-        if first_line.len() > 60 {
-            format!("\"{}...\"", &first_line[..57])
+        if first_line.len() > 50 {
+            format!("You: \"{}...\"", &first_line[..47])
         } else {
-            format!("\"{}\"", first_line)
+            format!("You: \"{}\"", first_line)
         }
     });
 
     match session.status {
         SessionStatus::Executing => {
-            if let Some(ref tool) = session.current_tool {
+            if let Some(ctx) = &prompt_ctx {
+                ctx.clone()
+            } else if let Some(ref tool) = session.current_tool {
                 format!("Executing {}", tool)
             } else {
                 "Executing...".to_string()
@@ -188,13 +200,13 @@ fn status_description(session: &Session) -> String {
         }
         SessionStatus::Thinking => {
             if let Some(ctx) = &prompt_ctx {
-                format!("Thinking... — {}", ctx)
+                ctx.clone()
             } else if let Some(ref tool) = session.last_tool {
                 let detail = session.last_tool_detail.as_deref().unwrap_or("");
                 if detail.is_empty() {
-                    format!("Thinking... — last: {}", tool)
+                    format!("After {}", tool)
                 } else {
-                    format!("Thinking... — last: {}", format_tool_action(tool, detail))
+                    format!("After {}", format_tool_action(tool, detail))
                 }
             } else {
                 "Thinking...".to_string()
@@ -202,45 +214,36 @@ fn status_description(session: &Session) -> String {
         }
         SessionStatus::WaitingApproval => {
             if let Some(ref tool) = session.current_tool {
-                format!("Waiting for approval — {}", tool)
+                format!("Needs approval: {}", tool)
             } else {
                 "Waiting for approval".to_string()
             }
         }
-        SessionStatus::Idle => {
+        SessionStatus::Idle | SessionStatus::Running => {
             if let Some(ctx) = &prompt_ctx {
-                format!("Idle — {}", ctx)
-            } else if let Some(ref tool) = session.last_tool {
-                let detail = session.last_tool_detail.as_deref().unwrap_or("");
-                if detail.is_empty() {
-                    format!("Idle — last: {}", tool)
-                } else {
-                    format!("Idle — last: {}", format_tool_action(tool, detail))
-                }
+                ctx.clone()
             } else {
                 "Idle".to_string()
             }
         }
-        SessionStatus::Running => "Idle".to_string(),
         SessionStatus::Stopped => "Stopped".to_string(),
     }
 }
 
-/// Format a tool + detail into a human-readable action.
+/// Format a tool + detail into a human-readable past-tense action.
 fn format_tool_action(tool: &str, detail: &str) -> String {
     match tool {
-        "Write" => format!("wrote {}", detail),
-        "Edit" => format!("edited {}", detail),
-        "Read" => format!("read {}", detail),
+        "Write" => format!("writing {}", detail),
+        "Edit" => format!("editing {}", detail),
+        "Read" => format!("reading {}", detail),
         "Bash" => detail.to_string(),
-        "Grep" | "Glob" => format!("searched {}", detail),
+        "Grep" | "Glob" => format!("searching {}", detail),
         _ => format!("{} {}", tool, detail),
     }
 }
 
-/// Build the action line (e.g. "Writing src/main.rs") — shown during active work.
+/// Build the action line (e.g. "Writing src/main.rs") -- shown during active work.
 fn action_line(session: &Session) -> Option<String> {
-    // Show current tool if executing
     if let (Some(tool), Some(detail)) = (&session.current_tool, &session.tool_detail) {
         let action = match tool.as_str() {
             "Write" => format!("Writing {}", detail),
@@ -251,6 +254,20 @@ fn action_line(session: &Session) -> Option<String> {
             _ => format!("{}: {}", tool, detail),
         };
         return Some(action);
+    }
+    // When thinking, show what was last done
+    if session.status == SessionStatus::Thinking {
+        if let (Some(tool), Some(detail)) = (&session.last_tool, &session.last_tool_detail) {
+            let action = match tool.as_str() {
+                "Write" => format!("Wrote {}", detail),
+                "Edit" => format!("Edited {}", detail),
+                "Read" => format!("Read {}", detail),
+                "Bash" => detail.to_string(),
+                "Grep" | "Glob" => format!("Searched {}", detail),
+                _ => format!("{}: {}", tool, detail),
+            };
+            return Some(action);
+        }
     }
     None
 }
@@ -265,7 +282,6 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
     }
 
     if pid > 0 {
-        // Walk up process tree to find the terminal window
         let mut current_pid = pid;
         for _ in 0..10 {
             let result = std::process::Command::new("hyprctl")
@@ -298,7 +314,6 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
             }
         }
 
-        // Fallback: try niri
         let _ = std::process::Command::new("niri")
             .args(["msg", "action", "focus-window", "--pid", &pid.to_string()])
             .status();
