@@ -14,7 +14,7 @@ use crate::session::{Session, SessionStatus};
 pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.add_css_class("session-row");
-    row.set_activatable(true);
+    row.set_activatable(false);
 
     let card = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     card.set_margin_start(14);
@@ -92,17 +92,9 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     // Use a GestureClick on the row for jump
     let gesture = gtk::GestureClick::new();
-    gesture.connect_released(move |gesture, _, _, _| {
+    gesture.connect_released(move |_, _, _, _| {
         let wid = window_id.clone();
         let p = pid;
-        // Close the panel after jumping
-        if let Some(widget) = gesture.widget() {
-            if let Some(root) = widget.root() {
-                if let Some(window) = root.downcast_ref::<gtk::Window>() {
-                    window.close();
-                }
-            }
-        }
         std::thread::spawn(move || {
             focus_session(wid.as_deref(), p);
         });
