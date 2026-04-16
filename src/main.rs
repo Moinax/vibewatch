@@ -59,11 +59,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Status => run_status().await,
         Commands::TogglePanel => run_toggle_panel().await,
         #[cfg(feature = "panel")]
-        Commands::Panel => {
-            // Panel is not yet implemented
-            eprintln!("vibewatch: panel not yet implemented");
-            Ok(())
-        }
+        Commands::Panel => panel::run_panel().await,
     }
 }
 

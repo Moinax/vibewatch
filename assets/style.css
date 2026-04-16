@@ -1,0 +1,140 @@
+/* Catppuccin Mocha theme for vibewatch panel */
+
+.main-box {
+    background-color: #1e1e2e;
+    border: 1px solid #313244;
+    border-radius: 12px;
+}
+
+.header {
+    padding: 10px 12px;
+    border-bottom: 1px solid #313244;
+}
+
+.title {
+    color: #cdd6f4;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.close-button {
+    background: none;
+    border: none;
+    color: #6c7086;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 0;
+    border-radius: 4px;
+}
+
+.close-button:hover {
+    color: #cdd6f4;
+    background-color: #313244;
+}
+
+/* Session list */
+.session-list {
+    background: transparent;
+}
+
+.session-row {
+    background: transparent;
+    border-bottom: 1px solid #313244;
+}
+
+.session-row:last-child {
+    border-bottom: none;
+}
+
+/* Empty state */
+.empty-state {
+    color: #6c7086;
+    padding: 24px;
+    font-size: 13px;
+}
+
+/* Indicator dot */
+.indicator {
+    font-size: 11px;
+}
+
+.indicator.executing,
+.indicator.running {
+    color: #a6e3a1;
+}
+
+.indicator.thinking {
+    color: #89b4fa;
+}
+
+.indicator.waiting-approval {
+    color: #fab387;
+}
+
+.indicator.idle,
+.indicator.stopped {
+    color: #6c7086;
+}
+
+/* Agent name */
+.agent-name {
+    color: #cdd6f4;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* Status badge */
+.status-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+
+.status-badge.executing,
+.status-badge.running {
+    color: #a6e3a1;
+    background-color: rgba(166, 227, 161, 0.15);
+}
+
+.status-badge.thinking {
+    color: #89b4fa;
+    background-color: rgba(137, 180, 250, 0.15);
+}
+
+.status-badge.waiting-approval {
+    color: #fab387;
+    background-color: rgba(250, 179, 135, 0.15);
+}
+
+.status-badge.idle {
+    color: #6c7086;
+    background-color: rgba(108, 112, 134, 0.15);
+}
+
+.status-badge.stopped {
+    color: #6c7086;
+    background-color: rgba(108, 112, 134, 0.15);
+}
+
+/* Tool detail line */
+.tool-detail {
+    color: #a6adc8;
+    font-size: 11px;
+    margin-left: 18px;
+}
+
+/* Jump button */
+.jump-button {
+    background-color: #313244;
+    border: 1px solid #45475a;
+    color: #cdd6f4;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.jump-button:hover {
+    background-color: #45475a;
+}
