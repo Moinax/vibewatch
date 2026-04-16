@@ -8,7 +8,7 @@ vibewatch tracks AI coding agents running on your system and surfaces their stat
 
 - **Live session monitoring** -- detects running agent processes and tracks their state via hook events
 - **Waybar integration** -- custom JSON module showing active sessions with status icons
-- **GTK4 overlay panel** -- layer-shell popup with per-session details, toggled from Waybar or CLI
+- **GTK4 overlay panel** -- layer-shell popup embedded in the daemon for instant show/hide toggle
 - **Window jumping** -- click a session to focus its window (Hyprland and Niri)
 - **Sound alerts** -- configurable audio cues for approval requests, task completion, and errors
 - **Hook integration** -- receives real-time events from Claude Code and Codex hooks
@@ -79,19 +79,32 @@ Then add `"custom/vibewatch"` to the modules list in your Waybar layout.
 
 ### 3. Configure Claude Code hooks
 
-Add the following to `~/.claude/settings.json`:
+The `notify` command takes an event name as its positional argument and reads the hook JSON payload from stdin. Add the following to `~/.claude/settings.json`:
 
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "vibewatch notify session-start --agent claude-code" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "vibewatch notify user-prompt-submit --agent claude-code" }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "vibewatch notify \"$(cat /dev/stdin)\" --agent claude-code"
-          }
+          { "type": "command", "command": "vibewatch notify pre-tool-use --agent claude-code" }
         ]
       }
     ],
@@ -99,10 +112,7 @@ Add the following to `~/.claude/settings.json`:
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "vibewatch notify \"$(cat /dev/stdin)\" --agent claude-code"
-          }
+          { "type": "command", "command": "vibewatch notify post-tool-use --agent claude-code" }
         ]
       }
     ],
@@ -110,16 +120,15 @@ Add the following to `~/.claude/settings.json`:
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "vibewatch notify \"$(cat /dev/stdin)\" --agent claude-code"
-          }
+          { "type": "command", "command": "vibewatch notify stop --agent claude-code" }
         ]
       }
     ]
   }
 }
 ```
+
+Supported Claude Code events: `session-start`, `user-prompt-submit`, `pre-tool-use`, `post-tool-use`, `permission-request`, `permission-denied`, `stop`.
 
 ### 4. Configure Codex hooks
 
@@ -128,14 +137,19 @@ Add the following to `~/.codex/hooks.json`:
 ```json
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "vibewatch notify session-start --agent codex" }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "vibewatch notify \"$(cat /dev/stdin)\" --agent codex"
-          }
+          { "type": "command", "command": "vibewatch notify pre-tool-use --agent codex" }
         ]
       }
     ],
@@ -143,10 +157,7 @@ Add the following to `~/.codex/hooks.json`:
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "vibewatch notify \"$(cat /dev/stdin)\" --agent codex"
-          }
+          { "type": "command", "command": "vibewatch notify post-tool-use --agent codex" }
         ]
       }
     ],
@@ -154,16 +165,15 @@ Add the following to `~/.codex/hooks.json`:
       {
         "matcher": "",
         "hooks": [
-          {
-            "type": "command",
-            "command": "vibewatch notify \"$(cat /dev/stdin)\" --agent codex"
-          }
+          { "type": "command", "command": "vibewatch notify stop --agent codex" }
         ]
       }
     ]
   }
 }
 ```
+
+Supported Codex events: `session-start`, `pre-tool-use`, `post-tool-use`, `stop`.
 
 ## Configuration
 
@@ -189,13 +199,12 @@ window_class = "jetbrains-webstorm"
 
 ## CLI Reference
 
-| Command        | Description                                  |
-|----------------|----------------------------------------------|
-| `daemon`       | Start the vibewatch daemon                   |
-| `status`       | Print current session status (JSON for Waybar)|
-| `toggle-panel` | Toggle the overlay panel visibility          |
-| `panel`        | Launch the standalone GTK4 panel             |
-| `notify`       | Send a notification event from an agent hook |
+| Command        | Description                                                        |
+|----------------|--------------------------------------------------------------------|
+| `daemon`       | Start the vibewatch daemon (embeds the panel; falls back to headless mode if `WAYLAND_DISPLAY` is unset) |
+| `status`       | Print current session status (JSON for Waybar)                     |
+| `toggle-panel` | Toggle the overlay panel visibility via IPC                        |
+| `notify <event> [--agent <name>]` | Forward a hook event to the daemon (reads payload from stdin) |
 
 ### Examples
 
