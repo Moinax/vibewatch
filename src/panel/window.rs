@@ -51,13 +51,14 @@ pub fn build_window(app: &adw::Application) {
     empty_label.add_css_class("empty-state");
     session_list.set_placeholder(Some(&empty_label));
 
-    // Scrolled window
+    // Scrolled window — no fixed height, grows with content up to max-height (set in CSS)
     let scrolled = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .vexpand(true)
+        .propagate_natural_height(true)
         .child(&session_list)
         .build();
+    scrolled.add_css_class("scroll-container");
 
     main_box.append(&scrolled);
     window.set_content(Some(&main_box));

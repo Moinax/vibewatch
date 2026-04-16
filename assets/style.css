@@ -8,6 +8,11 @@
     min-width: 340px;
 }
 
+/* Scroll container — grows with content, caps before overflowing viewport */
+.scroll-container {
+    max-height: 800px;
+}
+
 .session-list {
     background: transparent;
 }
