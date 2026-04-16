@@ -170,27 +170,27 @@ pub fn parse_codex(stdin: &str, event_type: &str) -> anyhow::Result<InboundEvent
 }
 
 /// Read the session name from a Claude Code transcript file.
-/// Looks for the last "custom-title" or "agent-name" entry.
+/// Scans from the end for efficiency since title entries appear throughout.
 fn read_session_name(transcript_path: &str) -> Option<String> {
-    use std::io::{BufRead, BufReader};
-    let file = std::fs::File::open(transcript_path).ok()?;
-    let reader = BufReader::new(file);
-
-    let mut name = None;
-    for line in reader.lines().take(200) {
-        // Only scan first 200 lines to stay fast
-        let line = line.ok()?;
-        if line.contains("\"custom-title\"") || line.contains("\"agent-name\"") {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+    // Read the whole file and scan backwards for the last title entry
+    let content = std::fs::read_to_string(transcript_path).ok()?;
+    for line in content.lines().rev() {
+        if line.contains("\"custom-title\"") {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
                 if let Some(title) = val.get("customTitle").and_then(|v| v.as_str()) {
-                    name = Some(title.to_string());
-                } else if let Some(agent) = val.get("agentName").and_then(|v| v.as_str()) {
-                    name = Some(agent.to_string());
+                    return Some(title.to_string());
+                }
+            }
+        }
+        if line.contains("\"agent-name\"") {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(name) = val.get("agentName").and_then(|v| v.as_str()) {
+                    return Some(name.to_string());
                 }
             }
         }
     }
-    name
+    None
 }
 
 /// Extract a human-readable detail from tool_input JSON.

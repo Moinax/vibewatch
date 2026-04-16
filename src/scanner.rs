@@ -70,11 +70,13 @@ pub async fn run_scanner(
 
         // --- CLI agent scanning ---
         let found_processes = scan_agent_processes();
-        let known_ids: HashSet<String> = registry.all().iter().map(|s| s.id.clone()).collect();
+        let all_sessions = registry.all();
+        let known_pids: HashSet<u32> = all_sessions.iter().map(|s| s.pid).collect();
 
         for (kind, pid) in &found_processes {
-            let id = format!("scan-{}-{}", agent_str(kind), pid);
-            if !known_ids.contains(&id) {
+            // Skip if any session (hook-registered or scanner) already tracks this PID
+            if !known_pids.contains(pid) {
+                let id = format!("scan-{}-{}", agent_str(kind), pid);
                 let session = Session::new(id, *kind, *pid);
                 registry.register(session);
             }
@@ -94,6 +96,7 @@ pub async fn run_scanner(
                         windows.iter().map(|w| w.id.clone()).collect();
 
                     // Register new windows
+                    let known_ids: HashSet<String> = all_sessions.iter().map(|s| s.id.clone()).collect();
                     for win in &windows {
                         let id = format!("window-{}-{}", name, win.id);
                         if !known_ids.contains(&id) {
