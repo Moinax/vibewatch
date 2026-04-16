@@ -73,10 +73,12 @@ fn run_daemon() -> anyhow::Result<()> {
     if has_display {
         #[cfg(feature = "panel")]
         return run_daemon_with_panel(config, registry);
-    }
 
-    // Headless mode: pure tokio, no GTK
-    eprintln!("vibewatch: no WAYLAND_DISPLAY, running in headless mode (no panel)");
+        #[cfg(not(feature = "panel"))]
+        eprintln!("vibewatch: WAYLAND_DISPLAY set but panel feature not compiled; running headless");
+    } else {
+        eprintln!("vibewatch: no WAYLAND_DISPLAY, running in headless mode (no panel)");
+    }
     tokio::runtime::Runtime::new()?.block_on(run_daemon_headless(config, registry))
 }
 
@@ -222,7 +224,7 @@ async fn read_event_from_reader(
 /// Handle a single client connection.
 ///
 /// `toggle_sender` is `Some` when running with a panel (GTK mode), `None` in headless mode.
-/// The sender type is erased to `Box<dyn Fn() + Send>` so this function compiles
+/// The sender type is erased to `Arc<dyn Fn() + Send + Sync>` so this function compiles
 /// without GTK feature flags.
 async fn handle_connection(
     stream: tokio::net::UnixStream,
