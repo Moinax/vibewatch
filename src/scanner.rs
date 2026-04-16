@@ -57,6 +57,27 @@ pub fn scan_agent_processes() -> Vec<(AgentKind, u32)> {
     results
 }
 
+/// Extract session name from a claude process cmdline.
+/// Looks for `--resume <name>` or `--continue <name>` or `-c <name>` patterns.
+fn read_session_name_from_cmdline(pid: u32) -> Option<String> {
+    let cmdline = fs::read_to_string(format!("/proc/{}/cmdline", pid)).ok()?;
+    let args: Vec<&str> = cmdline.split('\0').collect();
+
+    // Look for --resume, --continue, -c followed by a session name
+    for i in 0..args.len().saturating_sub(1) {
+        match args[i] {
+            "--resume" | "--continue" | "-c" => {
+                let name = args[i + 1].trim();
+                if !name.is_empty() && !name.starts_with('-') {
+                    return Some(name.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Background scanner loop. Runs every 3 seconds, discovering CLI agent
 /// processes via /proc and GUI agent windows via the compositor.
 pub async fn run_scanner(
@@ -77,7 +98,8 @@ pub async fn run_scanner(
             // Skip if any session (hook-registered or scanner) already tracks this PID
             if !known_pids.contains(pid) {
                 let id = format!("scan-{}-{}", agent_str(kind), pid);
-                let session = Session::new(id, *kind, *pid);
+                let mut session = Session::new(id, *kind, *pid);
+                session.session_name = read_session_name_from_cmdline(*pid);
                 registry.register(session);
             }
         }
