@@ -150,48 +150,51 @@ async fn handle_connection(
                 tool,
                 detail,
             } => {
-                let mut session = get_or_create_session(&registry, &session_id);
-                session.status = SessionStatus::Executing;
-                session.current_tool = Some(tool);
-                session.tool_detail = detail;
-                session.touch();
-                registry.register(session);
+                if let Some(mut session) = get_session(&registry, &session_id) {
+                    session.status = SessionStatus::Executing;
+                    session.current_tool = Some(tool);
+                    session.tool_detail = detail;
+                    session.touch();
+                    registry.register(session);
+                }
             }
             InboundEvent::PostToolUse {
                 session_id,
                 tool: _,
                 success,
             } => {
-                let mut session = get_or_create_session(&registry, &session_id);
-                session.last_tool = session.current_tool.take();
-                session.last_tool_detail = session.tool_detail.take();
-                session.status = SessionStatus::Thinking;
-                session.touch();
-                registry.register(session);
+                if let Some(mut session) = get_session(&registry, &session_id) {
+                    session.last_tool = session.current_tool.take();
+                    session.last_tool_detail = session.tool_detail.take();
+                    session.status = SessionStatus::Thinking;
+                    session.touch();
+                    registry.register(session);
+                }
                 if !success {
                     sound_player.play(SoundEvent::Error);
                 }
             }
             InboundEvent::UserPromptSubmit { session_id, prompt } => {
-                let mut session = get_or_create_session(&registry, &session_id);
-                session.status = SessionStatus::Thinking;
-                session.last_prompt = prompt;
-                session.current_tool = None;
-                session.tool_detail = None;
-                // Refresh session name from transcript (handles /rename)
-                if let Some(name) = read_transcript_name(&session_id) {
-                    session.session_name = Some(name);
+                if let Some(mut session) = get_session(&registry, &session_id) {
+                    session.status = SessionStatus::Thinking;
+                    session.last_prompt = prompt;
+                    session.current_tool = None;
+                    session.tool_detail = None;
+                    if let Some(name) = read_transcript_name(&session_id) {
+                        session.session_name = Some(name);
+                    }
+                    session.touch();
+                    registry.register(session);
                 }
-                session.touch();
-                registry.register(session);
             }
             InboundEvent::PermissionRequest { session_id, tool } => {
-                let mut session = get_or_create_session(&registry, &session_id);
-                session.status = SessionStatus::WaitingApproval;
-                session.current_tool = tool;
-                session.touch();
-                registry.register(session);
-                sound_player.play(SoundEvent::ApprovalNeeded);
+                if let Some(mut session) = get_session(&registry, &session_id) {
+                    session.status = SessionStatus::WaitingApproval;
+                    session.current_tool = tool;
+                    session.touch();
+                    registry.register(session);
+                    sound_player.play(SoundEvent::ApprovalNeeded);
+                }
             }
             InboundEvent::PermissionDenied { session_id } => {
                 if let Some(mut session) = registry.get(&session_id) {
@@ -243,20 +246,9 @@ async fn handle_connection(
     }
 }
 
-/// Get an existing session or create a new one from the session_id.
-/// If a scanner session exists for this PID (found via process scan), promotes it
-/// to a hook session with the correct UUID.
-fn get_or_create_session(registry: &SessionRegistry, session_id: &str) -> Session {
-    // Try existing session first
-    if let Some(session) = registry.get(session_id) {
-        return session;
-    }
-    // Create a new session — we don't have the PID from the event, but
-    // we can find it by checking if any scanner session exists that we should promote
-    let session_name = read_transcript_name(session_id);
-    let mut session = Session::new(session_id.to_string(), AgentKind::ClaudeCode, 0);
-    session.session_name = session_name;
-    session
+/// Get an existing session by ID. Returns None if not found — only SessionStart creates sessions.
+fn get_session(registry: &SessionRegistry, session_id: &str) -> Option<Session> {
+    registry.get(session_id)
 }
 
 /// Find the transcript for a hook session and read its name.
