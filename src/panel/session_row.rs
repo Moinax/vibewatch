@@ -105,22 +105,9 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     row
 }
 
-/// Get the project folder name, or fall back to agent name.
+/// Get the session display name.
 fn project_label(session: &Session) -> gtk::Label {
-    let name = if let Some(ref cwd) = session.cwd {
-        std::path::Path::new(cwd)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string()
-    } else {
-        // Try /proc for scanned sessions
-        std::fs::read_link(format!("/proc/{}/cwd", session.pid))
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "unknown".to_string())
-    };
-    gtk::Label::new(Some(&name))
+    gtk::Label::new(Some(&session.display_name()))
 }
 
 /// Detect which terminal the process runs in by walking up the process tree.
