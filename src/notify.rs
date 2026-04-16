@@ -62,6 +62,7 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
             agent: "claude_code".to_string(),
             session_id: hook.session_id,
             pid: std::process::id(),
+            cwd: hook.cwd,
         }),
         "pre-tool-use" => Ok(InboundEvent::PreToolUse {
             session_id: hook.session_id,
@@ -98,6 +99,7 @@ pub fn parse_codex(stdin: &str, event_type: &str) -> anyhow::Result<InboundEvent
             agent: "codex".to_string(),
             session_id: hook.session_id,
             pid: std::process::id(),
+            cwd: None, // Codex hook doesn't provide cwd
         }),
         "pre-tool-use" => Ok(InboundEvent::PreToolUse {
             session_id: hook.session_id,
@@ -149,17 +151,19 @@ mod tests {
 
     #[test]
     fn test_parse_claude_code_session_start() {
-        let json = r#"{"session_id":"abc123","hook_event_name":"session-start"}"#;
+        let json = r#"{"session_id":"abc123","hook_event_name":"session-start","cwd":"/home/user/project"}"#;
         let event = parse_claude_code(json, "session-start").unwrap();
         match event {
             InboundEvent::SessionStart {
                 agent,
                 session_id,
                 pid,
+                cwd,
             } => {
                 assert_eq!(agent, "claude_code");
                 assert_eq!(session_id, "abc123");
                 assert_eq!(pid, std::process::id());
+                assert_eq!(cwd.as_deref(), Some("/home/user/project"));
             }
             _ => panic!("expected SessionStart"),
         }

@@ -11,6 +11,8 @@ pub enum InboundEvent {
         agent: String,
         session_id: String,
         pid: u32,
+        #[serde(default)]
+        cwd: Option<String>,
     },
     PreToolUse {
         session_id: String,
@@ -156,10 +158,12 @@ mod tests {
                 agent,
                 session_id,
                 pid,
+                cwd,
             } => {
                 assert_eq!(agent, "claude_code");
                 assert_eq!(session_id, "s1");
                 assert_eq!(pid, 1234);
+                assert!(cwd.is_none());
             }
             _ => panic!("expected SessionStart"),
         }

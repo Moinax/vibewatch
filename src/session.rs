@@ -75,6 +75,7 @@ pub struct Session {
     pub current_tool: Option<String>,
     pub tool_detail: Option<String>,
     pub window_id: Option<String>,
+    pub cwd: Option<String>,
     pub pid: u32,
     #[serde(skip)]
     pub started_at: Option<Instant>,
@@ -91,9 +92,32 @@ impl Session {
             current_tool: None,
             tool_detail: None,
             window_id: None,
+            cwd: None,
             pid,
             started_at: Some(Instant::now()),
             last_event: Some(Instant::now()),
+        }
+    }
+
+    /// Human-readable name: agent + project folder (e.g. "Claude Code — dotfiles")
+    pub fn display_name(&self) -> String {
+        if let Some(ref cwd) = self.cwd {
+            let folder = std::path::Path::new(cwd)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(cwd);
+            format!("{} — {}", self.agent.display_name(), folder)
+        } else {
+            // Try to read cwd from /proc for scanned sessions
+            let proc_cwd = std::fs::read_link(format!("/proc/{}/cwd", self.pid)).ok();
+            if let Some(path) = proc_cwd {
+                let folder = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?");
+                format!("{} — {}", self.agent.display_name(), folder)
+            } else {
+                self.agent.display_name().to_string()
+            }
         }
     }
 

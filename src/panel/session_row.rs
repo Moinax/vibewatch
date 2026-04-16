@@ -26,10 +26,11 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     indicator.add_css_class(session.status.css_class());
     top_line.append(&indicator);
 
-    let agent_label = gtk::Label::new(Some(session.agent.display_name()));
+    let agent_label = gtk::Label::new(Some(&session.display_name()));
     agent_label.add_css_class("agent-name");
     agent_label.set_hexpand(true);
     agent_label.set_halign(gtk::Align::Start);
+    agent_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
     top_line.append(&agent_label);
 
     let badge = gtk::Label::new(Some(status_text(session.status)));

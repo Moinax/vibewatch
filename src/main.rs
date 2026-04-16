@@ -133,9 +133,11 @@ async fn handle_connection(
                 agent,
                 session_id,
                 pid,
+                cwd,
             } => {
                 let kind = parse_agent_kind(&agent);
-                let session = Session::new(session_id, kind, pid);
+                let mut session = Session::new(session_id, kind, pid);
+                session.cwd = cwd;
                 registry.register(session);
             }
             InboundEvent::PreToolUse {

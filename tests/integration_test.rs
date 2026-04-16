@@ -24,6 +24,7 @@ async fn test_daemon_ipc_flow() {
                 agent,
                 session_id,
                 pid,
+                cwd: _,
             } => {
                 let kind = if agent == "claude_code" {
                     vibewatch::session::AgentKind::ClaudeCode
