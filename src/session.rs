@@ -74,6 +74,8 @@ pub struct Session {
     pub status: SessionStatus,
     pub current_tool: Option<String>,
     pub tool_detail: Option<String>,
+    pub last_tool: Option<String>,
+    pub last_tool_detail: Option<String>,
     pub window_id: Option<String>,
     pub cwd: Option<String>,
     pub pid: u32,
@@ -88,9 +90,11 @@ impl Session {
         Self {
             id,
             agent,
-            status: SessionStatus::Running,
+            status: SessionStatus::Idle,
             current_tool: None,
             tool_detail: None,
+            last_tool: None,
+            last_tool_detail: None,
             window_id: None,
             cwd: None,
             pid,
@@ -144,7 +148,7 @@ impl Session {
             }
             SessionStatus::WaitingApproval => "approval".to_string(),
             SessionStatus::Thinking => "thinking".to_string(),
-            SessionStatus::Running => "running".to_string(),
+            SessionStatus::Running => "idle".to_string(),
             SessionStatus::Idle => "idle".to_string(),
             SessionStatus::Stopped => "stopped".to_string(),
         }

@@ -159,9 +159,11 @@ async fn handle_connection(
                 success,
             } => {
                 if let Some(mut session) = registry.get(&session_id) {
-                    session.status = SessionStatus::Idle;
-                    session.current_tool = None;
-                    session.tool_detail = None;
+                    // Save last tool for display context
+                    session.last_tool = session.current_tool.take();
+                    session.last_tool_detail = session.tool_detail.take();
+                    // Between tool calls, Claude is thinking
+                    session.status = SessionStatus::Thinking;
                     session.touch();
                     registry.register(session);
                 }

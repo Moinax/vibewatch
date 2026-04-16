@@ -197,28 +197,65 @@ fn status_description(session: &Session) -> String {
                 "Executing...".to_string()
             }
         }
-        SessionStatus::Thinking => "Thinking...".to_string(),
+        SessionStatus::Thinking => {
+            // Show what was last done for context
+            if let Some(ref tool) = session.last_tool {
+                let detail = session.last_tool_detail.as_deref().unwrap_or("");
+                if detail.is_empty() {
+                    format!("Thinking... (last: {})", tool)
+                } else {
+                    format!("Thinking... (last: {})", format_tool_action(tool, detail))
+                }
+            } else {
+                "Thinking...".to_string()
+            }
+        }
         SessionStatus::WaitingApproval => "Waiting for approval".to_string(),
-        SessionStatus::Idle => "Idle".to_string(),
-        SessionStatus::Running => "Running".to_string(),
+        SessionStatus::Idle => {
+            // Show last action if available
+            if let Some(ref tool) = session.last_tool {
+                let detail = session.last_tool_detail.as_deref().unwrap_or("");
+                if detail.is_empty() {
+                    format!("Idle — last: {}", tool)
+                } else {
+                    format!("Idle — last: {}", format_tool_action(tool, detail))
+                }
+            } else {
+                "Idle".to_string()
+            }
+        }
+        SessionStatus::Running => "Idle".to_string(),
         SessionStatus::Stopped => "Stopped".to_string(),
     }
 }
 
-/// Build the action line (e.g. "Writing src/main.rs").
-fn action_line(session: &Session) -> Option<String> {
-    let tool = session.current_tool.as_deref()?;
-    let detail = session.tool_detail.as_deref()?;
+/// Format a tool + detail into a human-readable action.
+fn format_tool_action(tool: &str, detail: &str) -> String {
+    match tool {
+        "Write" => format!("wrote {}", detail),
+        "Edit" => format!("edited {}", detail),
+        "Read" => format!("read {}", detail),
+        "Bash" => detail.to_string(),
+        "Grep" | "Glob" => format!("searched {}", detail),
+        _ => format!("{} {}", tool, detail),
+    }
+}
 
-    let action = match tool {
-        "Write" => format!("Writing {}", detail),
-        "Edit" => format!("Editing {}", detail),
-        "Read" => format!("Reading {}", detail),
-        "Bash" => format!("{}", detail),
-        "Grep" | "Glob" => format!("Searching {}", detail),
-        _ => format!("{}: {}", tool, detail),
-    };
-    Some(action)
+/// Build the action line (e.g. "Writing src/main.rs") — shown during active work.
+fn action_line(session: &Session) -> Option<String> {
+    // Show current tool if executing
+    if let (Some(tool), Some(detail)) = (&session.current_tool, &session.tool_detail) {
+        let action = match tool.as_str() {
+            "Write" => format!("Writing {}", detail),
+            "Edit" => format!("Editing {}", detail),
+            "Read" => format!("Reading {}", detail),
+            "Bash" => detail.to_string(),
+            "Grep" | "Glob" => format!("Searching {}", detail),
+            _ => format!("{}: {}", tool, detail),
+        };
+        return Some(action);
+    }
+    None
 }
 
 /// Focus the agent's window via the compositor. Runs in a spawned thread.
