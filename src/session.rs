@@ -80,11 +80,10 @@ pub struct Session {
     pub session_name: Option<String>,
     pub window_id: Option<String>,
     pub cwd: Option<String>,
+    pub terminal: Option<String>,
     pub pid: u32,
-    #[serde(skip)]
-    pub started_at: Option<Instant>,
-    #[serde(skip)]
-    pub last_event: Option<Instant>,
+    /// Unix epoch seconds when session was first seen
+    pub started_at_epoch: Option<u64>,
 }
 
 impl Session {
@@ -101,9 +100,12 @@ impl Session {
             session_name: None,
             window_id: None,
             cwd: None,
+            terminal: None,
             pid,
-            started_at: Some(Instant::now()),
-            last_event: Some(Instant::now()),
+            started_at_epoch: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs()),
         }
     }
 
@@ -130,9 +132,9 @@ impl Session {
         self.agent.display_name().to_string()
     }
 
-    /// Update the last_event timestamp to now.
+    /// Update the last-seen timestamp.
     pub fn touch(&mut self) {
-        self.last_event = Some(Instant::now());
+        // No-op for now — started_at_epoch is set once at creation
     }
 
     /// Human-readable one-line status.
@@ -268,6 +270,54 @@ impl SessionRegistry {
 /// Check whether a process with the given PID is alive by probing /proc.
 pub fn is_pid_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{}", pid)).exists()
+}
+
+/// Get the parent PID by parsing /proc/{pid}/stat.
+pub fn parent_pid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let rest = &stat[stat.rfind(')')? + 2..];
+    let ppid: u32 = rest.split_whitespace().nth(1)?.parse().ok()?;
+    (ppid > 1).then_some(ppid)
+}
+
+/// Detect which terminal hosts a process by walking up the process tree.
+pub fn detect_terminal(pid: u32) -> String {
+    let mut current = pid;
+    for _ in 0..10 {
+        if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", current)) {
+            match comm.trim() {
+                "kitty" => return "Kitty".to_string(),
+                "alacritty" => return "Alacritty".to_string(),
+                "foot" => return "Foot".to_string(),
+                "wezterm-gui" | "wezterm" => return "WezTerm".to_string(),
+                "cursor" => return "Cursor".to_string(),
+                "code" => return "VSCode".to_string(),
+                "webstorm" | "idea" => return "JetBrains".to_string(),
+                _ => {}
+            }
+        }
+        match parent_pid(current) {
+            Some(ppid) => current = ppid,
+            None => break,
+        }
+    }
+    "Term".to_string()
+}
+
+/// Format a tool action with the given verb form.
+pub fn describe_tool(tool: &str, detail: &str, present: bool) -> String {
+    match (tool, present) {
+        ("Write", true) => format!("Writing {}", detail),
+        ("Write", false) => format!("Wrote {}", detail),
+        ("Edit", true) => format!("Editing {}", detail),
+        ("Edit", false) => format!("Edited {}", detail),
+        ("Read", true) => format!("Reading {}", detail),
+        ("Read", false) => format!("Read {}", detail),
+        ("Bash", _) => detail.to_string(),
+        ("Grep" | "Glob", true) => format!("Searching {}", detail),
+        ("Grep" | "Glob", false) => format!("Searched {}", detail),
+        (_, _) => format!("{}: {}", tool, detail),
+    }
 }
 
 #[cfg(test)]

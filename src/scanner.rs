@@ -3,7 +3,7 @@ use std::fs;
 
 use crate::compositor::Compositor;
 use crate::config::Config;
-use crate::session::{AgentKind, Session, SessionRegistry};
+use crate::session::{detect_terminal, AgentKind, Session, SessionRegistry};
 
 const CLAUDE_CODE_NAMES: &[&str] = &["claude"];
 const CODEX_NAMES: &[&str] = &["codex"];
@@ -100,6 +100,7 @@ pub async fn run_scanner(
                 let id = format!("scan-{}-{}", agent_str(kind), pid);
                 let mut session = Session::new(id, *kind, *pid);
                 session.session_name = read_session_name_from_cmdline(*pid);
+                session.terminal = Some(detect_terminal(*pid));
                 registry.register(session);
             }
         }

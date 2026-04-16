@@ -142,6 +142,7 @@ async fn handle_connection(
                 let mut session = Session::new(session_id, kind, pid);
                 session.cwd = cwd;
                 session.session_name = session_name;
+                session.terminal = Some(session::detect_terminal(pid));
                 registry.register(session);
             }
             InboundEvent::PreToolUse {
