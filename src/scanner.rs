@@ -156,7 +156,7 @@ pub async fn run_scanner(
 
         // --- Refresh session names from transcripts ---
         for session in registry.all() {
-            if let Some(transcript) = find_transcript_path(session.pid) {
+            if let Some(transcript) = find_transcript_path(&session.id, session.pid) {
                 if let Some(name) = read_session_name_from_transcript(&transcript) {
                     if session.session_name.as_deref() != Some(&name) {
                         registry.set_session_name(&session.id, name);
@@ -169,33 +169,62 @@ pub async fn run_scanner(
     }
 }
 
-/// Find the transcript path for a claude process by checking its open file descriptors.
-/// Looks for an fd pointing to `~/.claude/tasks/{session-id}` and derives the transcript path.
-fn find_transcript_path(pid: u32) -> Option<String> {
-    let fd_dir = format!("/proc/{}/fd", pid);
-    let entries = fs::read_dir(&fd_dir).ok()?;
+/// Find the transcript path for a session.
+/// Strategies in order:
+/// 1. Hook sessions: session ID is a UUID — search ~/.claude/projects/*/{id}.jsonl
+/// 2. All sessions: map cwd → project dir, find most recently modified transcript that
+///    contains a matching sessionId being actively written (modified in last 60s)
+fn find_transcript_path(session_id: &str, pid: u32) -> Option<String> {
+    let claude_projects = dirs::home_dir()?.join(".claude/projects");
 
-    for entry in entries.flatten() {
-        if let Ok(target) = fs::read_link(entry.path()) {
-            let target_str = target.to_string_lossy();
-            // Match ~/.claude/tasks/{uuid}
-            if target_str.contains("/.claude/tasks/") {
-                // Extract session UUID
-                let uuid = target.file_name()?.to_string_lossy().to_string();
-                // Find the project dir — look for a matching .jsonl
-                let claude_projects = dirs::home_dir()?.join(".claude/projects");
-                if let Ok(projects) = fs::read_dir(&claude_projects) {
-                    for project in projects.flatten() {
-                        let transcript = project.path().join(format!("{}.jsonl", uuid));
-                        if transcript.exists() {
-                            return Some(transcript.to_string_lossy().to_string());
+    // Strategy 1: session ID is a UUID from hooks
+    if session_id.contains('-') && !session_id.starts_with("scan-") && !session_id.starts_with("window-") {
+        if let Ok(projects) = fs::read_dir(&claude_projects) {
+            for project in projects.flatten() {
+                let transcript = project.path().join(format!("{}.jsonl", session_id));
+                if transcript.exists() {
+                    return Some(transcript.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    // Strategy 2: map cwd to project dir, find active transcript
+    let cwd = fs::read_link(format!("/proc/{}/cwd", pid)).ok()?;
+    let project_dir_name = cwd.to_string_lossy().replace('/', "-");
+    let project_path = claude_projects.join(&project_dir_name);
+
+    if !project_path.exists() {
+        return None;
+    }
+
+    // Find transcripts modified in the last 60 seconds (actively written to)
+    let now = std::time::SystemTime::now();
+    let mut candidates: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(&project_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Ok(meta) = path.metadata() {
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(age) = now.duration_since(modified) {
+                        if age.as_secs() < 60 {
+                            candidates.push((path, modified));
                         }
                     }
                 }
             }
         }
     }
-    None
+
+    // Sort by most recent first
+    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Return the most recently modified active transcript
+    candidates.into_iter().next().map(|(p, _)| p.to_string_lossy().to_string())
 }
 
 /// Read the session name from a Claude Code transcript file (last custom-title entry).
