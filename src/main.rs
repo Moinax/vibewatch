@@ -17,7 +17,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::OwnedReadHalf;
 
 use config::Config;
-use ipc::{InboundEvent, IpcServer, SessionUpdate};
+use ipc::{InboundEvent, IpcServer};
 use session::{AgentKind, Session, SessionRegistry, SessionStatus};
 use sound::{SoundEvent, SoundPlayer};
 
@@ -127,20 +127,13 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
         .application_id("app.vibewatch.daemon")
         .build();
 
-    let config_clone = config.clone();
-    let registry_clone = registry.clone();
-
     app.connect_activate(move |app| {
-        // Create the panel window (hidden)
-        let window = panel::create_panel(app, registry_clone.clone());
+        let window = panel::create_panel(app, registry.clone());
 
-        // Wrap the window in a SendWeakRef so the toggle closure can be sent to the tokio thread.
-        // SendWeakRef is unconditionally Send+Sync; deref() is only called inside the invoke()
-        // callback which always runs on the GTK main thread.
+        // SendWeakRef is Send+Sync; actual widget access happens only inside
+        // glib::MainContext::invoke(), which runs on the GTK main thread.
         let win_weak = glib::SendWeakRef::from(window.downgrade());
 
-        // Build a toggle closure that uses glib::MainContext::default().invoke() to run on the
-        // GTK thread. The outer closure is Send+Sync (SendWeakRef is Send+Sync).
         let toggle_fn: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let win_weak = win_weak.clone();
             glib::MainContext::default().invoke(move || {
@@ -150,9 +143,8 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
             });
         });
 
-        // Spawn tokio runtime on a background thread
-        let config = config_clone.clone();
-        let registry = registry_clone.clone();
+        let config = config.clone();
+        let registry = registry.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
             rt.block_on(async move {
@@ -334,21 +326,6 @@ async fn handle_connection(
                 let _ = write_half.write_all(json.as_bytes()).await;
                 let _ = write_half.flush().await;
                 return;
-            }
-            InboundEvent::Subscribe => {
-                loop {
-                    let sessions = registry.all();
-                    let update = SessionUpdate { sessions };
-                    let mut json = serde_json::to_string(&update).unwrap_or_default();
-                    json.push('\n');
-                    if write_half.write_all(json.as_bytes()).await.is_err() {
-                        return;
-                    }
-                    if write_half.flush().await.is_err() {
-                        return;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                }
             }
             InboundEvent::TogglePanel => {
                 if let Some(ref sender) = toggle_sender {

@@ -46,7 +46,6 @@ pub enum InboundEvent {
     },
     GetStatus,
     TogglePanel,
-    Subscribe,
 }
 
 /// Status response for Waybar/panel
@@ -55,12 +54,6 @@ pub struct StatusResponse {
     pub text: String,
     pub tooltip: String,
     pub class: String,
-    pub sessions: Vec<crate::session::Session>,
-}
-
-/// Session update for streaming to panel
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionUpdate {
     pub sessions: Vec<crate::session::Session>,
 }
 
