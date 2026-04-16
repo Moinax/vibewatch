@@ -99,7 +99,6 @@ fn status_text(status: SessionStatus) -> &'static str {
 
 /// Focus the agent's window via the compositor. Runs in a spawned thread.
 fn focus_session(window_id: Option<&str>, pid: u32) {
-    // Try hyprctl first (most common in this project's context)
     if let Some(wid) = window_id {
         let _ = std::process::Command::new("hyprctl")
             .args(["dispatch", "focuswindow", &format!("address:{wid}")])
@@ -108,13 +107,41 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
     }
 
     if pid > 0 {
-        // Try hyprctl by pid
-        let result = std::process::Command::new("hyprctl")
-            .args(["dispatch", "focuswindow", &format!("pid:{pid}")])
-            .status();
+        // Walk up process tree to find the terminal window
+        let mut current_pid = pid;
+        for _ in 0..10 {  // max 10 levels up
+            let result = std::process::Command::new("hyprctl")
+                .args(["dispatch", "focuswindow", &format!("pid:{current_pid}")])
+                .output();
 
-        if result.is_ok() {
-            return;
+            if let Ok(output) = result {
+                // hyprctl returns "ok" or similar on success
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if output.status.success() && !stdout.contains("not found") && !stdout.contains("no window") {
+                    return;
+                }
+            }
+
+            // Read parent PID from /proc/{pid}/stat
+            match std::fs::read_to_string(format!("/proc/{current_pid}/stat")) {
+                Ok(stat) => {
+                    // Format: "pid (comm) state ppid ..."
+                    // Find the closing paren, then parse ppid
+                    if let Some(after_paren) = stat.rfind(')') {
+                        let rest = &stat[after_paren + 2..]; // skip ") "
+                        let fields: Vec<&str> = rest.split_whitespace().collect();
+                        if let Some(ppid_str) = fields.get(1) {
+                            if let Ok(ppid) = ppid_str.parse::<u32>() {
+                                if ppid <= 1 { break; } // reached init
+                                current_pid = ppid;
+                                continue;
+                            }
+                        }
+                    }
+                    break;
+                }
+                Err(_) => break,
+            }
         }
 
         // Fallback: try niri

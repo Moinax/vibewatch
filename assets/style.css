@@ -1,140 +1,117 @@
-/* Catppuccin Mocha theme for vibewatch panel */
+/* Vibewatch Panel — Catppuccin Mocha, compact modern design */
 
 .main-box {
-    background-color: #1e1e2e;
-    border: 1px solid #313244;
-    border-radius: 12px;
+    background-color: rgba(30, 30, 46, 0.95);
+    border-radius: 16px;
+    border: 1px solid rgba(69, 71, 90, 0.6);
+    padding: 8px 0;
+    min-width: 280px;
 }
 
-.header {
-    padding: 10px 12px;
-    border-bottom: 1px solid #313244;
-}
+/* No header — panel is minimal */
 
-.title {
-    color: #cdd6f4;
-    font-size: 14px;
-    font-weight: bold;
-}
-
-.close-button {
-    background: none;
-    border: none;
-    color: #6c7086;
-    min-width: 24px;
-    min-height: 24px;
-    padding: 0;
-    border-radius: 4px;
-}
-
-.close-button:hover {
-    color: #cdd6f4;
-    background-color: #313244;
-}
-
-/* Session list */
 .session-list {
     background: transparent;
 }
 
 .session-row {
     background: transparent;
-    border-bottom: 1px solid #313244;
+    margin: 0 8px;
+    border-radius: 10px;
+    transition: background-color 200ms;
 }
 
-.session-row:last-child {
-    border-bottom: none;
+.session-row:hover {
+    background-color: rgba(49, 50, 68, 0.5);
 }
 
-/* Empty state */
-.empty-state {
-    color: #6c7086;
-    padding: 24px;
-    font-size: 13px;
-}
-
-/* Indicator dot */
+/* Top line */
 .indicator {
-    font-size: 11px;
+    font-size: 10px;
+    min-width: 16px;
 }
 
 .indicator.executing,
 .indicator.running {
     color: #a6e3a1;
-}
-
-.indicator.thinking {
-    color: #89b4fa;
+    text-shadow: 0 0 6px rgba(166, 227, 161, 0.5);
 }
 
 .indicator.waiting-approval {
     color: #fab387;
+    text-shadow: 0 0 6px rgba(250, 179, 135, 0.5);
+}
+
+.indicator.thinking {
+    color: #89b4fa;
+    text-shadow: 0 0 6px rgba(137, 180, 250, 0.5);
 }
 
 .indicator.idle,
 .indicator.stopped {
-    color: #6c7086;
+    color: #585b70;
 }
 
-/* Agent name */
 .agent-name {
     color: #cdd6f4;
-    font-size: 13px;
     font-weight: 600;
+    font-size: 13px;
 }
 
-/* Status badge */
 .status-badge {
-    font-size: 11px;
-    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 500;
+    padding: 1px 6px;
     border-radius: 4px;
+    color: #a6adc8;
+    background-color: rgba(108, 112, 134, 0.2);
 }
 
-.status-badge.executing,
-.status-badge.running {
+.status-badge.executing {
     color: #a6e3a1;
-    background-color: rgba(166, 227, 161, 0.15);
-}
-
-.status-badge.thinking {
-    color: #89b4fa;
-    background-color: rgba(137, 180, 250, 0.15);
+    background-color: rgba(166, 227, 161, 0.12);
 }
 
 .status-badge.waiting-approval {
     color: #fab387;
-    background-color: rgba(250, 179, 135, 0.15);
+    background-color: rgba(250, 179, 135, 0.12);
 }
 
-.status-badge.idle {
-    color: #6c7086;
-    background-color: rgba(108, 112, 134, 0.15);
+.status-badge.thinking {
+    color: #89b4fa;
+    background-color: rgba(137, 180, 250, 0.12);
 }
 
-.status-badge.stopped {
-    color: #6c7086;
-    background-color: rgba(108, 112, 134, 0.15);
+.status-badge.running {
+    color: #a6e3a1;
+    background-color: rgba(166, 227, 161, 0.12);
 }
 
-/* Tool detail line */
 .tool-detail {
-    color: #a6adc8;
+    color: #7f849c;
     font-size: 11px;
-    margin-left: 18px;
+    font-family: monospace;
+    margin-left: 22px;
 }
 
-/* Jump button */
 .jump-button {
-    background-color: #313244;
-    border: 1px solid #45475a;
-    color: #cdd6f4;
-    min-width: 28px;
-    min-height: 28px;
+    background: rgba(49, 50, 68, 0.6);
+    color: #a6adc8;
+    border: none;
+    border-radius: 8px;
+    min-width: 32px;
+    min-height: 32px;
     padding: 0;
-    border-radius: 4px;
-    font-size: 13px;
+    font-size: 14px;
 }
 
 .jump-button:hover {
-    background-color: #45475a;
+    background: rgba(69, 71, 90, 0.8);
+    color: #cdd6f4;
+}
+
+.empty-state {
+    color: #585b70;
+    padding: 24px 16px;
+    font-size: 12px;
 }

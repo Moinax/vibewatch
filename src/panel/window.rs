@@ -14,8 +14,8 @@ pub fn build_window(app: &adw::Application) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("vibewatch")
-        .default_width(320)
-        .default_height(200)
+        .default_width(280)
+        .default_height(-1)
         .build();
 
     // Layer shell setup
@@ -41,10 +41,6 @@ pub fn build_window(app: &adw::Application) {
     // Main layout box
     let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main_box.add_css_class("main-box");
-
-    // Header
-    let header = build_header(&window);
-    main_box.append(&header);
 
     // Session list
     let session_list = gtk::ListBox::new();
@@ -74,27 +70,6 @@ pub fn build_window(app: &adw::Application) {
     });
 
     window.present();
-}
-
-fn build_header(window: &adw::ApplicationWindow) -> gtk::Box {
-    let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    header.add_css_class("header");
-
-    let title = gtk::Label::new(Some("vibewatch"));
-    title.add_css_class("title");
-    title.set_hexpand(true);
-    title.set_halign(gtk::Align::Start);
-    header.append(&title);
-
-    let close_button = gtk::Button::with_label("\u{2715}");
-    close_button.add_css_class("close-button");
-    let win = window.clone();
-    close_button.connect_clicked(move |_| {
-        win.close();
-    });
-    header.append(&close_button);
-
-    header
 }
 
 /// Connect to the daemon synchronously, request status, and rebuild the list.
