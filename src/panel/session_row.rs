@@ -189,6 +189,16 @@ fn format_elapsed(session: &Session) -> String {
 
 /// Build the status description line.
 fn status_description(session: &Session) -> String {
+    let prompt_ctx = session.last_prompt.as_deref().map(|p| {
+        // Show first line, truncated
+        let first_line = p.lines().next().unwrap_or(p);
+        if first_line.len() > 60 {
+            format!("\"{}...\"", &first_line[..57])
+        } else {
+            format!("\"{}\"", first_line)
+        }
+    });
+
     match session.status {
         SessionStatus::Executing => {
             if let Some(ref tool) = session.current_tool {
@@ -198,22 +208,30 @@ fn status_description(session: &Session) -> String {
             }
         }
         SessionStatus::Thinking => {
-            // Show what was last done for context
-            if let Some(ref tool) = session.last_tool {
+            if let Some(ctx) = &prompt_ctx {
+                format!("Thinking... — {}", ctx)
+            } else if let Some(ref tool) = session.last_tool {
                 let detail = session.last_tool_detail.as_deref().unwrap_or("");
                 if detail.is_empty() {
-                    format!("Thinking... (last: {})", tool)
+                    format!("Thinking... — last: {}", tool)
                 } else {
-                    format!("Thinking... (last: {})", format_tool_action(tool, detail))
+                    format!("Thinking... — last: {}", format_tool_action(tool, detail))
                 }
             } else {
                 "Thinking...".to_string()
             }
         }
-        SessionStatus::WaitingApproval => "Waiting for approval".to_string(),
+        SessionStatus::WaitingApproval => {
+            if let Some(ref tool) = session.current_tool {
+                format!("Waiting for approval — {}", tool)
+            } else {
+                "Waiting for approval".to_string()
+            }
+        }
         SessionStatus::Idle => {
-            // Show last action if available
-            if let Some(ref tool) = session.last_tool {
+            if let Some(ctx) = &prompt_ctx {
+                format!("Idle — {}", ctx)
+            } else if let Some(ref tool) = session.last_tool {
                 let detail = session.last_tool_detail.as_deref().unwrap_or("");
                 if detail.is_empty() {
                     format!("Idle — last: {}", tool)

@@ -26,6 +26,19 @@ pub enum InboundEvent {
         #[serde(default)]
         success: bool,
     },
+    UserPromptSubmit {
+        session_id: String,
+        #[serde(default)]
+        prompt: Option<String>,
+    },
+    PermissionRequest {
+        session_id: String,
+        #[serde(default)]
+        tool: Option<String>,
+    },
+    PermissionDenied {
+        session_id: String,
+    },
     Stop {
         session_id: String,
     },

@@ -171,9 +171,42 @@ async fn handle_connection(
                     sound_player.play(SoundEvent::Error);
                 }
             }
+            InboundEvent::UserPromptSubmit { session_id, prompt } => {
+                if let Some(mut session) = registry.get(&session_id) {
+                    session.status = SessionStatus::Thinking;
+                    session.last_prompt = prompt;
+                    session.current_tool = None;
+                    session.tool_detail = None;
+                    session.touch();
+                    registry.register(session);
+                }
+            }
+            InboundEvent::PermissionRequest { session_id, tool } => {
+                if let Some(mut session) = registry.get(&session_id) {
+                    session.status = SessionStatus::WaitingApproval;
+                    session.current_tool = tool;
+                    session.touch();
+                    registry.register(session);
+                }
+                sound_player.play(SoundEvent::ApprovalNeeded);
+            }
+            InboundEvent::PermissionDenied { session_id } => {
+                if let Some(mut session) = registry.get(&session_id) {
+                    session.status = SessionStatus::Thinking;
+                    session.current_tool = None;
+                    session.tool_detail = None;
+                    session.touch();
+                    registry.register(session);
+                }
+            }
             InboundEvent::Stop { session_id } => {
-                registry.update_status(&session_id, SessionStatus::Stopped);
-                sound_player.play(SoundEvent::TaskComplete);
+                if let Some(mut session) = registry.get(&session_id) {
+                    session.status = SessionStatus::Idle;
+                    session.current_tool = None;
+                    session.tool_detail = None;
+                    session.touch();
+                    registry.register(session);
+                }
             }
             InboundEvent::GetStatus => {
                 let sessions = registry.all();

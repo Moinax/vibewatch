@@ -18,6 +18,8 @@ pub struct ClaudeCodeHook {
     pub tool_response: Option<serde_json::Value>,
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 /// Codex hook JSON envelope
@@ -82,6 +84,26 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 success,
             })
         }
+        "user-prompt-submit" => {
+            let prompt = hook.prompt.map(|p| {
+                if p.len() > 100 {
+                    format!("{}...", &p[..97])
+                } else {
+                    p
+                }
+            });
+            Ok(InboundEvent::UserPromptSubmit {
+                session_id: hook.session_id,
+                prompt,
+            })
+        }
+        "permission-request" => Ok(InboundEvent::PermissionRequest {
+            session_id: hook.session_id,
+            tool: hook.tool_name,
+        }),
+        "permission-denied" => Ok(InboundEvent::PermissionDenied {
+            session_id: hook.session_id,
+        }),
         "stop" => Ok(InboundEvent::Stop {
             session_id: hook.session_id,
         }),
