@@ -188,6 +188,12 @@ impl SessionRegistry {
         map.insert(session.id.clone(), session);
     }
 
+    /// Remove any session matching the given PID (used to deduplicate scanner vs hook sessions).
+    pub fn remove_by_pid(&self, pid: u32) {
+        let mut map = self.sessions.write().unwrap();
+        map.retain(|_, s| s.pid != pid);
+    }
+
     /// Update the status of an existing session. Returns false if the session
     /// does not exist.
     pub fn update_status(&self, id: &str, status: SessionStatus) -> bool {

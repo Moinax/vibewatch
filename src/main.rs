@@ -135,6 +135,8 @@ async fn handle_connection(
                 pid,
                 cwd,
             } => {
+                // Remove any scanner-created session for this PID to avoid duplicates
+                registry.remove_by_pid(pid);
                 let kind = parse_agent_kind(&agent);
                 let mut session = Session::new(session_id, kind, pid);
                 session.cwd = cwd;
