@@ -1,0 +1,10 @@
+{
+    "custom/vibewatch": {
+        "exec": "vibewatch status",
+        "return-type": "json",
+        "interval": 2,
+        "on-click": "vibewatch toggle-panel",
+        "format": "{}",
+        "tooltip": true
+    }
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=Vibewatch - AI Agent Monitor
+Documentation=https://github.com/moinax/vibewatch
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/vibewatch daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
