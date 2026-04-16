@@ -52,20 +52,13 @@ pub fn build_window(app: &adw::Application) {
     empty_label.add_css_class("empty-state");
     session_list.set_placeholder(Some(&empty_label));
 
-    // Scrolled window — no fixed height, grows with content up to max-height (set in CSS)
-    let scrolled = gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
-        .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .propagate_natural_height(true)
-        .child(&session_list)
-        .build();
-    scrolled.add_css_class("scroll-container");
-
-    main_box.append(&scrolled);
+    main_box.append(&session_list);
     window.set_content(Some(&main_box));
 
     // Poll daemon every 500ms, only rebuild if data changed
+    // Resize window to fit content after each rebuild
     let list_ref = session_list;
+    let win_ref = window.clone();
     let last_snapshot: std::rc::Rc<std::cell::RefCell<String>> =
         std::rc::Rc::new(std::cell::RefCell::new(String::new()));
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
@@ -76,6 +69,15 @@ pub fn build_window(app: &adw::Application) {
             *prev = snapshot;
             drop(prev);
             rebuild_list(&list_ref, &sessions);
+            // Let GTK compute the natural size, then resize window to fit
+            let win = win_ref.clone();
+            gtk::glib::idle_add_local_once(move || {
+                if let Some(content) = win.content() {
+                    let (_, natural) = content.preferred_size();
+                    let h = natural.height().max(1);
+                    win.set_default_size(360, h);
+                }
+            });
         }
         gtk::glib::ControlFlow::Continue
     });
