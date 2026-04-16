@@ -15,8 +15,8 @@ pub fn build_window(app: &adw::Application) {
         .application(app)
         .title("vibewatch")
         .default_width(360)
-        .default_height(-1)
         .build();
+    window.set_resizable(false);
 
     // Layer shell setup
     window.init_layer_shell();
@@ -41,6 +41,7 @@ pub fn build_window(app: &adw::Application) {
     // Main layout box
     let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main_box.add_css_class("main-box");
+    main_box.set_vexpand(false);
 
     // Session list
     let session_list = gtk::ListBox::new();
