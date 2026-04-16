@@ -44,60 +44,166 @@ enum Commands {
     Status,
     /// Toggle the overlay panel visibility
     TogglePanel,
-    /// Launch the standalone GTK4 panel
-    #[cfg(feature = "panel")]
-    Panel,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Daemon => run_daemon().await,
-        Commands::Notify { event, agent } => notify::handle_notify(&event, &agent).await,
-        Commands::Status => run_status().await,
-        Commands::TogglePanel => run_toggle_panel().await,
-        #[cfg(feature = "panel")]
-        Commands::Panel => panel::run_panel().await,
+        Commands::Daemon => run_daemon(),
+        Commands::Notify { event, agent } => {
+            tokio::runtime::Runtime::new()?.block_on(notify::handle_notify(&event, &agent))
+        }
+        Commands::Status => {
+            tokio::runtime::Runtime::new()?.block_on(run_status())
+        }
+        Commands::TogglePanel => {
+            tokio::runtime::Runtime::new()?.block_on(run_toggle_panel())
+        }
     }
 }
 
-async fn run_daemon() -> anyhow::Result<()> {
+fn run_daemon() -> anyhow::Result<()> {
     let config = Config::load()?;
-    let socket_path = config.socket_path();
     let registry = SessionRegistry::new();
+
+    // Check if we have a graphical session for the panel
+    let has_display = std::env::var("WAYLAND_DISPLAY").is_ok();
+
+    if has_display {
+        #[cfg(feature = "panel")]
+        return run_daemon_with_panel(config, registry);
+    }
+
+    // Headless mode: pure tokio, no GTK
+    eprintln!("vibewatch: no WAYLAND_DISPLAY, running in headless mode (no panel)");
+    tokio::runtime::Runtime::new()?.block_on(run_daemon_headless(config, registry))
+}
+
+/// Headless daemon: pure tokio loop, no GTK. Used when WAYLAND_DISPLAY is unset.
+async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyhow::Result<()> {
+    let socket_path = config.socket_path();
     let sound_player = Arc::new(SoundPlayer::new(config.sounds.clone()));
 
     eprintln!(
-        "vibewatch: starting daemon, socket at {}",
+        "vibewatch: starting daemon (headless), socket at {}",
         socket_path.display()
     );
 
     let server = IpcServer::bind(&socket_path)?;
 
-    // Spawn background scanner
     let compositor = compositor::create_compositor(&config.general.compositor)?;
     let scanner_registry = registry.clone();
     tokio::spawn(async move {
         scanner::run_scanner(scanner_registry, compositor, config).await;
     });
 
-    eprintln!("vibewatch: daemon ready");
+    eprintln!("vibewatch: daemon ready (headless)");
 
-    // Accept loop
     loop {
         match server.accept().await {
             Ok(stream) => {
                 let registry = registry.clone();
                 let sound_player = sound_player.clone();
                 tokio::spawn(async move {
-                    handle_connection(stream, registry, sound_player).await;
+                    handle_connection(stream, registry, sound_player, None::<Arc<dyn Fn() + Send + Sync>>).await;
                 });
             }
             Err(e) => eprintln!("vibewatch: accept error: {}", e),
         }
     }
+}
+
+/// GTK-driven daemon: adw::Application is the outer loop, tokio runs on a background thread.
+#[cfg(feature = "panel")]
+fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::Result<()> {
+    use libadwaita as adw;
+    use adw::prelude::*;
+    use gtk4::glib;
+
+    let app = adw::Application::builder()
+        .application_id("app.vibewatch.daemon")
+        .build();
+
+    let config_clone = config.clone();
+    let registry_clone = registry.clone();
+
+    app.connect_activate(move |app| {
+        // Create the panel window (hidden)
+        let window = panel::create_panel(app, registry_clone.clone());
+
+        // Wrap the window in a SendWeakRef so the toggle closure can be sent to the tokio thread.
+        // SendWeakRef is unconditionally Send+Sync; deref() is only called inside the invoke()
+        // callback which always runs on the GTK main thread.
+        let win_weak = glib::SendWeakRef::from(window.downgrade());
+
+        // Build a toggle closure that uses glib::MainContext::default().invoke() to run on the
+        // GTK thread. The outer closure is Send+Sync (SendWeakRef is Send+Sync).
+        let toggle_fn: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let win_weak = win_weak.clone();
+            glib::MainContext::default().invoke(move || {
+                if let Some(win) = win_weak.upgrade() {
+                    win.set_visible(!win.is_visible());
+                }
+            });
+        });
+
+        // Spawn tokio runtime on a background thread
+        let config = config_clone.clone();
+        let registry = registry_clone.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            rt.block_on(async move {
+                let socket_path = config.socket_path();
+                let sound_player = Arc::new(SoundPlayer::new(config.sounds.clone()));
+
+                eprintln!(
+                    "vibewatch: starting daemon, socket at {}",
+                    socket_path.display()
+                );
+
+                let server = match IpcServer::bind(&socket_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("vibewatch: failed to bind socket: {}", e);
+                        return;
+                    }
+                };
+
+                let compositor = match compositor::create_compositor(&config.general.compositor) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("vibewatch: failed to create compositor: {}", e);
+                        return;
+                    }
+                };
+
+                let scanner_registry = registry.clone();
+                tokio::spawn(async move {
+                    scanner::run_scanner(scanner_registry, compositor, config).await;
+                });
+
+                eprintln!("vibewatch: daemon ready");
+
+                loop {
+                    match server.accept().await {
+                        Ok(stream) => {
+                            let registry = registry.clone();
+                            let sound_player = sound_player.clone();
+                            let toggle_fn = toggle_fn.clone();
+                            tokio::spawn(async move {
+                                handle_connection(stream, registry, sound_player, Some(toggle_fn)).await;
+                            });
+                        }
+                        Err(e) => eprintln!("vibewatch: accept error: {}", e),
+                    }
+                }
+            });
+        });
+    });
+
+    app.run_with_args::<String>(&[]);
+    Ok(())
 }
 
 /// Read one JSON line from an OwnedReadHalf and parse it as an InboundEvent.
@@ -114,10 +220,15 @@ async fn read_event_from_reader(
 }
 
 /// Handle a single client connection.
+///
+/// `toggle_sender` is `Some` when running with a panel (GTK mode), `None` in headless mode.
+/// The sender type is erased to `Box<dyn Fn() + Send>` so this function compiles
+/// without GTK feature flags.
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     registry: SessionRegistry,
     sound_player: Arc<SoundPlayer>,
+    toggle_sender: Option<Arc<dyn Fn() + Send + Sync>>,
 ) {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -125,7 +236,7 @@ async fn handle_connection(
     loop {
         let event = match read_event_from_reader(&mut reader).await {
             Ok(e) => e,
-            Err(_) => return, // connection closed or parse error
+            Err(_) => return,
         };
 
         match event {
@@ -136,7 +247,6 @@ async fn handle_connection(
                 cwd,
                 session_name,
             } => {
-                // Remove any scanner-created session for this PID to avoid duplicates
                 registry.remove_by_pid(pid);
                 let kind = parse_agent_kind(&agent);
                 let mut session = Session::new(session_id, kind, pid);
@@ -230,7 +340,7 @@ async fn handle_connection(
                     let mut json = serde_json::to_string(&update).unwrap_or_default();
                     json.push('\n');
                     if write_half.write_all(json.as_bytes()).await.is_err() {
-                        return; // client disconnected
+                        return;
                     }
                     if write_half.flush().await.is_err() {
                         return;
@@ -239,14 +349,15 @@ async fn handle_connection(
                 }
             }
             InboundEvent::TogglePanel => {
-                eprintln!("vibewatch: toggle-panel requested");
-                // TODO: pkill -USR1 vibewatch or signal the panel process
+                if let Some(ref sender) = toggle_sender {
+                    sender();
+                }
             }
         }
     }
 }
 
-/// Get an existing session by ID. Returns None if not found — only SessionStart creates sessions.
+/// Get an existing session by ID.
 fn get_session(registry: &SessionRegistry, session_id: &str) -> Option<Session> {
     registry.get(session_id)
 }
@@ -254,7 +365,6 @@ fn get_session(registry: &SessionRegistry, session_id: &str) -> Option<Session> 
 /// Find the transcript for a hook session and read its name.
 fn read_transcript_name(session_id: &str) -> Option<String> {
     let claude_projects = dirs::home_dir()?.join(".claude/projects");
-    // Search all project dirs for this session's transcript
     for project in std::fs::read_dir(&claude_projects).ok()?.flatten() {
         let transcript = project.path().join(format!("{}.jsonl", session_id));
         if transcript.exists() {
@@ -268,7 +378,7 @@ fn read_transcript_name(session_id: &str) -> Option<String> {
                     }
                 }
             }
-            return None; // found transcript but no title
+            return None;
         }
     }
     None
@@ -294,11 +404,9 @@ async fn run_status() -> anyhow::Result<()> {
             println!("{}", response);
         }
         Ok(None) => {
-            // Daemon returned no data, print idle status
             waybar::print_waybar_status(&[]);
         }
         Err(_) => {
-            // Daemon not running, print idle status
             waybar::print_waybar_status(&[]);
         }
     }
@@ -306,29 +414,15 @@ async fn run_status() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Toggle the panel by checking if it's running and killing or spawning it.
+/// Toggle the panel by sending a TogglePanel IPC event to the daemon.
 async fn run_toggle_panel() -> anyhow::Result<()> {
-    // Check if panel is already running
-    let check = tokio::process::Command::new("pgrep")
-        .args(["-f", "vibewatch panel"])
-        .output()
-        .await?;
+    let config = Config::load()?;
+    let socket_path = config.socket_path();
 
-    if check.status.success() {
-        // Panel is running, kill it
-        tokio::process::Command::new("pkill")
-            .args(["-f", "vibewatch panel"])
-            .output()
-            .await?;
-    } else {
-        // Panel is not running, launch it
-        let exe = std::env::current_exe()?;
-        tokio::process::Command::new(exe)
-            .arg("panel")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()?;
+    if let Err(e) = ipc::send_event(&socket_path, &InboundEvent::TogglePanel).await {
+        eprintln!("vibewatch: failed to toggle panel: {}", e);
+        eprintln!("vibewatch: is the daemon running?");
     }
+
     Ok(())
 }
