@@ -14,9 +14,9 @@ pub fn build_window(app: &adw::Application) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("vibewatch")
-        .default_width(360)
         .build();
-    window.set_resizable(false);
+    // Set only width, let height be driven by content
+    window.set_size_request(360, 1);
 
     // Layer shell setup
     window.init_layer_shell();
@@ -69,13 +69,13 @@ pub fn build_window(app: &adw::Application) {
             *prev = snapshot;
             drop(prev);
             rebuild_list(&list_ref, &sessions);
-            // Let GTK compute the natural size, then resize window to fit
+            // Resize window height to match content
             let win = win_ref.clone();
             gtk::glib::idle_add_local_once(move || {
                 if let Some(content) = win.content() {
                     let (_, natural) = content.preferred_size();
                     let h = natural.height().max(1);
-                    win.set_default_size(360, h);
+                    win.set_size_request(360, h);
                 }
             });
         }
