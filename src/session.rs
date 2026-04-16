@@ -24,6 +24,15 @@ impl AgentKind {
             AgentKind::WebStorm => "WebStorm",
         }
     }
+
+    pub fn short_name(&self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "Claude",
+            AgentKind::Codex => "Codex",
+            AgentKind::Cursor => "Cursor",
+            AgentKind::WebStorm => "WS",
+        }
+    }
 }
 
 impl fmt::Display for AgentKind {
@@ -95,18 +104,38 @@ impl Session {
 
     /// Human-readable one-line status.
     pub fn status_line(&self) -> String {
-        let tool_info = match (&self.current_tool, &self.tool_detail) {
-            (Some(tool), Some(detail)) => format!(" [{tool}: {detail}]"),
-            (Some(tool), None) => format!(" [{tool}]"),
-            _ => String::new(),
-        };
-        format!(
-            "{} ({}): {:?}{}",
-            self.agent.display_name(),
-            self.id,
-            self.status,
-            tool_info,
-        )
+        let status_text = self.inline_status();
+        format!("{}: {}", self.agent.display_name(), status_text)
+    }
+
+    /// Short inline status text for waybar/status display.
+    pub fn inline_status(&self) -> String {
+        match self.status {
+            SessionStatus::Executing => {
+                if let Some(tool) = &self.current_tool {
+                    tool.clone()
+                } else {
+                    "exec".to_string()
+                }
+            }
+            SessionStatus::WaitingApproval => "approval".to_string(),
+            SessionStatus::Thinking => "thinking".to_string(),
+            SessionStatus::Running => "running".to_string(),
+            SessionStatus::Idle => "idle".to_string(),
+            SessionStatus::Stopped => "stopped".to_string(),
+        }
+    }
+
+    /// Priority for determining "most interesting" status (higher = more interesting).
+    pub fn interest_priority(&self) -> u8 {
+        match self.status {
+            SessionStatus::Executing => 5,
+            SessionStatus::WaitingApproval => 4,
+            SessionStatus::Thinking => 3,
+            SessionStatus::Running => 2,
+            SessionStatus::Idle => 1,
+            SessionStatus::Stopped => 0,
+        }
     }
 }
 
@@ -207,16 +236,25 @@ mod tests {
     fn session_status_line() {
         let mut session = Session::new("abc123".into(), AgentKind::ClaudeCode, 1234);
         session.status = SessionStatus::Thinking;
-        let line = session.status_line();
-        assert!(line.contains("Claude Code"));
-        assert!(line.contains("abc123"));
-        assert!(line.contains("Thinking"));
+        assert_eq!(session.status_line(), "Claude Code: thinking");
 
-        // With tool info
-        session.current_tool = Some("Read".into());
-        session.tool_detail = Some("src/main.rs".into());
-        let line = session.status_line();
-        assert!(line.contains("[Read: src/main.rs]"));
+        session.status = SessionStatus::Executing;
+        session.current_tool = Some("Bash".into());
+        assert_eq!(session.status_line(), "Claude Code: Bash");
+
+        session.current_tool = None;
+        assert_eq!(session.status_line(), "Claude Code: exec");
+
+        session.status = SessionStatus::Idle;
+        assert_eq!(session.status_line(), "Claude Code: idle");
+    }
+
+    #[test]
+    fn agent_short_name() {
+        assert_eq!(AgentKind::ClaudeCode.short_name(), "Claude");
+        assert_eq!(AgentKind::Codex.short_name(), "Codex");
+        assert_eq!(AgentKind::Cursor.short_name(), "Cursor");
+        assert_eq!(AgentKind::WebStorm.short_name(), "WS");
     }
 
     #[test]

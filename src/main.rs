@@ -235,12 +235,29 @@ async fn run_status() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Send a toggle-panel event to the daemon.
+/// Toggle the panel by checking if it's running and killing or spawning it.
 async fn run_toggle_panel() -> anyhow::Result<()> {
-    let config = Config::load()?;
-    let socket_path = config.socket_path();
+    // Check if panel is already running
+    let check = tokio::process::Command::new("pgrep")
+        .args(["-f", "vibewatch panel"])
+        .output()
+        .await?;
 
-    ipc::send_event(&socket_path, &InboundEvent::TogglePanel).await?;
-
+    if check.status.success() {
+        // Panel is running, kill it
+        tokio::process::Command::new("pkill")
+            .args(["-f", "vibewatch panel"])
+            .output()
+            .await?;
+    } else {
+        // Panel is not running, launch it
+        let exe = std::env::current_exe()?;
+        tokio::process::Command::new(exe)
+            .arg("panel")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+    }
     Ok(())
 }

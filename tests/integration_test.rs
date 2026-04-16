@@ -60,6 +60,6 @@ async fn test_daemon_ipc_flow() {
     assert_eq!(sessions[0].agent, vibewatch::session::AgentKind::ClaudeCode);
 
     let status = vibewatch::waybar::build_status(&sessions);
-    assert!(status.text.contains("1"));
+    assert!(status.text.contains("Claude"));
     assert!(status.tooltip.contains("Claude Code"));
 }

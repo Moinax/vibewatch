@@ -10,10 +10,25 @@ pub fn build_status(sessions: &[Session]) -> StatusResponse {
 
     let count = active.len();
 
-    let text = if count > 0 {
-        format!("\u{f544} {count}")
-    } else {
-        "\u{f544}".to_string()
+    let text = match count {
+        0 => "AI".to_string(),
+        1 => {
+            let s = active[0];
+            format!("AI {}: {}", s.agent.short_name(), s.inline_status())
+        }
+        _ => {
+            // Pick the most interesting session
+            let most_interesting = active
+                .iter()
+                .max_by_key(|s| s.interest_priority())
+                .unwrap();
+            format!(
+                "AI {} \u{00b7} {}: {}",
+                count,
+                most_interesting.agent.short_name(),
+                most_interesting.inline_status()
+            )
+        }
     };
 
     let tooltip = if active.is_empty() {
@@ -67,9 +82,21 @@ mod tests {
     #[test]
     fn test_empty_status() {
         let status = build_status(&[]);
-        assert_eq!(status.text, "\u{f544}");
+        assert_eq!(status.text, "AI");
         assert_eq!(status.tooltip, "No agents running");
         assert_eq!(status.class, "idle");
+    }
+
+    #[test]
+    fn test_single_agent() {
+        let sessions = vec![make_session(
+            "s1",
+            AgentKind::ClaudeCode,
+            SessionStatus::Thinking,
+        )];
+        let status = build_status(&sessions);
+        assert_eq!(status.text, "AI Claude: thinking");
+        assert_eq!(status.class, "active");
     }
 
     #[test]
@@ -79,7 +106,8 @@ mod tests {
             make_session("s2", AgentKind::Codex, SessionStatus::Executing),
         ];
         let status = build_status(&sessions);
-        assert_eq!(status.text, "\u{f544} 2");
+        // Executing has higher priority than Thinking, so Codex should be shown
+        assert_eq!(status.text, "AI 2 \u{00b7} Codex: exec");
         assert_eq!(status.class, "active");
         assert!(status.tooltip.contains("Claude Code"));
         assert!(status.tooltip.contains("Codex"));
@@ -94,6 +122,7 @@ mod tests {
         )];
         let status = build_status(&sessions);
         assert_eq!(status.class, "attention");
+        assert_eq!(status.text, "AI Claude: approval");
     }
 
     #[test]
@@ -103,7 +132,7 @@ mod tests {
             make_session("s2", AgentKind::Codex, SessionStatus::Stopped),
         ];
         let status = build_status(&sessions);
-        assert_eq!(status.text, "\u{f544} 1");
+        assert_eq!(status.text, "AI Claude: thinking");
     }
 
     #[test]
@@ -112,7 +141,7 @@ mod tests {
         session.current_tool = Some("Bash".to_string());
         session.tool_detail = Some("npm test".to_string());
         let status = build_status(&[session]);
-        assert!(status.tooltip.contains("executing Bash: npm test")
-            || status.tooltip.contains("Bash: npm test"));
+        assert_eq!(status.text, "AI Claude: Bash");
+        assert!(status.tooltip.contains("Claude Code: Bash"));
     }
 }
