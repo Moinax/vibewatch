@@ -77,6 +77,7 @@ pub struct Session {
     pub last_tool: Option<String>,
     pub last_tool_detail: Option<String>,
     pub last_prompt: Option<String>,
+    pub session_name: Option<String>,
     pub window_id: Option<String>,
     pub cwd: Option<String>,
     pub pid: u32,
@@ -97,6 +98,7 @@ impl Session {
             last_tool: None,
             last_tool_detail: None,
             last_prompt: None,
+            session_name: None,
             window_id: None,
             cwd: None,
             pid,
@@ -105,26 +107,27 @@ impl Session {
         }
     }
 
-    /// Human-readable name: agent + project folder (e.g. "Claude Code — dotfiles")
+    /// Human-readable name: session name > project folder > agent name.
     pub fn display_name(&self) -> String {
+        // Prefer session name (from /rename or auto-topic)
+        if let Some(ref name) = self.session_name {
+            return name.clone();
+        }
+        // Fall back to project folder
         if let Some(ref cwd) = self.cwd {
             let folder = std::path::Path::new(cwd)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(cwd);
-            format!("{} — {}", self.agent.display_name(), folder)
-        } else {
-            // Try to read cwd from /proc for scanned sessions
-            let proc_cwd = std::fs::read_link(format!("/proc/{}/cwd", self.pid)).ok();
-            if let Some(path) = proc_cwd {
-                let folder = path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?");
-                format!("{} — {}", self.agent.display_name(), folder)
-            } else {
-                self.agent.display_name().to_string()
+            return folder.to_string();
+        }
+        // Try /proc for scanned sessions
+        if let Some(path) = std::fs::read_link(format!("/proc/{}/cwd", self.pid)).ok() {
+            if let Some(folder) = path.file_name().and_then(|n| n.to_str()) {
+                return folder.to_string();
             }
         }
+        self.agent.display_name().to_string()
     }
 
     /// Update the last_event timestamp to now.

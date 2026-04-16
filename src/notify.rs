@@ -20,6 +20,8 @@ pub struct ClaudeCodeHook {
     pub cwd: Option<String>,
     #[serde(default)]
     pub prompt: Option<String>,
+    #[serde(default)]
+    pub transcript_path: Option<String>,
 }
 
 /// Codex hook JSON envelope
@@ -54,18 +56,36 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Get the parent PID (the claude process that spawned this hook).
+fn parent_pid() -> u32 {
+    std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|stat| {
+            let after_paren = stat.rfind(')')?;
+            let rest = &stat[after_paren + 2..];
+            let fields: Vec<&str> = rest.split_whitespace().collect();
+            fields.get(1)?.parse::<u32>().ok()
+        })
+        .unwrap_or_else(std::process::id)
+}
+
 /// Map a Claude Code hook JSON payload to an IPC `InboundEvent`.
 pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<InboundEvent> {
     let hook: ClaudeCodeHook =
         serde_json::from_str(stdin).context("failed to parse Claude Code hook JSON")?;
 
     match event_type {
-        "session-start" => Ok(InboundEvent::SessionStart {
-            agent: "claude_code".to_string(),
-            session_id: hook.session_id,
-            pid: std::process::id(),
-            cwd: hook.cwd,
-        }),
+        "session-start" => {
+            let session_name = hook.transcript_path.as_deref()
+                .and_then(read_session_name);
+            Ok(InboundEvent::SessionStart {
+                agent: "claude_code".to_string(),
+                session_id: hook.session_id,
+                pid: parent_pid(),
+                cwd: hook.cwd,
+                session_name,
+            })
+        }
         "pre-tool-use" => Ok(InboundEvent::PreToolUse {
             session_id: hook.session_id,
             tool: hook.tool_name.unwrap_or_default(),
@@ -120,8 +140,9 @@ pub fn parse_codex(stdin: &str, event_type: &str) -> anyhow::Result<InboundEvent
         "session-start" => Ok(InboundEvent::SessionStart {
             agent: "codex".to_string(),
             session_id: hook.session_id,
-            pid: std::process::id(),
-            cwd: None, // Codex hook doesn't provide cwd
+            pid: parent_pid(),
+            cwd: None,
+            session_name: None,
         }),
         "pre-tool-use" => Ok(InboundEvent::PreToolUse {
             session_id: hook.session_id,
@@ -146,6 +167,30 @@ pub fn parse_codex(stdin: &str, event_type: &str) -> anyhow::Result<InboundEvent
         }),
         other => bail!("unknown event type: {}", other),
     }
+}
+
+/// Read the session name from a Claude Code transcript file.
+/// Looks for the last "custom-title" or "agent-name" entry.
+fn read_session_name(transcript_path: &str) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(transcript_path).ok()?;
+    let reader = BufReader::new(file);
+
+    let mut name = None;
+    for line in reader.lines().take(200) {
+        // Only scan first 200 lines to stay fast
+        let line = line.ok()?;
+        if line.contains("\"custom-title\"") || line.contains("\"agent-name\"") {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
+                if let Some(title) = val.get("customTitle").and_then(|v| v.as_str()) {
+                    name = Some(title.to_string());
+                } else if let Some(agent) = val.get("agentName").and_then(|v| v.as_str()) {
+                    name = Some(agent.to_string());
+                }
+            }
+        }
+    }
+    name
 }
 
 /// Extract a human-readable detail from tool_input JSON.
@@ -179,13 +224,14 @@ mod tests {
             InboundEvent::SessionStart {
                 agent,
                 session_id,
-                pid,
+                pid: _,
                 cwd,
+                session_name,
             } => {
                 assert_eq!(agent, "claude_code");
                 assert_eq!(session_id, "abc123");
-                assert_eq!(pid, std::process::id());
                 assert_eq!(cwd.as_deref(), Some("/home/user/project"));
+                assert!(session_name.is_none()); // no transcript path in test
             }
             _ => panic!("expected SessionStart"),
         }

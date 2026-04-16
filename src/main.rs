@@ -134,12 +134,14 @@ async fn handle_connection(
                 session_id,
                 pid,
                 cwd,
+                session_name,
             } => {
                 // Remove any scanner-created session for this PID to avoid duplicates
                 registry.remove_by_pid(pid);
                 let kind = parse_agent_kind(&agent);
                 let mut session = Session::new(session_id, kind, pid);
                 session.cwd = cwd;
+                session.session_name = session_name;
                 registry.register(session);
             }
             InboundEvent::PreToolUse {
