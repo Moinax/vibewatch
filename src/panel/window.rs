@@ -4,13 +4,11 @@ use libadwaita as adw;
 
 use adw::prelude::*;
 
-use crate::config::Config;
-use crate::ipc::{InboundEvent, StatusResponse};
-use crate::session::Session;
+use crate::session::SessionRegistry;
 
 use super::session_row;
 
-pub fn build_window(app: &adw::Application) {
+pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("vibewatch")
@@ -55,14 +53,21 @@ pub fn build_window(app: &adw::Application) {
     main_box.append(&session_list);
     window.set_content(Some(&main_box));
 
-    // Poll daemon every 500ms, only rebuild if data changed
-    // Resize window to fit content after each rebuild
+    // Poll registry every 500ms, only rebuild if data changed
+    // Skip polling when window is hidden to avoid unnecessary work
     let list_ref = session_list;
     let win_ref = window.clone();
     let last_snapshot: std::rc::Rc<std::cell::RefCell<String>> =
         std::rc::Rc::new(std::cell::RefCell::new(String::new()));
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-        let sessions = fetch_sessions();
+        // Skip polling when hidden
+        if !win_ref.is_visible() {
+            // Clear snapshot so we rebuild immediately when shown again
+            *last_snapshot.borrow_mut() = String::new();
+            return gtk::glib::ControlFlow::Continue;
+        }
+
+        let sessions = registry.all();
         let snapshot = serde_json::to_string(&sessions).unwrap_or_default();
         let mut prev = last_snapshot.borrow_mut();
         if *prev != snapshot {
@@ -82,11 +87,14 @@ pub fn build_window(app: &adw::Application) {
         gtk::glib::ControlFlow::Continue
     });
 
-    window.present();
+    // Start hidden — daemon will toggle visibility via IPC
+    window.set_visible(false);
+
+    window
 }
 
 /// Rebuild the list from scratch with new session data.
-fn rebuild_list(list: &gtk::ListBox, sessions: &[Session]) {
+fn rebuild_list(list: &gtk::ListBox, sessions: &[crate::session::Session]) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
     }
@@ -94,54 +102,4 @@ fn rebuild_list(list: &gtk::ListBox, sessions: &[Session]) {
         let row = session_row::build_row(session);
         list.append(&row);
     }
-}
-
-/// Synchronously connect to the daemon socket, send GetStatus, and parse the response.
-fn fetch_sessions() -> Vec<Session> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-
-    let config = match Config::load() {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-
-    let socket_path = config.socket_path();
-
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-
-    // Set a short timeout so the GUI doesn't freeze
-    let timeout = std::time::Duration::from_millis(200);
-    let _ = stream.set_read_timeout(Some(timeout));
-    let _ = stream.set_write_timeout(Some(timeout));
-
-    let event = InboundEvent::GetStatus;
-    let mut json = match serde_json::to_string(&event) {
-        Ok(j) => j,
-        Err(_) => return Vec::new(),
-    };
-    json.push('\n');
-
-    if stream.write_all(json.as_bytes()).is_err() {
-        return Vec::new();
-    }
-    if stream.flush().is_err() {
-        return Vec::new();
-    }
-
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    if reader.read_line(&mut response).is_err() {
-        return Vec::new();
-    }
-
-    let status: StatusResponse = match serde_json::from_str(response.trim()) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-
-    status.sessions
 }
