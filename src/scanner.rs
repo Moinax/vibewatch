@@ -154,8 +154,63 @@ pub async fn run_scanner(
             }
         }
 
+        // --- Refresh session names from transcripts ---
+        for session in registry.all() {
+            if let Some(transcript) = find_transcript_path(session.pid) {
+                if let Some(name) = read_session_name_from_transcript(&transcript) {
+                    if session.session_name.as_deref() != Some(&name) {
+                        registry.set_session_name(&session.id, name);
+                    }
+                }
+            }
+        }
+
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
+}
+
+/// Find the transcript path for a claude process by checking its open file descriptors.
+/// Looks for an fd pointing to `~/.claude/tasks/{session-id}` and derives the transcript path.
+fn find_transcript_path(pid: u32) -> Option<String> {
+    let fd_dir = format!("/proc/{}/fd", pid);
+    let entries = fs::read_dir(&fd_dir).ok()?;
+
+    for entry in entries.flatten() {
+        if let Ok(target) = fs::read_link(entry.path()) {
+            let target_str = target.to_string_lossy();
+            // Match ~/.claude/tasks/{uuid}
+            if target_str.contains("/.claude/tasks/") {
+                // Extract session UUID
+                let uuid = target.file_name()?.to_string_lossy().to_string();
+                // Find the project dir — look for a matching .jsonl
+                let claude_projects = dirs::home_dir()?.join(".claude/projects");
+                if let Ok(projects) = fs::read_dir(&claude_projects) {
+                    for project in projects.flatten() {
+                        let transcript = project.path().join(format!("{}.jsonl", uuid));
+                        if transcript.exists() {
+                            return Some(transcript.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Read the session name from a Claude Code transcript file (last custom-title entry).
+fn read_session_name_from_transcript(transcript_path: &str) -> Option<String> {
+    let content = fs::read_to_string(transcript_path).ok()?;
+    for line in content.lines().rev() {
+        if line.contains("\"custom-title\"") {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(title) = val.get("customTitle").and_then(|v| v.as_str()) {
+                    return Some(title.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

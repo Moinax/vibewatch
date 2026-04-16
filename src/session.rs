@@ -197,6 +197,17 @@ impl SessionRegistry {
         map.retain(|_, s| s.pid != pid);
     }
 
+    /// Update the session name. Returns false if the session does not exist.
+    pub fn set_session_name(&self, id: &str, name: String) -> bool {
+        let mut map = self.sessions.write().unwrap();
+        if let Some(session) = map.get_mut(id) {
+            session.session_name = Some(name);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Update the status of an existing session. Returns false if the session
     /// does not exist.
     pub fn update_status(&self, id: &str, status: SessionStatus) -> bool {
