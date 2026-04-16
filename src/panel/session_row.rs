@@ -12,17 +12,12 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     row.add_css_class("session-row");
     row.set_activatable(false);
 
-    let is_active = matches!(
-        session.status,
-        SessionStatus::Executing | SessionStatus::Thinking | SessionStatus::WaitingApproval
-    );
-
     let card = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     card.add_css_class("card-box");
     card.set_margin_start(12);
     card.set_margin_end(12);
-    card.set_margin_top(if is_active { 10 } else { 8 });
-    card.set_margin_bottom(if is_active { 10 } else { 8 });
+    card.set_margin_top(10);
+    card.set_margin_bottom(10);
 
     let indicator = gtk::Label::new(Some("\u{25cf}"));
     indicator.add_css_class("indicator");
@@ -31,7 +26,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     indicator.set_margin_top(3);
     card.append(&indicator);
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, if is_active { 2 } else { 0 });
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 2);
     content.set_hexpand(true);
 
     // Header: session name + badges
@@ -63,22 +58,20 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     content.append(&header);
 
-    if is_active {
-        let desc_label = gtk::Label::new(Some(&status_description(session)));
-        desc_label.add_css_class("status-desc");
-        desc_label.set_halign(gtk::Align::Start);
-        desc_label.set_hexpand(true);
-        desc_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        content.append(&desc_label);
+    let desc_label = gtk::Label::new(Some(&status_description(session)));
+    desc_label.add_css_class("status-desc");
+    desc_label.set_halign(gtk::Align::Start);
+    desc_label.set_hexpand(true);
+    desc_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    content.append(&desc_label);
 
-        if let Some(action_text) = action_line(session) {
-            let action_label = gtk::Label::new(Some(&action_text));
-            action_label.add_css_class("action-line");
-            action_label.add_css_class(session.status.css_class());
-            action_label.set_halign(gtk::Align::Start);
-            action_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            content.append(&action_label);
-        }
+    if let Some(action_text) = action_line(session) {
+        let action_label = gtk::Label::new(Some(&action_text));
+        action_label.add_css_class("action-line");
+        action_label.add_css_class(session.status.css_class());
+        action_label.set_halign(gtk::Align::Start);
+        action_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        content.append(&action_label);
     }
 
     card.append(&content);
