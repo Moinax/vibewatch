@@ -16,13 +16,11 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
     // Set only width, let height be driven by content
     window.set_size_request(360, 1);
 
-    // Layer shell setup
+    // Layer shell setup — anchor top only so the compositor centers us horizontally.
     window.init_layer_shell();
     window.set_layer(gtk4_layer_shell::Layer::Overlay);
     window.set_anchor(gtk4_layer_shell::Edge::Top, true);
-    window.set_anchor(gtk4_layer_shell::Edge::Right, true);
     window.set_margin(gtk4_layer_shell::Edge::Top, 8);
-    window.set_margin(gtk4_layer_shell::Edge::Right, 8);
     window.set_exclusive_zone(0);
     window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
     window.set_namespace(Some("vibewatch"));
