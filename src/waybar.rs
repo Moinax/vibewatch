@@ -1,0 +1,1 @@
+// Waybar status output
