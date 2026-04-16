@@ -62,27 +62,31 @@ pub fn build_window(app: &adw::Application) {
     main_box.append(&scrolled);
     window.set_content(Some(&main_box));
 
-    // Poll daemon every 500ms for updates
+    // Poll daemon every 500ms, only rebuild if data changed
     let list_ref = session_list;
+    let last_snapshot: std::rc::Rc<std::cell::RefCell<String>> =
+        std::rc::Rc::new(std::cell::RefCell::new(String::new()));
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-        update_session_list(&list_ref);
+        let sessions = fetch_sessions();
+        let snapshot = serde_json::to_string(&sessions).unwrap_or_default();
+        let mut prev = last_snapshot.borrow_mut();
+        if *prev != snapshot {
+            *prev = snapshot;
+            drop(prev);
+            rebuild_list(&list_ref, &sessions);
+        }
         gtk::glib::ControlFlow::Continue
     });
 
     window.present();
 }
 
-/// Connect to the daemon synchronously, request status, and rebuild the list.
-fn update_session_list(list: &gtk::ListBox) {
-    let sessions = fetch_sessions();
-
-    // Remove all existing rows
+/// Rebuild the list from scratch with new session data.
+fn rebuild_list(list: &gtk::ListBox, sessions: &[Session]) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
     }
-
-    // Add a row for each session
-    for session in &sessions {
+    for session in sessions {
         let row = session_row::build_row(session);
         list.append(&row);
     }

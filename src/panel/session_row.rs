@@ -64,6 +64,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
         let window_id = session.window_id.clone();
         let pid = session.pid;
         jump_button.connect_clicked(move |_| {
+            eprintln!("vibewatch: jump clicked for pid={} wid={:?}", pid, window_id);
             let wid = window_id.clone();
             std::thread::spawn(move || {
                 focus_session(wid.as_deref(), pid);
@@ -115,9 +116,10 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
                 .output();
 
             if let Ok(output) = result {
-                // hyprctl returns "ok" or similar on success
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                if output.status.success() && !stdout.contains("not found") && !stdout.contains("no window") {
+                eprintln!("vibewatch: hyprctl pid:{} => '{}'", current_pid, stdout.trim());
+                if stdout.trim() == "ok" {
+                    eprintln!("vibewatch: focused window at pid={}", current_pid);
                     return;
                 }
             }
