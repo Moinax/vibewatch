@@ -154,8 +154,42 @@ pub async fn run_scanner(
             }
         }
 
+        // --- Refresh session names for hook-registered sessions (handles /rename) ---
+        for session in registry.all() {
+            // Only refresh hook sessions (UUID ids), not scanner sessions
+            if !session.id.starts_with("scan-") && !session.id.starts_with("window-") {
+                if let Some(name) = read_transcript_name(&session.id) {
+                    if session.session_name.as_deref() != Some(&name) {
+                        registry.set_session_name(&session.id, name);
+                    }
+                }
+            }
+        }
+
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
+}
+
+/// Read the session name from a Claude Code transcript (last custom-title entry).
+fn read_transcript_name(session_id: &str) -> Option<String> {
+    let claude_projects = dirs::home_dir()?.join(".claude/projects");
+    for project in fs::read_dir(&claude_projects).ok()?.flatten() {
+        let transcript = project.path().join(format!("{}.jsonl", session_id));
+        if transcript.exists() {
+            let content = fs::read_to_string(&transcript).ok()?;
+            for line in content.lines().rev() {
+                if line.contains("\"custom-title\"") {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(title) = val.get("customTitle").and_then(|v| v.as_str()) {
+                            return Some(title.to_string());
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+    }
+    None
 }
 
 #[cfg(test)]
