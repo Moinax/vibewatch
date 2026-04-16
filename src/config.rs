@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -10,7 +10,7 @@ pub struct Config {
     pub agents: HashMap<String, AgentConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct GeneralConfig {
     pub compositor: String,
@@ -26,7 +26,7 @@ pub struct SoundConfig {
     pub error: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     pub window_class: String,
 }
