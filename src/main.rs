@@ -13,8 +13,7 @@ mod panel;
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::unix::OwnedReadHalf;
+use tokio::io::{AsyncWriteExt, BufReader};
 
 use config::Config;
 use ipc::{InboundEvent, IpcServer};
@@ -200,19 +199,6 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
     Ok(())
 }
 
-/// Read one JSON line from an OwnedReadHalf and parse it as an InboundEvent.
-async fn read_event_from_reader(
-    reader: &mut BufReader<OwnedReadHalf>,
-) -> anyhow::Result<InboundEvent> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line).await?;
-    if n == 0 {
-        anyhow::bail!("connection closed");
-    }
-    let event: InboundEvent = serde_json::from_str(line.trim())?;
-    Ok(event)
-}
-
 /// Handle a single client connection.
 ///
 /// `toggle_sender` is `Some` when running with a panel (GTK mode), `None` in headless mode.
@@ -228,7 +214,7 @@ async fn handle_connection(
     let mut reader = BufReader::new(read_half);
 
     loop {
-        let event = match read_event_from_reader(&mut reader).await {
+        let event = match ipc::read_event(&mut reader).await {
             Ok(e) => e,
             Err(_) => return,
         };
@@ -284,7 +270,7 @@ async fn handle_connection(
                     session.last_prompt = prompt;
                     session.current_tool = None;
                     session.tool_detail = None;
-                    if let Some(name) = read_transcript_name(&session_id) {
+                    if let Some(name) = session::read_transcript_name(&session_id) {
                         session.session_name = Some(name);
                     }
                     session.touch();
@@ -339,28 +325,6 @@ async fn handle_connection(
 /// Get an existing session by ID.
 fn get_session(registry: &SessionRegistry, session_id: &str) -> Option<Session> {
     registry.get(session_id)
-}
-
-/// Find the transcript for a hook session and read its name.
-fn read_transcript_name(session_id: &str) -> Option<String> {
-    let claude_projects = dirs::home_dir()?.join(".claude/projects");
-    for project in std::fs::read_dir(&claude_projects).ok()?.flatten() {
-        let transcript = project.path().join(format!("{}.jsonl", session_id));
-        if transcript.exists() {
-            let content = std::fs::read_to_string(&transcript).ok()?;
-            for line in content.lines().rev() {
-                if line.contains("\"custom-title\"") {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(title) = val.get("customTitle").and_then(|v| v.as_str()) {
-                            return Some(title.to_string());
-                        }
-                    }
-                }
-            }
-            return None;
-        }
-    }
-    None
 }
 
 fn parse_agent_kind(s: &str) -> AgentKind {

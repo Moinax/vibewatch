@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 /// Inbound event from hooks — tagged enum
@@ -109,8 +109,8 @@ impl Drop for IpcServer {
 }
 
 /// Read one JSON line from the stream and parse it as an `InboundEvent`.
-pub async fn read_event(
-    stream: &mut BufReader<UnixStream>,
+pub async fn read_event<R: AsyncBufRead + Unpin>(
+    stream: &mut R,
 ) -> anyhow::Result<InboundEvent> {
     let mut line = String::new();
     let n = stream.read_line(&mut line).await?;

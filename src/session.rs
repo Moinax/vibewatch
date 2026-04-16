@@ -272,6 +272,28 @@ pub fn is_pid_alive(pid: u32) -> bool {
     Path::new(&format!("/proc/{}", pid)).exists()
 }
 
+/// Read the session name from a Claude Code transcript (last custom-title entry).
+pub fn read_transcript_name(session_id: &str) -> Option<String> {
+    let claude_projects = dirs::home_dir()?.join(".claude/projects");
+    for project in std::fs::read_dir(&claude_projects).ok()?.flatten() {
+        let transcript = project.path().join(format!("{}.jsonl", session_id));
+        if transcript.exists() {
+            let content = std::fs::read_to_string(&transcript).ok()?;
+            for line in content.lines().rev() {
+                if line.contains("\"custom-title\"") {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(title) = val.get("customTitle").and_then(|v| v.as_str()) {
+                            return Some(title.to_string());
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+    }
+    None
+}
+
 /// Get the parent PID by parsing /proc/{pid}/stat.
 pub fn parent_pid(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
