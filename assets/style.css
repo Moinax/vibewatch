@@ -198,3 +198,41 @@ window.csd,
     font-size: 11px;
     letter-spacing: 0.3px;
 }
+
+/* ── Approval bar (Accept / Deny) ─────────────────────────────── */
+
+.approval-bar {
+    margin-top: 6px;
+}
+
+.approval-accept,
+.approval-deny {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 12px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    min-height: 22px;
+}
+
+.approval-accept {
+    color: #1e1e2e;
+    background-color: #a6e3a1;
+    border-color: rgba(166, 227, 161, 0.6);
+}
+
+.approval-accept:hover {
+    background-color: #b8ecb3;
+    box-shadow: 0 0 6px rgba(166, 227, 161, 0.35);
+}
+
+.approval-deny {
+    color: #1e1e2e;
+    background-color: #f38ba8;
+    border-color: rgba(243, 139, 168, 0.6);
+}
+
+.approval-deny:hover {
+    background-color: #f7a3ba;
+    box-shadow: 0 0 6px rgba(243, 139, 168, 0.35);
+}
