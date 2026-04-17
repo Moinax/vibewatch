@@ -42,7 +42,11 @@ pub enum InboundEvent {
     PermissionRequest {
         session_id: String,
         #[serde(default)]
+        request_id: Option<String>,
+        #[serde(default)]
         tool: Option<String>,
+        #[serde(default)]
+        detail: Option<String>,
         #[serde(default)]
         pid: Option<u32>,
     },
@@ -58,6 +62,10 @@ pub enum InboundEvent {
     },
     GetStatus,
     TogglePanel,
+    ApprovalDecision {
+        request_id: String,
+        approved: bool,
+    },
 }
 
 /// Status response for Waybar/panel
@@ -281,5 +289,61 @@ mod tests {
         }
 
         client_handle.await.unwrap();
+    }
+
+    #[test]
+    fn test_parse_permission_request_with_new_fields() {
+        let json = r#"{"event":"permission_request","session_id":"s1","request_id":"r42","tool":"Bash","detail":"ls -la","pid":123}"#;
+        let event: InboundEvent = serde_json::from_str(json).unwrap();
+        match event {
+            InboundEvent::PermissionRequest {
+                session_id,
+                request_id,
+                tool,
+                detail,
+                pid,
+            } => {
+                assert_eq!(session_id, "s1");
+                assert_eq!(request_id.as_deref(), Some("r42"));
+                assert_eq!(tool.as_deref(), Some("Bash"));
+                assert_eq!(detail.as_deref(), Some("ls -la"));
+                assert_eq!(pid, Some(123));
+            }
+            _ => panic!("expected PermissionRequest"),
+        }
+    }
+
+    #[test]
+    fn test_parse_permission_request_without_optional_fields_still_works() {
+        let json = r#"{"event":"permission_request","session_id":"s1","tool":"Bash"}"#;
+        let event: InboundEvent = serde_json::from_str(json).unwrap();
+        match event {
+            InboundEvent::PermissionRequest {
+                session_id,
+                request_id,
+                detail,
+                pid,
+                ..
+            } => {
+                assert_eq!(session_id, "s1");
+                assert!(request_id.is_none());
+                assert!(detail.is_none());
+                assert!(pid.is_none());
+            }
+            _ => panic!("expected PermissionRequest"),
+        }
+    }
+
+    #[test]
+    fn test_parse_approval_decision() {
+        let json = r#"{"event":"approval_decision","request_id":"r42","approved":true}"#;
+        let event: InboundEvent = serde_json::from_str(json).unwrap();
+        match event {
+            InboundEvent::ApprovalDecision { request_id, approved } => {
+                assert_eq!(request_id, "r42");
+                assert!(approved);
+            }
+            _ => panic!("expected ApprovalDecision"),
+        }
     }
 }

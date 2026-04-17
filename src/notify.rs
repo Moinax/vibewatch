@@ -122,7 +122,9 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
         }
         "permission-request" => Ok(InboundEvent::PermissionRequest {
             session_id: hook.session_id,
+            request_id: None,
             tool: hook.tool_name,
+            detail: None,
             pid: Some(parent_pid()),
         }),
         "permission-denied" => Ok(InboundEvent::PermissionDenied {

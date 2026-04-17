@@ -296,7 +296,9 @@ async fn handle_connection(
             }
             InboundEvent::PermissionRequest {
                 session_id,
+                request_id: _,
                 tool,
+                detail: _,
                 pid,
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
@@ -367,6 +369,9 @@ async fn handle_connection(
                 if let Some(ref sender) = toggle_sender {
                     sender();
                 }
+            }
+            InboundEvent::ApprovalDecision { .. } => {
+                // Handled in Task 7.
             }
         }
     }
