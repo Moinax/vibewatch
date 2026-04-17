@@ -130,6 +130,33 @@ pub(crate) fn read_last_assistant_line_in(
     }
 }
 
+/// Walk `<root>/sessions` recursively for a file named `*-<session_id>.jsonl`.
+fn resolve_codex_path_in(root: &Path, session_id: &str) -> Option<PathBuf> {
+    let sessions = root.join("sessions");
+    let suffix = format!("-{}.jsonl", session_id);
+    walk_for_suffix(&sessions, &suffix)
+}
+
+fn walk_for_suffix(dir: &Path, suffix: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = walk_for_suffix(&path, suffix) {
+                return Some(found);
+            }
+        } else if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.ends_with(suffix))
+            .unwrap_or(false)
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,5 +276,29 @@ mod tests {
             &mut cache,
         );
         assert_eq!(still.as_deref(), Some("Starting now."));
+    }
+
+    fn codex_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/transcripts/codex")
+    }
+
+    #[test]
+    fn codex_path_found_by_recursive_walk() {
+        let got = resolve_codex_path_in(
+            &codex_root(),
+            "codex0001-0000-0000-0000-000000000001",
+        );
+        assert!(got.is_some(), "expected path resolution to succeed");
+        let p = got.unwrap();
+        assert!(p.to_string_lossy().ends_with(
+            "codex0001-0000-0000-0000-000000000001.jsonl"
+        ));
+    }
+
+    #[test]
+    fn codex_path_none_for_unknown_session() {
+        let got = resolve_codex_path_in(&codex_root(), "nope");
+        assert!(got.is_none());
     }
 }
