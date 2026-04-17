@@ -120,13 +120,21 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 pid: Some(parent_pid()),
             })
         }
-        "permission-request" => Ok(InboundEvent::PermissionRequest {
-            session_id: hook.session_id,
-            request_id: None,
-            tool: hook.tool_name,
-            detail: None,
-            pid: Some(parent_pid()),
-        }),
+        "permission-request" => {
+            let pid = parent_pid();
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let request_id = format!("{}-{}-{}", hook.session_id, pid, nanos);
+            Ok(InboundEvent::PermissionRequest {
+                session_id: hook.session_id,
+                request_id: Some(request_id),
+                tool: hook.tool_name,
+                detail: extract_tool_detail(&hook.tool_input),
+                pid: Some(pid),
+            })
+        }
         "permission-denied" => Ok(InboundEvent::PermissionDenied {
             session_id: hook.session_id,
             pid: Some(parent_pid()),
@@ -338,5 +346,28 @@ mod tests {
         let result = parse_claude_code(json, "bogus");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unknown event type"));
+    }
+
+    #[test]
+    fn test_parse_claude_code_permission_request_sets_all_fields() {
+        let json = r#"{"session_id":"abc123","hook_event_name":"permission-request","tool_name":"Bash","tool_input":{"command":"rm -rf /tmp"}}"#;
+        let event = parse_claude_code(json, "permission-request").unwrap();
+        match event {
+            InboundEvent::PermissionRequest {
+                session_id,
+                request_id,
+                tool,
+                detail,
+                pid,
+            } => {
+                assert_eq!(session_id, "abc123");
+                let rid = request_id.expect("request_id must be set by hook");
+                assert!(rid.contains("abc123"), "request_id should contain session_id, got {:?}", rid);
+                assert_eq!(tool.as_deref(), Some("Bash"));
+                assert_eq!(detail.as_deref(), Some("rm -rf /tmp"));
+                assert!(pid.is_some());
+            }
+            _ => panic!("expected PermissionRequest"),
+        }
     }
 }
