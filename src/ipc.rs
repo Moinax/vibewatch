@@ -21,28 +21,40 @@ pub enum InboundEvent {
         tool: String,
         #[serde(default)]
         detail: Option<String>,
+        #[serde(default)]
+        pid: Option<u32>,
     },
     PostToolUse {
         session_id: String,
         tool: String,
         #[serde(default)]
         success: bool,
+        #[serde(default)]
+        pid: Option<u32>,
     },
     UserPromptSubmit {
         session_id: String,
         #[serde(default)]
         prompt: Option<String>,
+        #[serde(default)]
+        pid: Option<u32>,
     },
     PermissionRequest {
         session_id: String,
         #[serde(default)]
         tool: Option<String>,
+        #[serde(default)]
+        pid: Option<u32>,
     },
     PermissionDenied {
         session_id: String,
+        #[serde(default)]
+        pid: Option<u32>,
     },
     Stop {
         session_id: String,
+        #[serde(default)]
+        pid: Option<u32>,
     },
     GetStatus,
     TogglePanel,
@@ -188,6 +200,7 @@ mod tests {
                 session_id,
                 tool,
                 detail,
+                pid: _,
             } => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(tool, "Read");
@@ -202,7 +215,7 @@ mod tests {
         let json = r#"{"event":"stop","session_id":"s1"}"#;
         let event: InboundEvent = serde_json::from_str(json).unwrap();
         match event {
-            InboundEvent::Stop { session_id } => {
+            InboundEvent::Stop { session_id, pid: _ } => {
                 assert_eq!(session_id, "s1");
             }
             _ => panic!("expected Stop"),
@@ -250,6 +263,7 @@ mod tests {
             let mut stream = UnixStream::connect(&path).await.unwrap();
             let event = InboundEvent::Stop {
                 session_id: "s42".into(),
+                pid: None,
             };
             write_json(&mut stream, &event).await.unwrap();
         });
@@ -260,7 +274,7 @@ mod tests {
         let event = read_event(&mut reader).await.unwrap();
 
         match event {
-            InboundEvent::Stop { session_id } => {
+            InboundEvent::Stop { session_id, pid: _ } => {
                 assert_eq!(session_id, "s42");
             }
             _ => panic!("expected Stop event"),

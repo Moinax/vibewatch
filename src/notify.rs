@@ -90,6 +90,7 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
             session_id: hook.session_id,
             tool: hook.tool_name.unwrap_or_default(),
             detail: extract_tool_detail(&hook.tool_input),
+            pid: Some(parent_pid()),
         }),
         "post-tool-use" => {
             let success = hook
@@ -102,6 +103,7 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 session_id: hook.session_id,
                 tool: hook.tool_name.unwrap_or_default(),
                 success,
+                pid: Some(parent_pid()),
             })
         }
         "user-prompt-submit" => {
@@ -115,17 +117,21 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
             Ok(InboundEvent::UserPromptSubmit {
                 session_id: hook.session_id,
                 prompt,
+                pid: Some(parent_pid()),
             })
         }
         "permission-request" => Ok(InboundEvent::PermissionRequest {
             session_id: hook.session_id,
             tool: hook.tool_name,
+            pid: Some(parent_pid()),
         }),
         "permission-denied" => Ok(InboundEvent::PermissionDenied {
             session_id: hook.session_id,
+            pid: Some(parent_pid()),
         }),
         "stop" => Ok(InboundEvent::Stop {
             session_id: hook.session_id,
+            pid: Some(parent_pid()),
         }),
         other => bail!("unknown event type: {}", other),
     }
@@ -148,6 +154,7 @@ pub fn parse_codex(stdin: &str, event_type: &str) -> anyhow::Result<InboundEvent
             session_id: hook.session_id,
             tool: hook.tool_name.unwrap_or_default(),
             detail: extract_tool_detail(&hook.tool_input),
+            pid: Some(parent_pid()),
         }),
         "post-tool-use" => {
             let success = hook
@@ -160,10 +167,12 @@ pub fn parse_codex(stdin: &str, event_type: &str) -> anyhow::Result<InboundEvent
                 session_id: hook.session_id,
                 tool: hook.tool_name.unwrap_or_default(),
                 success,
+                pid: Some(parent_pid()),
             })
         }
         "stop" => Ok(InboundEvent::Stop {
             session_id: hook.session_id,
+            pid: Some(parent_pid()),
         }),
         other => bail!("unknown event type: {}", other),
     }
@@ -246,6 +255,7 @@ mod tests {
                 session_id,
                 tool,
                 detail,
+                pid: _,
             } => {
                 assert_eq!(session_id, "abc123");
                 assert_eq!(tool, "Bash");
@@ -264,6 +274,7 @@ mod tests {
                 session_id,
                 tool,
                 success,
+                pid: _,
             } => {
                 assert_eq!(session_id, "abc123");
                 assert_eq!(tool, "Bash");
@@ -282,6 +293,7 @@ mod tests {
                 session_id,
                 tool,
                 detail,
+                pid: _,
             } => {
                 assert_eq!(session_id, "codex-1");
                 assert_eq!(tool, "shell");

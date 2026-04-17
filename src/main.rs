@@ -240,8 +240,9 @@ async fn handle_connection(
                 session_id,
                 tool,
                 detail,
+                pid,
             } => {
-                if let Some(mut session) = get_session(&registry, &session_id) {
+                if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     session.status = SessionStatus::Executing;
                     session.current_tool = Some(tool);
                     session.tool_detail = detail;
@@ -253,8 +254,9 @@ async fn handle_connection(
                 session_id,
                 tool: _,
                 success,
+                pid,
             } => {
-                if let Some(mut session) = get_session(&registry, &session_id) {
+                if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     session.last_tool = session.current_tool.take();
                     session.last_tool_detail = session.tool_detail.take();
                     session.status = SessionStatus::Thinking;
@@ -274,8 +276,12 @@ async fn handle_connection(
                     sound_player.play(SoundEvent::Error);
                 }
             }
-            InboundEvent::UserPromptSubmit { session_id, prompt } => {
-                if let Some(mut session) = get_session(&registry, &session_id) {
+            InboundEvent::UserPromptSubmit {
+                session_id,
+                prompt,
+                pid,
+            } => {
+                if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     session.status = SessionStatus::Thinking;
                     session.last_prompt = prompt;
                     session.last_prompt_at = now_epoch();
@@ -288,8 +294,12 @@ async fn handle_connection(
                     registry.register(session);
                 }
             }
-            InboundEvent::PermissionRequest { session_id, tool } => {
-                if let Some(mut session) = get_session(&registry, &session_id) {
+            InboundEvent::PermissionRequest {
+                session_id,
+                tool,
+                pid,
+            } => {
+                if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     session.status = SessionStatus::WaitingApproval;
                     session.current_tool = tool;
                     session.touch();
@@ -297,8 +307,8 @@ async fn handle_connection(
                     sound_player.play(SoundEvent::ApprovalNeeded);
                 }
             }
-            InboundEvent::PermissionDenied { session_id } => {
-                if let Some(mut session) = registry.get(&session_id) {
+            InboundEvent::PermissionDenied { session_id, pid } => {
+                if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     session.status = SessionStatus::Thinking;
                     session.current_tool = None;
                     session.tool_detail = None;
@@ -306,8 +316,8 @@ async fn handle_connection(
                     registry.register(session);
                 }
             }
-            InboundEvent::Stop { session_id } => {
-                if let Some(mut session) = registry.get(&session_id) {
+            InboundEvent::Stop { session_id, pid } => {
+                if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     session.status = SessionStatus::Idle;
                     session.current_tool = None;
                     session.tool_detail = None;
@@ -362,9 +372,19 @@ async fn handle_connection(
     }
 }
 
-/// Get an existing session by ID.
-fn get_session(registry: &SessionRegistry, session_id: &str) -> Option<Session> {
-    registry.get(session_id)
+/// Look up a session for a hook event. If `pid` is provided and the id is not
+/// found, try to adopt a matching `scan-*` session (handles daemon restart while
+/// an agent is already running).
+fn lookup_session(
+    registry: &SessionRegistry,
+    session_id: &str,
+    pid: Option<u32>,
+) -> Option<Session> {
+    if let Some(pid) = pid {
+        registry.get_or_adopt(session_id, pid)
+    } else {
+        registry.get(session_id)
+    }
 }
 
 fn now_epoch() -> Option<u64> {

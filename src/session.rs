@@ -281,6 +281,26 @@ impl SessionRegistry {
             false
         }
     }
+
+    /// Look up a session by id; if missing and a scanner-discovered session
+    /// exists for the same `pid`, rename it in-place to `new_id` and return
+    /// the renamed session. This rehomes scanner sessions under real hook
+    /// session ids when hooks start arriving (e.g. after a daemon restart
+    /// while an agent session was already running).
+    pub fn get_or_adopt(&self, new_id: &str, pid: u32) -> Option<Session> {
+        let mut map = self.sessions.write().unwrap();
+        if let Some(s) = map.get(new_id) {
+            return Some(s.clone());
+        }
+        let adopt_id = map
+            .iter()
+            .find(|(id, s)| s.pid == pid && id.starts_with("scan-"))
+            .map(|(id, _)| id.clone())?;
+        let mut session = map.remove(&adopt_id)?;
+        session.id = new_id.to_string();
+        map.insert(new_id.to_string(), session.clone());
+        Some(session)
+    }
 }
 
 /// Check whether a process with the given PID is alive by probing /proc.
@@ -460,6 +480,42 @@ mod tests {
         assert!(is_pid_alive(1));
         // A very high PID is almost certainly not alive
         assert!(!is_pid_alive(4_000_000));
+    }
+
+    #[test]
+    fn registry_get_or_adopt_rehomes_scan_session_by_pid() {
+        let registry = SessionRegistry::new();
+        let mut scan = Session::new("scan-claude-4242".into(), AgentKind::ClaudeCode, 4242);
+        scan.terminal = Some("Kitty".into());
+        scan.cwd = Some("/tmp/proj".into());
+        registry.register(scan);
+
+        let adopted = registry
+            .get_or_adopt("real-uuid-abc", 4242)
+            .expect("adopts scan session");
+        assert_eq!(adopted.id, "real-uuid-abc");
+        assert_eq!(adopted.pid, 4242);
+        assert_eq!(adopted.terminal.as_deref(), Some("Kitty"));
+        assert_eq!(adopted.cwd.as_deref(), Some("/tmp/proj"));
+        assert!(registry.get("scan-claude-4242").is_none());
+        assert!(registry.get("real-uuid-abc").is_some());
+    }
+
+    #[test]
+    fn registry_get_or_adopt_returns_existing_session_unchanged() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("real-uuid".into(), AgentKind::ClaudeCode, 999));
+        let got = registry.get_or_adopt("real-uuid", 999).unwrap();
+        assert_eq!(got.id, "real-uuid");
+        assert_eq!(got.pid, 999);
+    }
+
+    #[test]
+    fn registry_get_or_adopt_returns_none_when_no_scan_match() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("scan-claude-1".into(), AgentKind::ClaudeCode, 1));
+        // Different pid — should NOT adopt.
+        assert!(registry.get_or_adopt("uuid", 9999).is_none());
     }
 
     #[test]
