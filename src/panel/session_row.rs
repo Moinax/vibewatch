@@ -111,6 +111,61 @@ fn format_elapsed(session: &Session) -> String {
     }
 }
 
+/// Maximum characters of prompt/agent text to render before ellipsizing.
+const DESCRIBE_MAX_CHARS: usize = 60;
+
+/// Description-line content for a session: latest of user prompt / agent text,
+/// with a speaker prefix. Falls back to a status-based string when neither
+/// text is available.
+pub(crate) fn describe(session: &Session) -> String {
+    let user = session.last_prompt.as_deref().zip(session.last_prompt_at);
+    let agent = session.last_agent_text.as_deref().zip(session.last_agent_text_at);
+    match (user, agent) {
+        (Some((p, _)), None) => render_user(p),
+        (None, Some((a, _))) => render_agent(session, a),
+        (Some((p, pu)), Some((a, au))) => {
+            if pu > au {
+                render_user(p)
+            } else {
+                render_agent(session, a)
+            }
+        }
+        (None, None) => fallback_for_status(session.status),
+    }
+}
+
+fn render_user(text: &str) -> String {
+    format!("You: \"{}\"", truncate(text, DESCRIBE_MAX_CHARS))
+}
+
+fn render_agent(session: &Session, text: &str) -> String {
+    format!(
+        "{}: \"{}\"",
+        session.agent.short_name(),
+        truncate(text, DESCRIBE_MAX_CHARS),
+    )
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(3)).collect();
+        out.push_str("...");
+        out
+    }
+}
+
+fn fallback_for_status(status: SessionStatus) -> String {
+    match status {
+        SessionStatus::Idle | SessionStatus::Running => "Idle".into(),
+        SessionStatus::Stopped => "Stopped".into(),
+        SessionStatus::Thinking => "Thinking...".into(),
+        SessionStatus::Executing => "Working...".into(),
+        SessionStatus::WaitingApproval => "Awaiting approval".into(),
+    }
+}
+
 fn status_description(session: &Session) -> String {
     let prompt_ctx = session.last_prompt.as_deref().map(|p| {
         let first_line = p.lines().next().unwrap_or(p);
@@ -190,5 +245,98 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
         let _ = std::process::Command::new("niri")
             .args(["msg", "action", "focus-window", "--pid", &pid.to_string()])
             .status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe;
+    use crate::session::{AgentKind, Session, SessionStatus};
+
+    fn mk(agent: AgentKind) -> Session {
+        Session::new("s1".into(), agent, 1)
+    }
+
+    #[test]
+    fn user_only_renders_you_prefix() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.last_prompt = Some("fix the deploy".into());
+        s.last_prompt_at = Some(100);
+        assert_eq!(describe(&s), "You: \"fix the deploy\"");
+    }
+
+    #[test]
+    fn agent_only_renders_agent_prefix() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.last_agent_text = Some("Tests pass.".into());
+        s.last_agent_text_at = Some(100);
+        assert_eq!(describe(&s), "Claude: \"Tests pass.\"");
+    }
+
+    #[test]
+    fn codex_agent_uses_codex_prefix() {
+        let mut s = mk(AgentKind::Codex);
+        s.last_agent_text = Some("All good.".into());
+        s.last_agent_text_at = Some(100);
+        assert_eq!(describe(&s), "Codex: \"All good.\"");
+    }
+
+    #[test]
+    fn user_wins_when_newer() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.last_prompt = Some("please do X".into());
+        s.last_prompt_at = Some(200);
+        s.last_agent_text = Some("done".into());
+        s.last_agent_text_at = Some(100);
+        assert_eq!(describe(&s), "You: \"please do X\"");
+    }
+
+    #[test]
+    fn agent_wins_when_newer_or_equal() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.last_prompt = Some("please do X".into());
+        s.last_prompt_at = Some(100);
+        s.last_agent_text = Some("done".into());
+        s.last_agent_text_at = Some(100);
+        assert_eq!(describe(&s), "Claude: \"done\"");
+    }
+
+    #[test]
+    fn idle_fallback_when_nothing_captured() {
+        let s = mk(AgentKind::ClaudeCode);
+        assert_eq!(describe(&s), "Idle");
+    }
+
+    #[test]
+    fn stopped_fallback() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Stopped;
+        assert_eq!(describe(&s), "Stopped");
+    }
+
+    #[test]
+    fn executing_fallback_when_no_text() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Executing;
+        assert_eq!(describe(&s), "Working...");
+    }
+
+    #[test]
+    fn waiting_approval_fallback_when_no_text() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::WaitingApproval;
+        assert_eq!(describe(&s), "Awaiting approval");
+    }
+
+    #[test]
+    fn long_text_is_truncated_with_ellipsis() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        let long: String = "x".repeat(200);
+        s.last_prompt = Some(long.clone());
+        s.last_prompt_at = Some(1);
+        let out = describe(&s);
+        assert!(out.starts_with("You: \""));
+        assert!(out.ends_with("...\""));
+        assert!(out.len() < long.len() + 20);
     }
 }
