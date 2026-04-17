@@ -333,26 +333,81 @@ async fn handle_connection(
             }
             InboundEvent::PermissionRequest {
                 session_id,
-                request_id: _,
+                request_id,
                 tool,
-                detail: _,
+                detail,
                 pid,
             } => {
+                let request_id = match request_id {
+                    Some(r) => r,
+                    None => {
+                        // Old fire-and-forget caller: just flip status and continue.
+                        if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
+                            session.status = SessionStatus::WaitingApproval;
+                            session.current_tool = tool;
+                            session.touch();
+                            registry.register(session);
+                            sound_player.play(SoundEvent::ApprovalNeeded);
+                        }
+                        continue;
+                    }
+                };
+                let tool_name = tool.clone().unwrap_or_else(|| "tool".into());
+
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     session.status = SessionStatus::WaitingApproval;
-                    session.current_tool = tool;
+                    session.current_tool = Some(tool_name.clone());
+                    session.tool_detail = detail.clone();
+                    session.pending_approval = Some(crate::session::PendingApproval {
+                        request_id: request_id.clone(),
+                        tool: tool_name,
+                        detail,
+                    });
                     session.touch();
                     registry.register(session);
-                    sound_player.play(SoundEvent::ApprovalNeeded);
                 }
+                sound_player.play(SoundEvent::ApprovalNeeded);
+                if let Some(ref show) = show_sender {
+                    show();
+                }
+
+                // Move write_half into the registry and exit the handler.
+                let entry = crate::approval::ApprovalEntry {
+                    write_half,
+                    session_id,
+                    created_at: std::time::Instant::now(),
+                };
+                approval_registry.insert(request_id, entry).await;
+                return;
             }
             InboundEvent::PermissionDenied { session_id, pid } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     session.status = SessionStatus::Thinking;
                     session.current_tool = None;
                     session.tool_detail = None;
+                    session.pending_approval = None;
                     session.touch();
                     registry.register(session);
+                }
+            }
+            InboundEvent::ApprovalDecision { request_id, approved } => {
+                if let Some(mut entry) = approval_registry.take(&request_id).await {
+                    let line = if approved {
+                        b"{\"approved\":true}\n".as_slice()
+                    } else {
+                        b"{\"approved\":false}\n".as_slice()
+                    };
+                    let _ = entry.write_half.write_all(line).await;
+                    let _ = entry.write_half.flush().await;
+                    // Clear the session's pending approval.
+                    if let Some(mut s) = registry.get(&entry.session_id) {
+                        s.pending_approval = None;
+                        s.status = SessionStatus::Thinking;
+                        s.current_tool = None;
+                        s.tool_detail = None;
+                        s.touch();
+                        registry.register(s);
+                    }
                 }
             }
             InboundEvent::Stop { session_id, pid } => {
@@ -360,6 +415,7 @@ async fn handle_connection(
                     session.status = SessionStatus::Idle;
                     session.current_tool = None;
                     session.tool_detail = None;
+                    session.pending_approval = None;
                     let agent = session.agent;
                     if let Some(text) = transcript::read_last_assistant_line(
                         agent,
@@ -372,18 +428,15 @@ async fn handle_connection(
                     session.touch();
                     registry.register(session);
                 }
-                // Claude Code flushes the final assistant text block to its
-                // JSONL transcript slightly after the Stop hook fires. Re-read
-                // once after a short delay so the panel picks up that last
-                // message instead of the next-to-last one.
                 let registry = registry.clone();
+                let sid = session_id.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                    if let Some(mut session) = registry.get(&session_id) {
+                    if let Some(mut session) = registry.get(&sid) {
                         let agent = session.agent;
                         if let Some(text) = transcript::read_last_assistant_line(
                             agent,
-                            &session_id,
+                            &sid,
                             &mut session.transcript_path,
                         ) {
                             session.last_agent_text = Some(text);
@@ -406,9 +459,6 @@ async fn handle_connection(
                 if let Some(ref sender) = toggle_sender {
                     sender();
                 }
-            }
-            InboundEvent::ApprovalDecision { .. } => {
-                // Handled in Task 7.
             }
         }
     }
