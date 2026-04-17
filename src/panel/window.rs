@@ -14,7 +14,7 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
         .title("vibewatch")
         .build();
     // Set only width, let height be driven by content
-    window.set_size_request(360, 1);
+    window.set_size_request(372, 1);
 
     // Layer shell setup — anchor top only so the compositor centers us horizontally.
     window.init_layer_shell();
@@ -38,6 +38,9 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
     let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     main_box.add_css_class("main-box");
     main_box.set_vexpand(false);
+    main_box.set_size_request(360, -1);
+    main_box.set_hexpand(false);
+    main_box.set_halign(gtk::Align::Center);
 
     // Session list
     let session_list = gtk::ListBox::new();
@@ -78,7 +81,7 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
                 if let Some(content) = win.content() {
                     let (_, natural) = content.preferred_size();
                     let h = natural.height().max(1);
-                    win.set_size_request(360, h);
+                    win.set_size_request(372, h);
                 }
             });
         }

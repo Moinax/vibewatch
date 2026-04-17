@@ -38,6 +38,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     name_label.set_halign(gtk::Align::Fill);
     name_label.set_xalign(0.0);
     name_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name_label.set_max_width_chars(1);
     header.append(&name_label);
 
     let agent_badge = gtk::Label::new(Some(session.agent.short_name()));
@@ -61,9 +62,11 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     if let Some(desc_text) = describe(session) {
         let desc_label = gtk::Label::new(Some(&desc_text));
         desc_label.add_css_class("status-desc");
-        desc_label.set_halign(gtk::Align::Start);
+        desc_label.set_halign(gtk::Align::Fill);
+        desc_label.set_xalign(0.0);
         desc_label.set_hexpand(true);
         desc_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        desc_label.set_max_width_chars(1);
         content.append(&desc_label);
     }
 
@@ -71,8 +74,11 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     let action_label = gtk::Label::new(Some(&action_text));
     action_label.add_css_class("action-line");
     action_label.add_css_class(session.status.css_class());
-    action_label.set_halign(gtk::Align::Start);
+    action_label.set_halign(gtk::Align::Fill);
+    action_label.set_xalign(0.0);
+    action_label.set_hexpand(true);
     action_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    action_label.set_max_width_chars(1);
     content.append(&action_label);
 
     card.append(&content);
