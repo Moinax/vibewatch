@@ -82,7 +82,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     content.append(&action_label);
 
     if let Some(ref pending) = session.pending_approval {
-        let bar = build_approval_bar(pending.request_id.clone());
+        let bar = build_choice_bar(pending.request_id.clone(), &pending.choices);
         content.append(&bar);
     }
 
@@ -128,35 +128,46 @@ pub(crate) fn has_pending_approval(session: &Session) -> bool {
     session.pending_approval.is_some()
 }
 
-/// Build a horizontal box containing Accept + Deny buttons, wired to send
-/// `ApprovalDecision` over the IPC socket when clicked.
-fn build_approval_bar(request_id: String) -> gtk::Box {
+/// Button text for a given choice — just returns its label.
+pub(crate) fn button_label(choice: &crate::session::ApprovalChoice) -> &str {
+    &choice.label
+}
+
+/// CSS class name for a choice. `allow` + `Some(suggestion)` renders as the
+/// softer `approval-scope` (session-rule), plain allow as green `approval-accept`,
+/// deny as red `approval-deny`.
+pub(crate) fn button_css_class(choice: &crate::session::ApprovalChoice) -> &'static str {
+    match (choice.behavior.as_str(), choice.suggestion.is_some()) {
+        ("allow", true) => "approval-scope",
+        ("allow", false) => "approval-accept",
+        ("deny", _) => "approval-deny",
+        _ => "approval-accept",
+    }
+}
+
+/// Build a horizontal box containing one button per ApprovalChoice.
+/// Click handler sends `ApprovalDecision { request_id, choice_index }`.
+fn build_choice_bar(
+    request_id: String,
+    choices: &[crate::session::ApprovalChoice],
+) -> gtk::Box {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     bar.add_css_class("approval-bar");
     bar.set_halign(gtk::Align::Start);
     bar.set_margin_top(4);
 
-    let accept = gtk::Button::with_label("Accept");
-    accept.add_css_class("approval-accept");
-    let rid_a = request_id.clone();
-    accept.connect_clicked(move |_| {
-        let rid = rid_a.clone();
-        std::thread::spawn(move || {
-            send_approval_decision(&rid, 0);
+    for (idx, choice) in choices.iter().enumerate() {
+        let button = gtk::Button::with_label(button_label(choice));
+        button.add_css_class(button_css_class(choice));
+        let rid = request_id.clone();
+        button.connect_clicked(move |_| {
+            let rid = rid.clone();
+            std::thread::spawn(move || {
+                send_approval_decision(&rid, idx);
+            });
         });
-    });
-    bar.append(&accept);
-
-    let deny = gtk::Button::with_label("Deny");
-    deny.add_css_class("approval-deny");
-    let rid_d = request_id;
-    deny.connect_clicked(move |_| {
-        let rid = rid_d.clone();
-        std::thread::spawn(move || {
-            send_approval_decision(&rid, 1);
-        });
-    });
-    bar.append(&deny);
+        bar.append(&button);
+    }
 
     bar
 }
@@ -286,7 +297,7 @@ fn send_approval_decision(request_id: &str, choice_index: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{action_line, describe, has_pending_approval};
+    use super::{action_line, button_css_class, button_label, describe, has_pending_approval};
     use crate::session::{AgentKind, Session, SessionStatus};
 
     fn mk(agent: AgentKind) -> Session {
@@ -422,5 +433,50 @@ mod tests {
     fn has_pending_approval_returns_false_when_none() {
         let s = mk(AgentKind::ClaudeCode);
         assert!(!has_pending_approval(&s));
+    }
+
+    #[test]
+    fn button_label_for_plain_yes_is_yes() {
+        let c = crate::session::ApprovalChoice {
+            label: "Yes".into(),
+            behavior: "allow".into(),
+            suggestion: None,
+        };
+        assert_eq!(button_label(&c), "Yes");
+    }
+
+    #[test]
+    fn button_css_class_for_suggestion_is_approval_scope() {
+        let c = crate::session::ApprovalChoice {
+            label: "Yes, allow Read for /foo (session)".into(),
+            behavior: "allow".into(),
+            suggestion: Some(crate::session::PermissionSuggestion {
+                kind: "addRules".into(),
+                rules: vec![],
+                behavior: "allow".into(),
+                destination: "session".into(),
+            }),
+        };
+        assert_eq!(button_css_class(&c), "approval-scope");
+    }
+
+    #[test]
+    fn button_css_class_plain_allow_is_accept() {
+        let c = crate::session::ApprovalChoice {
+            label: "Yes".into(),
+            behavior: "allow".into(),
+            suggestion: None,
+        };
+        assert_eq!(button_css_class(&c), "approval-accept");
+    }
+
+    #[test]
+    fn button_css_class_deny_is_deny() {
+        let c = crate::session::ApprovalChoice {
+            label: "No".into(),
+            behavior: "deny".into(),
+            suggestion: None,
+        };
+        assert_eq!(button_css_class(&c), "approval-deny");
     }
 }
