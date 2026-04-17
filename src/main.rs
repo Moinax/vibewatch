@@ -451,51 +451,61 @@ async fn handle_connection(
                 }
             }
             InboundEvent::ApprovalDecision { request_id, choice_index } => {
-                let approved = choice_index == 0; // temporary scaffold until Task 6
                 eprintln!(
-                    "vibewatch: recv ApprovalDecision request_id={} choice_index={} approved={}",
-                    request_id, choice_index, approved
+                    "vibewatch: recv ApprovalDecision request_id={} choice_index={}",
+                    request_id, choice_index
                 );
-                if let Some(mut entry) = approval_registry.take(&request_id).await {
+                let Some(entry) = approval_registry.take(&request_id).await else {
                     eprintln!(
-                        "vibewatch: took ApprovalRegistry entry for request_id={} session_id={}",
-                        request_id, entry.session_id
-                    );
-                    let line = if approved {
-                        b"{\"approved\":true}\n".as_slice()
-                    } else {
-                        b"{\"approved\":false}\n".as_slice()
-                    };
-                    match entry.write_half.write_all(line).await {
-                        Ok(_) => eprintln!(
-                            "vibewatch: wrote decision line for request_id={}",
-                            request_id
-                        ),
-                        Err(e) => eprintln!(
-                            "vibewatch: failed to write approval decision for {}: {}",
-                            request_id, e
-                        ),
-                    }
-                    if let Err(e) = entry.write_half.flush().await {
-                        eprintln!(
-                            "vibewatch: failed to flush approval decision for {}: {}",
-                            request_id, e
-                        );
-                    }
-                    // Clear the session's pending approval.
-                    if let Some(mut s) = registry.get(&entry.session_id) {
-                        s.pending_approval = None;
-                        s.status = SessionStatus::Thinking;
-                        s.current_tool = None;
-                        s.tool_detail = None;
-                        s.touch();
-                        registry.register(s);
-                    }
-                } else {
-                    eprintln!(
-                        "vibewatch: NO entry in ApprovalRegistry for request_id={} (stale click or never registered)",
+                        "vibewatch: NO entry in ApprovalRegistry for request_id={}",
                         request_id
                     );
+                    continue;
+                };
+                let chosen = registry
+                    .get(&entry.session_id)
+                    .and_then(|s| s.pending_approval.as_ref().and_then(|p| p.choices.get(choice_index).cloned()));
+                let (behavior_str, suggestion) = match chosen {
+                    Some(c) => (c.behavior, c.suggestion),
+                    None => {
+                        eprintln!(
+                            "vibewatch: no choice at index {} for request_id={}; denying",
+                            choice_index, request_id
+                        );
+                        ("deny".to_string(), None)
+                    }
+                };
+                let response_json = serde_json::json!({
+                    "behavior": behavior_str,
+                    "suggestion": suggestion,
+                });
+                let mut line = response_json.to_string();
+                line.push('\n');
+                let mut wh = entry.write_half;
+                match wh.write_all(line.as_bytes()).await {
+                    Ok(_) => eprintln!(
+                        "vibewatch: wrote decision line for request_id={}: {}",
+                        request_id,
+                        line.trim()
+                    ),
+                    Err(e) => eprintln!(
+                        "vibewatch: failed to write approval decision for {}: {}",
+                        request_id, e
+                    ),
+                }
+                if let Err(e) = wh.flush().await {
+                    eprintln!(
+                        "vibewatch: failed to flush approval decision for {}: {}",
+                        request_id, e
+                    );
+                }
+                if let Some(mut s) = registry.get(&entry.session_id) {
+                    s.pending_approval = None;
+                    s.status = SessionStatus::Thinking;
+                    s.current_tool = None;
+                    s.tool_detail = None;
+                    s.touch();
+                    registry.register(s);
                 }
             }
             InboundEvent::Stop { session_id, pid } => {

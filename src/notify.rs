@@ -8,20 +8,18 @@ use crate::ipc::{send_event, InboundEvent};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-/// Outcome of a blocking permission-request round-trip with the daemon.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionDecision {
-    Allow,
-    Deny,
-    Ask,
+/// Result of a blocking permission-request round-trip with the daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionDecisionResult {
+    pub behavior: String,                                           // "allow" | "deny" | "ask"
+    pub suggestion: Option<crate::session::PermissionSuggestion>,
 }
 
-impl PermissionDecision {
-    fn as_claude_str(self) -> &'static str {
-        match self {
-            PermissionDecision::Allow => "allow",
-            PermissionDecision::Deny => "deny",
-            PermissionDecision::Ask => "ask",
+impl PermissionDecisionResult {
+    fn ask() -> Self {
+        Self {
+            behavior: "ask".into(),
+            suggestion: None,
         }
     }
 }
@@ -34,7 +32,7 @@ pub async fn send_permission_request(
     socket_path: &std::path::Path,
     event: &InboundEvent,
     timeout: std::time::Duration,
-) -> anyhow::Result<PermissionDecision> {
+) -> anyhow::Result<PermissionDecisionResult> {
     use anyhow::Context;
     let mut stream = UnixStream::connect(socket_path)
         .await
@@ -49,20 +47,26 @@ pub async fn send_permission_request(
     let mut reader = tokio::io::BufReader::new(read_half);
     let mut line = String::new();
 
-    let read_fut = reader.read_line(&mut line);
-    match tokio::time::timeout(timeout, read_fut).await {
+    match tokio::time::timeout(timeout, reader.read_line(&mut line)).await {
         Ok(Ok(n)) if n > 0 => {
             let v: serde_json::Value = serde_json::from_str(line.trim())?;
-            let approved = v.get("approved").and_then(|x| x.as_bool()).unwrap_or(false);
-            Ok(if approved {
-                PermissionDecision::Allow
-            } else {
-                PermissionDecision::Deny
-            })
+            let behavior = v
+                .get("behavior")
+                .and_then(|x| x.as_str())
+                .unwrap_or("deny")
+                .to_string();
+            let suggestion = v.get("suggestion").and_then(|x| {
+                if x.is_null() {
+                    None
+                } else {
+                    serde_json::from_value(x.clone()).ok()
+                }
+            });
+            Ok(PermissionDecisionResult { behavior, suggestion })
         }
-        Ok(Ok(_)) => Ok(PermissionDecision::Ask), // EOF — treat as fallback
+        Ok(Ok(_)) => Ok(PermissionDecisionResult::ask()),
         Ok(Err(e)) => Err(anyhow::anyhow!("read error: {e}")),
-        Err(_) => Ok(PermissionDecision::Ask),    // timeout
+        Err(_) => Ok(PermissionDecisionResult::ask()),
     }
 }
 
@@ -127,29 +131,35 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
 
     if agent == "claude-code" && event_type == "permission-request" {
         eprintln!("vibewatch-hook: permission-request starting, waiting for daemon response");
-        let decision = match send_permission_request(
+        let result = match send_permission_request(
             &socket_path,
             &event,
             std::time::Duration::from_secs(580),
         )
         .await
         {
-            Ok(d) => {
-                eprintln!("vibewatch-hook: got decision: {:?}", d);
-                d
+            Ok(r) => {
+                eprintln!("vibewatch-hook: got decision: {:?}", r);
+                r
             }
             Err(e) => {
                 eprintln!("vibewatch-hook: permission-request fallback ask ({e})");
-                PermissionDecision::Ask
+                PermissionDecisionResult::ask()
             }
         };
+        let mut decision = serde_json::json!({
+            "behavior": result.behavior,
+            "reason": "via vibewatch widget",
+        });
+        if let Some(sug) = result.suggestion {
+            if let serde_json::Value::Object(ref mut map) = decision {
+                map.insert("suggestion".to_string(), serde_json::to_value(sug)?);
+            }
+        }
         let out = serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": "PermissionRequest",
-                "decision": {
-                    "behavior": decision.as_claude_str(),
-                    "reason": "via vibewatch widget",
-                },
+                "decision": decision,
             }
         });
         let out_str = serde_json::to_string(&out)?;
@@ -514,7 +524,7 @@ mod tests {
             reader.read_line(&mut line).await.unwrap();
             assert!(line.contains("\"event\":\"permission_request\""));
             write_half
-                .write_all(b"{\"approved\":true}\n")
+                .write_all(b"{\"behavior\":\"allow\",\"suggestion\":null}\n")
                 .await
                 .unwrap();
             write_half.flush().await.unwrap();
@@ -530,10 +540,11 @@ mod tests {
             pid: Some(42),
             permission_suggestions: vec![],
         };
-        let decision = send_permission_request(&path, &event, std::time::Duration::from_secs(2))
+        let result = send_permission_request(&path, &event, std::time::Duration::from_secs(2))
             .await
             .expect("round-trip succeeds");
-        assert_eq!(decision, PermissionDecision::Allow);
+        assert_eq!(result.behavior, "allow");
+        assert!(result.suggestion.is_none());
 
         let _ = server_task.await;
     }
