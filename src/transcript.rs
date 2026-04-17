@@ -53,6 +53,8 @@ fn last_non_empty_line(text: &str) -> Option<String> {
     None
 }
 
+/// True for markdown code-fence lines: bare ```` ``` ```` or language-tagged
+/// ```` ```lang ```` (alphanumeric/`-`/`_` remainder, no spaces).
 fn is_code_fence(trimmed: &str) -> bool {
     trimmed == "```"
         || (trimmed.starts_with("```")
