@@ -84,6 +84,18 @@ pub struct Session {
     pub pid: u32,
     /// Unix epoch seconds when session was first seen
     pub started_at_epoch: Option<u64>,
+    /// Last assistant text line read from the transcript (Claude/Codex only).
+    #[serde(default)]
+    pub last_agent_text: Option<String>,
+    /// Unix epoch seconds when `last_agent_text` was last updated.
+    #[serde(default)]
+    pub last_agent_text_at: Option<u64>,
+    /// Unix epoch seconds when `last_prompt` was last set.
+    #[serde(default)]
+    pub last_prompt_at: Option<u64>,
+    /// Cached path to the transcript file once resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript_path: Option<std::path::PathBuf>,
 }
 
 impl Session {
@@ -106,6 +118,10 @@ impl Session {
                 .duration_since(std::time::UNIX_EPOCH)
                 .ok()
                 .map(|d| d.as_secs()),
+            last_agent_text: None,
+            last_agent_text_at: None,
+            last_prompt_at: None,
+            transcript_path: None,
         }
     }
 
@@ -444,5 +460,14 @@ mod tests {
         assert!(is_pid_alive(1));
         // A very high PID is almost certainly not alive
         assert!(!is_pid_alive(4_000_000));
+    }
+
+    #[test]
+    fn new_session_has_null_agent_and_prompt_timestamps() {
+        let s = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
+        assert!(s.last_agent_text.is_none());
+        assert!(s.last_agent_text_at.is_none());
+        assert!(s.last_prompt_at.is_none());
+        assert!(s.transcript_path.is_none());
     }
 }
