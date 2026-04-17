@@ -1,0 +1,5 @@
+{not valid json
+{"type":"user","message":{"role":"user","content":"hi"}}
+also not json
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Malformed-resistant answer."}]}}
+garbage

@@ -1,0 +1,1 @@
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"First block line A.\nFirst block line B."},{"type":"thinking","thinking":"..."},{"type":"text","text":"Second block line C.\nSecond block line D."}]}}

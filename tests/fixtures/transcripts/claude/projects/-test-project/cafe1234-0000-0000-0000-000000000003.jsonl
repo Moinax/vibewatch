@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"do thing"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Reading the file."},{"type":"tool_use","name":"Read","input":{"file":"src/main.rs"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"..."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{}}]}}
