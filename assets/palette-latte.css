@@ -1,0 +1,19 @@
+/* Catppuccin Latte palette — light mode */
+
+@define-color cat_panel_bg   #eff1f5;
+@define-color cat_border     #acb0be;
+@define-color cat_hover_bg   #bcc0cc;
+@define-color cat_divider    #acb0be;
+@define-color cat_button_bg  #ccd0da;
+
+@define-color cat_text       #4c4f69;
+@define-color cat_text_muted #6c6f85;
+@define-color cat_text_dim   #9ca0b0;
+@define-color cat_text_time  #8c8fa1;
+
+@define-color cat_green    #40a02b;
+@define-color cat_peach    #fe640b;
+@define-color cat_sapphire #209fb5;
+@define-color cat_lavender #7287fd;
+@define-color cat_blue     #1e66f5;
+@define-color cat_red      #d20f39;

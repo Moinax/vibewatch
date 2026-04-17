@@ -1,0 +1,19 @@
+/* Catppuccin Mocha palette — dark mode */
+
+@define-color cat_panel_bg   #11111b;
+@define-color cat_border     #585b70;
+@define-color cat_hover_bg   #45475a;
+@define-color cat_divider    #585b70;
+@define-color cat_button_bg  #313244;
+
+@define-color cat_text       #cdd6f4;
+@define-color cat_text_muted #585b70;
+@define-color cat_text_dim   #45475a;
+@define-color cat_text_time  #6c7086;
+
+@define-color cat_green    #a6e3a1;
+@define-color cat_peach    #fab387;
+@define-color cat_sapphire #74c7ec;
+@define-color cat_lavender #b4befe;
+@define-color cat_blue     #89b4fa;
+@define-color cat_red      #f38ba8;

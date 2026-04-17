@@ -1,5 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════
-   Vibewatch Panel — Vibe Island-inspired, Catppuccin Mocha
+   Vibewatch Panel — Vibe Island-inspired, Catppuccin
+   Palette tokens are defined in palette-{mocha,latte}.css and
+   swapped at runtime based on the OS color scheme.
    ═══════════════════════════════════════════════════════════════ */
 
 /* ── Panel container ──────────────────────────────────────────── */
@@ -16,9 +18,9 @@ window.csd,
 }
 
 .main-box {
-    background-color: rgba(17, 17, 27, 0.94);
+    background-color: alpha(@cat_panel_bg, 0.94);
     border-radius: 14px;
-    border: 1px solid rgba(88, 91, 112, 0.25);
+    border: 1px solid alpha(@cat_border, 0.25);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
     padding: 4px 0;
     margin: 6px;
@@ -42,12 +44,12 @@ window.csd,
 }
 
 .session-row:hover {
-    background-color: rgba(69, 71, 90, 0.20);
+    background-color: alpha(@cat_hover_bg, 0.20);
 }
 
 /* Subtle separator between cards */
 .session-row:not(:last-child) .card-box {
-    border-bottom: 1px solid rgba(88, 91, 112, 0.12);
+    border-bottom: 1px solid alpha(@cat_divider, 0.12);
 }
 
 .card-box {
@@ -64,32 +66,32 @@ window.csd,
 
 .indicator.executing,
 .indicator.running {
-    color: #a6e3a1;
-    text-shadow: 0 0 6px rgba(166, 227, 161, 0.7),
-                 0 0 12px rgba(166, 227, 161, 0.3);
+    color: @cat_green;
+    text-shadow: 0 0 6px alpha(@cat_green, 0.7),
+                 0 0 12px alpha(@cat_green, 0.3);
 }
 
 .indicator.waiting-approval {
-    color: #fab387;
-    text-shadow: 0 0 6px rgba(250, 179, 135, 0.7),
-                 0 0 12px rgba(250, 179, 135, 0.3);
+    color: @cat_peach;
+    text-shadow: 0 0 6px alpha(@cat_peach, 0.7),
+                 0 0 12px alpha(@cat_peach, 0.3);
 }
 
 .indicator.thinking {
-    color: #74c7ec;
-    text-shadow: 0 0 6px rgba(116, 199, 236, 0.7),
-                 0 0 12px rgba(116, 199, 236, 0.3);
+    color: @cat_sapphire;
+    text-shadow: 0 0 6px alpha(@cat_sapphire, 0.7),
+                 0 0 12px alpha(@cat_sapphire, 0.3);
 }
 
 .indicator.idle,
 .indicator.stopped {
-    color: #45475a;
+    color: @cat_text_dim;
 }
 
 /* ── Row 1: Session name + badges ─────────────────────────────── */
 
 .session-name {
-    color: #cdd6f4;
+    color: @cat_text;
     font-weight: 600;
     font-size: 13px;
     letter-spacing: 0.2px;
@@ -107,24 +109,24 @@ window.csd,
 }
 
 .agent-badge {
-    color: #b4befe;
-    background-color: rgba(180, 190, 254, 0.10);
+    color: @cat_lavender;
+    background-color: alpha(@cat_lavender, 0.10);
 }
 
 .terminal-badge {
-    color: #89b4fa;
-    background-color: rgba(137, 180, 250, 0.08);
+    color: @cat_blue;
+    background-color: alpha(@cat_blue, 0.08);
 }
 
 .time-badge {
-    color: #6c7086;
+    color: @cat_text_time;
     background-color: transparent;
 }
 
 /* ── Row 2: Status description ────────────────────────────────── */
 
 .status-desc {
-    color: #585b70;
+    color: @cat_text_muted;
     font-size: 11px;
     letter-spacing: 0.1px;
 }
@@ -138,24 +140,24 @@ window.csd,
 }
 
 .action-line.executing {
-    color: #a6e3a1;
+    color: @cat_green;
 }
 
 .action-line.thinking {
-    color: #74c7ec;
+    color: @cat_sapphire;
 }
 
 .action-line.waiting-approval {
-    color: #fab387;
+    color: @cat_peach;
 }
 
 .action-line.running {
-    color: #a6e3a1;
+    color: @cat_green;
 }
 
 .action-line.idle,
 .action-line.stopped {
-    color: #45475a;
+    color: @cat_text_dim;
 }
 
 /* ── Status badge (inline with description) ───────────────────── */
@@ -170,30 +172,30 @@ window.csd,
 }
 
 .status-badge.executing {
-    color: #a6e3a1;
-    background-color: rgba(166, 227, 161, 0.12);
+    color: @cat_green;
+    background-color: alpha(@cat_green, 0.12);
 }
 
 .status-badge.thinking {
-    color: #74c7ec;
-    background-color: rgba(116, 199, 236, 0.10);
+    color: @cat_sapphire;
+    background-color: alpha(@cat_sapphire, 0.10);
 }
 
 .status-badge.waiting-approval {
-    color: #fab387;
-    background-color: rgba(250, 179, 135, 0.12);
+    color: @cat_peach;
+    background-color: alpha(@cat_peach, 0.12);
 }
 
 .status-badge.idle,
 .status-badge.running {
-    color: #585b70;
-    background-color: rgba(88, 91, 112, 0.10);
+    color: @cat_text_muted;
+    background-color: alpha(@cat_border, 0.10);
 }
 
 /* ── Empty state ──────────────────────────────────────────────── */
 
 .empty-state {
-    color: #45475a;
+    color: @cat_text_dim;
     padding: 24px 16px;
     font-size: 11px;
     letter-spacing: 0.3px;
@@ -215,41 +217,41 @@ window.csd,
     letter-spacing: 0.2px;
     padding: 3px 10px;
     border-radius: 5px;
-    border: 1px solid rgba(88, 91, 112, 0.30);
-    background-color: rgba(49, 50, 68, 0.50);
+    border: 1px solid alpha(@cat_border, 0.30);
+    background-color: alpha(@cat_button_bg, 0.50);
     min-height: 22px;
-    color: #cdd6f4;
+    color: @cat_text;
 }
 
 .approval-accept {
-    color: #a6e3a1;
-    border-color: rgba(166, 227, 161, 0.25);
-    background-color: rgba(166, 227, 161, 0.08);
+    color: @cat_green;
+    border-color: alpha(@cat_green, 0.25);
+    background-color: alpha(@cat_green, 0.08);
 }
 
 .approval-accept:hover {
-    background-color: rgba(166, 227, 161, 0.18);
-    border-color: rgba(166, 227, 161, 0.45);
+    background-color: alpha(@cat_green, 0.18);
+    border-color: alpha(@cat_green, 0.45);
 }
 
 .approval-scope {
-    color: #b4befe;
-    border-color: rgba(180, 190, 254, 0.25);
-    background-color: rgba(180, 190, 254, 0.08);
+    color: @cat_lavender;
+    border-color: alpha(@cat_lavender, 0.25);
+    background-color: alpha(@cat_lavender, 0.08);
 }
 
 .approval-scope:hover {
-    background-color: rgba(180, 190, 254, 0.18);
-    border-color: rgba(180, 190, 254, 0.45);
+    background-color: alpha(@cat_lavender, 0.18);
+    border-color: alpha(@cat_lavender, 0.45);
 }
 
 .approval-deny {
-    color: #f38ba8;
-    border-color: rgba(243, 139, 168, 0.25);
-    background-color: rgba(243, 139, 168, 0.08);
+    color: @cat_red;
+    border-color: alpha(@cat_red, 0.25);
+    background-color: alpha(@cat_red, 0.08);
 }
 
 .approval-deny:hover {
-    background-color: rgba(243, 139, 168, 0.18);
-    border-color: rgba(243, 139, 168, 0.45);
+    background-color: alpha(@cat_red, 0.18);
+    border-color: alpha(@cat_red, 0.45);
 }

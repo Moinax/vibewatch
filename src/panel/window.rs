@@ -25,14 +25,36 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
     window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
     window.set_namespace(Some("vibewatch"));
 
-    // Load CSS
-    let css_provider = gtk::CssProvider::new();
-    css_provider.load_from_string(include_str!("../../assets/style.css"));
+    // Load CSS — palette provider is swapped on OS dark/light theme change.
+    let display = gtk::gdk::Display::default().unwrap();
+
+    let palette_provider = gtk::CssProvider::new();
     gtk::style_context_add_provider_for_display(
-        &gtk::gdk::Display::default().unwrap(),
-        &css_provider,
+        &display,
+        &palette_provider,
         gtk::STYLE_PROVIDER_PRIORITY_USER,
     );
+
+    let style_provider = gtk::CssProvider::new();
+    style_provider.load_from_string(include_str!("../../assets/style.css"));
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &style_provider,
+        gtk::STYLE_PROVIDER_PRIORITY_USER,
+    );
+
+    const PALETTE_MOCHA: &str = include_str!("../../assets/palette-mocha.css");
+    const PALETTE_LATTE: &str = include_str!("../../assets/palette-latte.css");
+    let load_palette = |provider: &gtk::CssProvider, dark: bool| {
+        provider.load_from_string(if dark { PALETTE_MOCHA } else { PALETTE_LATTE });
+    };
+
+    let style_manager = adw::StyleManager::default();
+    load_palette(&palette_provider, style_manager.is_dark());
+    let palette_for_notify = palette_provider.clone();
+    style_manager.connect_dark_notify(move |sm| {
+        load_palette(&palette_for_notify, sm.is_dark());
+    });
 
     // Main layout box
     let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
