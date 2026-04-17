@@ -58,7 +58,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     content.append(&header);
 
-    let desc_label = gtk::Label::new(Some(&status_description(session)));
+    let desc_label = gtk::Label::new(Some(&describe(session)));
     desc_label.add_css_class("status-desc");
     desc_label.set_halign(gtk::Align::Start);
     desc_label.set_hexpand(true);
@@ -166,47 +166,11 @@ fn fallback_for_status(status: SessionStatus) -> String {
     }
 }
 
-fn status_description(session: &Session) -> String {
-    let prompt_ctx = session.last_prompt.as_deref().map(|p| {
-        let first_line = p.lines().next().unwrap_or(p);
-        if first_line.len() > 50 {
-            format!("You: \"{}...\"", &first_line[..47])
-        } else {
-            format!("You: \"{}\"", first_line)
-        }
-    });
-
-    // Prompt context takes priority for most statuses
-    if let Some(ctx) = &prompt_ctx {
-        if !matches!(session.status, SessionStatus::WaitingApproval | SessionStatus::Stopped) {
-            return ctx.clone();
-        }
-    }
-
-    match session.status {
-        SessionStatus::Executing => {
-            session.current_tool.as_deref()
-                .map(|t| format!("Executing {}", t))
-                .unwrap_or_else(|| "Executing...".to_string())
-        }
-        SessionStatus::Thinking => {
-            match (&session.last_tool, &session.last_tool_detail) {
-                (Some(tool), Some(detail)) => format!("After {}", describe_tool(tool, detail, true)),
-                (Some(tool), None) => format!("After {}", tool),
-                _ => "Thinking...".to_string(),
-            }
-        }
-        SessionStatus::WaitingApproval => {
-            session.current_tool.as_deref()
-                .map(|t| format!("Needs approval: {}", t))
-                .unwrap_or_else(|| "Waiting for approval".to_string())
-        }
-        SessionStatus::Idle | SessionStatus::Running => "Idle".to_string(),
-        SessionStatus::Stopped => "Stopped".to_string(),
-    }
-}
-
 fn action_line(session: &Session) -> Option<String> {
+    if session.status == SessionStatus::WaitingApproval {
+        let tool = session.current_tool.as_deref().unwrap_or("tool");
+        return Some(format!("Needs approval: {}", tool));
+    }
     if let (Some(tool), Some(detail)) = (&session.current_tool, &session.tool_detail) {
         return Some(describe_tool(tool, detail, true));
     }
@@ -338,5 +302,24 @@ mod tests {
         assert!(out.starts_with("You: \""));
         assert!(out.ends_with("...\""));
         assert!(out.len() < long.len() + 20);
+    }
+
+    #[test]
+    fn action_line_shows_needs_approval_for_waiting() {
+        use super::action_line;
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::WaitingApproval;
+        s.current_tool = Some("Bash".into());
+        assert_eq!(action_line(&s).as_deref(), Some("Needs approval: Bash"));
+    }
+
+    #[test]
+    fn action_line_still_shows_live_tool_when_executing() {
+        use super::action_line;
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Executing;
+        s.current_tool = Some("Edit".into());
+        s.tool_detail = Some("src/main.rs".into());
+        assert_eq!(action_line(&s).as_deref(), Some("Editing src/main.rs"));
     }
 }
