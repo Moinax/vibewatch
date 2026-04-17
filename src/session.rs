@@ -66,6 +66,17 @@ impl SessionStatus {
     }
 }
 
+/// A pending tool-approval request from the agent, awaiting the user's
+/// widget click. Serializable so it appears in `vibewatch status` output;
+/// the held socket stream lives in `ApprovalRegistry`, not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingApproval {
+    pub request_id: String,
+    pub tool: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
 /// A single monitored agent session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -96,6 +107,10 @@ pub struct Session {
     /// Cached path to the transcript file once resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<std::path::PathBuf>,
+    /// Set while the session is waiting on a user Accept/Deny click in
+    /// the widget. `None` at all other times.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_approval: Option<PendingApproval>,
 }
 
 impl Session {
@@ -122,6 +137,7 @@ impl Session {
             last_agent_text_at: None,
             last_prompt_at: None,
             transcript_path: None,
+            pending_approval: None,
         }
     }
 
@@ -525,5 +541,33 @@ mod tests {
         assert!(s.last_agent_text_at.is_none());
         assert!(s.last_prompt_at.is_none());
         assert!(s.transcript_path.is_none());
+    }
+
+    #[test]
+    fn new_session_has_no_pending_approval() {
+        let s = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
+        assert!(s.pending_approval.is_none());
+    }
+
+    #[test]
+    fn session_serializes_pending_approval_when_set() {
+        let mut s = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
+        s.pending_approval = Some(PendingApproval {
+            request_id: "req-xyz".into(),
+            tool: "Bash".into(),
+            detail: Some("rm -rf /tmp/foo".into()),
+        });
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains(r#""pending_approval":"#));
+        assert!(json.contains(r#""request_id":"req-xyz""#));
+        assert!(json.contains(r#""tool":"Bash""#));
+        assert!(json.contains(r#""detail":"rm -rf /tmp/foo""#));
+    }
+
+    #[test]
+    fn session_omits_pending_approval_when_none() {
+        let s = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(!json.contains("pending_approval"));
     }
 }
