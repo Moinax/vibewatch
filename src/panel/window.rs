@@ -14,13 +14,13 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
         .title("vibewatch")
         .build();
     // Set only width, let height be driven by content
-    window.set_size_request(372, 1);
+    window.set_size_request(360, 1);
 
     // Layer shell setup — anchor top only so the compositor centers us horizontally.
     window.init_layer_shell();
     window.set_layer(gtk4_layer_shell::Layer::Overlay);
     window.set_anchor(gtk4_layer_shell::Edge::Top, true);
-    window.set_margin(gtk4_layer_shell::Edge::Top, 8);
+    window.set_margin(gtk4_layer_shell::Edge::Top, 14);
     window.set_exclusive_zone(0);
     window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
     window.set_namespace(Some("vibewatch"));
@@ -103,7 +103,12 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
                 if let Some(content) = win.content() {
                     let (_, natural) = content.preferred_size();
                     let h = natural.height().max(1);
-                    win.set_size_request(372, h);
+                    // set_default_size is the knob that actually shrinks a GTK
+                    // window below a previous allocation; set_size_request only
+                    // pins the minimum, which otherwise keeps the surface wide
+                    // after a transient wide row (e.g. a 3-button approval bar).
+                    win.set_size_request(360, h);
+                    win.set_default_size(360, h);
                 }
             });
         }

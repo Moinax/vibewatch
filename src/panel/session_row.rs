@@ -145,20 +145,33 @@ pub(crate) fn button_css_class(choice: &crate::session::ApprovalChoice) -> &'sta
     }
 }
 
-/// Build a horizontal box containing one button per ApprovalChoice.
+/// Build a vertical box containing one full-width button per ApprovalChoice.
+/// Buttons stack so the card never demands more horizontal space than the
+/// panel width, regardless of how long a suggestion label is.
 /// Click handler sends `ApprovalDecision { request_id, choice_index }`.
 fn build_choice_bar(
     request_id: String,
     choices: &[crate::session::ApprovalChoice],
 ) -> gtk::Box {
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let bar = gtk::Box::new(gtk::Orientation::Vertical, 4);
     bar.add_css_class("approval-bar");
-    bar.set_halign(gtk::Align::Start);
+    bar.set_halign(gtk::Align::Fill);
+    bar.set_hexpand(true);
     bar.set_margin_top(4);
 
     for (idx, choice) in choices.iter().enumerate() {
-        let button = gtk::Button::with_label(button_label(choice));
+        let label = gtk::Label::new(Some(button_label(choice)));
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_max_width_chars(1);
+        label.set_hexpand(true);
+        label.set_xalign(0.5);
+
+        let button = gtk::Button::new();
+        button.set_child(Some(&label));
         button.add_css_class(button_css_class(choice));
+        button.set_hexpand(true);
+        button.set_halign(gtk::Align::Fill);
+
         let rid = request_id.clone();
         button.connect_clicked(move |_| {
             let rid = rid.clone();

@@ -23,7 +23,6 @@ window.csd,
     border: 1px solid alpha(@cat_border, 0.25);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
     padding: 4px 0;
-    margin: 6px;
 }
 
 .scroll-container {
