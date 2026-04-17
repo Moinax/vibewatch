@@ -91,6 +91,51 @@ pub struct ApprovalChoice {
     pub suggestion: Option<PermissionSuggestion>,
 }
 
+impl ApprovalChoice {
+    /// Build the ordered list of buttons for a permission dialog.
+    /// Always prepends "Yes" / appends "No"; each suggestion becomes a
+    /// middle button with a human-readable label.
+    pub fn build_from(tool_name: &str, suggestions: &[PermissionSuggestion]) -> Vec<ApprovalChoice> {
+        let mut out = Vec::with_capacity(2 + suggestions.len());
+        out.push(ApprovalChoice {
+            label: "Yes".to_string(),
+            behavior: "allow".to_string(),
+            suggestion: None,
+        });
+        for sug in suggestions {
+            let rules_label = sug
+                .rules
+                .iter()
+                .map(|r| {
+                    // Rule contents often come as "//path/**" (Claude convention);
+                    // normalize to a single leading slash so the label reads naturally.
+                    let trimmed = r.rule_content.trim_start_matches('/');
+                    format!("/{}", trimmed)
+                })
+                .collect::<Vec<_>>()
+                .join(" + ");
+            let label = format!(
+                "{} {} for {} ({})",
+                if sug.behavior == "allow" { "Yes, allow" } else { "No, deny" },
+                tool_name,
+                rules_label,
+                sug.destination,
+            );
+            out.push(ApprovalChoice {
+                label,
+                behavior: sug.behavior.clone(),
+                suggestion: Some(sug.clone()),
+            });
+        }
+        out.push(ApprovalChoice {
+            label: "No".to_string(),
+            behavior: "deny".to_string(),
+            suggestion: None,
+        });
+        out
+    }
+}
+
 /// A pending tool-approval request from the agent, awaiting the user's
 /// widget click. Serializable so it appears in `vibewatch status` output;
 /// the held socket stream lives in `ApprovalRegistry`, not here.
@@ -640,5 +685,55 @@ mod tests {
         let json = serde_json::to_string(&c).unwrap();
         assert!(!json.contains("suggestion"), "got {json}");
         assert!(json.contains(r#""label":"Yes""#));
+    }
+
+    #[test]
+    fn build_choices_always_has_yes_first_and_no_last() {
+        let choices = ApprovalChoice::build_from("Read", &[]);
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0].label, "Yes");
+        assert_eq!(choices[0].behavior, "allow");
+        assert!(choices[0].suggestion.is_none());
+        assert_eq!(choices[1].label, "No");
+        assert_eq!(choices[1].behavior, "deny");
+    }
+
+    #[test]
+    fn build_choices_expands_session_suggestion_with_human_label() {
+        let sug = PermissionSuggestion {
+            kind: "addRules".into(),
+            rules: vec![PermissionRule {
+                tool_name: "Read".into(),
+                rule_content: "//home/moinax/.claude/**".into(),
+            }],
+            behavior: "allow".into(),
+            destination: "session".into(),
+        };
+        let choices = ApprovalChoice::build_from("Read", std::slice::from_ref(&sug));
+        assert_eq!(choices.len(), 3);
+        assert_eq!(choices[0].label, "Yes");
+        assert!(choices[1].label.contains("Read"));
+        assert!(choices[1].label.contains("/home/moinax/.claude/**"));
+        assert!(choices[1].label.contains("session"));
+        assert_eq!(choices[1].behavior, "allow");
+        assert_eq!(choices[1].suggestion.as_ref().unwrap().destination, "session");
+        assert_eq!(choices[2].label, "No");
+    }
+
+    #[test]
+    fn build_choices_multiple_rules_joined_with_plus() {
+        let sug = PermissionSuggestion {
+            kind: "addRules".into(),
+            rules: vec![
+                PermissionRule { tool_name: "Read".into(), rule_content: "//a/**".into() },
+                PermissionRule { tool_name: "Read".into(), rule_content: "//b/**".into() },
+            ],
+            behavior: "allow".into(),
+            destination: "session".into(),
+        };
+        let choices = ApprovalChoice::build_from("Read", std::slice::from_ref(&sug));
+        assert!(choices[1].label.contains("/a/**"));
+        assert!(choices[1].label.contains("/b/**"));
+        assert!(choices[1].label.contains("+"));
     }
 }

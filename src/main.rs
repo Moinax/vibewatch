@@ -387,7 +387,7 @@ async fn handle_connection(
                 tool,
                 detail,
                 pid,
-                permission_suggestions: _,
+                permission_suggestions,
             } => {
                 eprintln!(
                     "vibewatch: recv PermissionRequest session={} request_id={:?} tool={:?} pid={:?}",
@@ -413,11 +413,15 @@ async fn handle_connection(
                     session.status = SessionStatus::WaitingApproval;
                     session.current_tool = Some(tool_name.clone());
                     session.tool_detail = detail.clone();
+                    let choices = crate::session::ApprovalChoice::build_from(
+                        &tool_name,
+                        &permission_suggestions,
+                    );
                     session.pending_approval = Some(crate::session::PendingApproval {
                         request_id: request_id.clone(),
                         tool: tool_name,
                         detail,
-                        choices: vec![],
+                        choices,
                     });
                     session.touch();
                     registry.register(session);
