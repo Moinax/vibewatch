@@ -142,7 +142,7 @@ fn build_approval_bar(request_id: String) -> gtk::Box {
     accept.connect_clicked(move |_| {
         let rid = rid_a.clone();
         std::thread::spawn(move || {
-            send_approval_decision(&rid, true);
+            send_approval_decision(&rid, 0);
         });
     });
     bar.append(&accept);
@@ -153,7 +153,7 @@ fn build_approval_bar(request_id: String) -> gtk::Box {
     deny.connect_clicked(move |_| {
         let rid = rid_d.clone();
         std::thread::spawn(move || {
-            send_approval_decision(&rid, false);
+            send_approval_decision(&rid, 1);
         });
     });
     bar.append(&deny);
@@ -254,7 +254,7 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
 
 /// Send an `ApprovalDecision` event to the running daemon on its IPC socket.
 /// Called from Accept/Deny button click handlers on a spawned OS thread.
-fn send_approval_decision(request_id: &str, approved: bool) {
+fn send_approval_decision(request_id: &str, choice_index: usize) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -276,7 +276,7 @@ fn send_approval_decision(request_id: &str, approved: bool) {
         };
         let event = crate::ipc::InboundEvent::ApprovalDecision {
             request_id,
-            approved,
+            choice_index,
         };
         if let Err(e) = crate::ipc::send_event(&config.socket_path(), &event).await {
             eprintln!("vibewatch: send_event ApprovalDecision failed: {e}");

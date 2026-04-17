@@ -104,6 +104,16 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
         .read_to_string(&mut stdin_buf)
         .context("failed to read stdin")?;
 
+    if event_type == "permission-request" {
+        // Dump full raw payload via the daemon-visible UnixStream path
+        // (stderr from a hook process is hard to capture). Write a tiny
+        // log file we can tail.
+        let _ = std::fs::write(
+            "/tmp/vibewatch-permission-request.json",
+            &stdin_buf,
+        );
+    }
+
     let event = match agent {
         "claude-code" => parse_claude_code(&stdin_buf, event_type)?,
         "codex" => parse_codex(&stdin_buf, event_type)?,
@@ -227,6 +237,7 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 tool: hook.tool_name,
                 detail: extract_tool_detail(&hook.tool_input),
                 pid: Some(pid),
+                permission_suggestions: vec![],
             })
         }
         "permission-denied" => Ok(InboundEvent::PermissionDenied {
@@ -453,6 +464,7 @@ mod tests {
                 tool,
                 detail,
                 pid,
+                ..
             } => {
                 assert_eq!(session_id, "abc123");
                 let rid = request_id.expect("request_id must be set by hook");
@@ -496,6 +508,7 @@ mod tests {
             tool: Some("Bash".into()),
             detail: Some("ls".into()),
             pid: Some(42),
+            permission_suggestions: vec![],
         };
         let decision = send_permission_request(&path, &event, std::time::Duration::from_secs(2))
             .await
@@ -516,6 +529,7 @@ mod tests {
             tool: Some("Bash".into()),
             detail: None,
             pid: None,
+            permission_suggestions: vec![],
         };
         let result = send_permission_request(&path, &event, std::time::Duration::from_millis(100)).await;
         assert!(result.is_err(), "missing daemon socket should produce an error");

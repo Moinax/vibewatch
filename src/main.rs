@@ -387,6 +387,7 @@ async fn handle_connection(
                 tool,
                 detail,
                 pid,
+                permission_suggestions: _,
             } => {
                 eprintln!(
                     "vibewatch: recv PermissionRequest session={} request_id={:?} tool={:?} pid={:?}",
@@ -445,10 +446,11 @@ async fn handle_connection(
                     registry.register(session);
                 }
             }
-            InboundEvent::ApprovalDecision { request_id, approved } => {
+            InboundEvent::ApprovalDecision { request_id, choice_index } => {
+                let approved = choice_index == 0; // temporary scaffold until Task 6
                 eprintln!(
-                    "vibewatch: recv ApprovalDecision request_id={} approved={}",
-                    request_id, approved
+                    "vibewatch: recv ApprovalDecision request_id={} choice_index={} approved={}",
+                    request_id, choice_index, approved
                 );
                 if let Some(mut entry) = approval_registry.take(&request_id).await {
                     eprintln!(

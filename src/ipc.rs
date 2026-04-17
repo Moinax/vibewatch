@@ -49,6 +49,8 @@ pub enum InboundEvent {
         detail: Option<String>,
         #[serde(default)]
         pid: Option<u32>,
+        #[serde(default)]
+        permission_suggestions: Vec<crate::session::PermissionSuggestion>,
     },
     PermissionDenied {
         session_id: String,
@@ -64,7 +66,7 @@ pub enum InboundEvent {
     TogglePanel,
     ApprovalDecision {
         request_id: String,
-        approved: bool,
+        choice_index: usize,
     },
 }
 
@@ -302,6 +304,7 @@ mod tests {
                 tool,
                 detail,
                 pid,
+                ..
             } => {
                 assert_eq!(session_id, "s1");
                 assert_eq!(request_id.as_deref(), Some("r42"));
@@ -335,13 +338,41 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_approval_decision() {
-        let json = r#"{"event":"approval_decision","request_id":"r42","approved":true}"#;
-        let event: InboundEvent = serde_json::from_str(json).unwrap();
-        match event {
-            InboundEvent::ApprovalDecision { request_id, approved } => {
-                assert_eq!(request_id, "r42");
-                assert!(approved);
+    fn test_parse_permission_request_with_suggestions() {
+        let json = r#"{"event":"permission_request","session_id":"s1","request_id":"r1","tool":"Read","detail":"/etc/hosts","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//etc/**"}],"behavior":"allow","destination":"session"}]}"#;
+        let e: InboundEvent = serde_json::from_str(json).unwrap();
+        match e {
+            InboundEvent::PermissionRequest { permission_suggestions, .. } => {
+                assert_eq!(permission_suggestions.len(), 1);
+                assert_eq!(permission_suggestions[0].kind, "addRules");
+                assert_eq!(permission_suggestions[0].destination, "session");
+                assert_eq!(permission_suggestions[0].rules[0].tool_name, "Read");
+                assert_eq!(permission_suggestions[0].rules[0].rule_content, "//etc/**");
+            }
+            _ => panic!("expected PermissionRequest"),
+        }
+    }
+
+    #[test]
+    fn test_parse_permission_request_without_suggestions_defaults_empty() {
+        let json = r#"{"event":"permission_request","session_id":"s1","tool":"Bash"}"#;
+        let e: InboundEvent = serde_json::from_str(json).unwrap();
+        match e {
+            InboundEvent::PermissionRequest { permission_suggestions, .. } => {
+                assert!(permission_suggestions.is_empty());
+            }
+            _ => panic!("expected PermissionRequest"),
+        }
+    }
+
+    #[test]
+    fn test_parse_approval_decision_with_choice_index() {
+        let json = r#"{"event":"approval_decision","request_id":"r1","choice_index":2}"#;
+        let e: InboundEvent = serde_json::from_str(json).unwrap();
+        match e {
+            InboundEvent::ApprovalDecision { request_id, choice_index } => {
+                assert_eq!(request_id, "r1");
+                assert_eq!(choice_index, 2);
             }
             _ => panic!("expected ApprovalDecision"),
         }
