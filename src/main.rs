@@ -416,6 +416,7 @@ async fn handle_connection(
                         request_id: request_id.clone(),
                         tool: tool_name,
                         detail,
+                        choices: vec![],
                     });
                     session.touch();
                     registry.register(session);

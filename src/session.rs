@@ -66,6 +66,31 @@ impl SessionStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionRule {
+    pub tool_name: String,
+    pub rule_content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PermissionSuggestion {
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub rules: Vec<PermissionRule>,
+    pub behavior: String,
+    pub destination: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalChoice {
+    pub label: String,
+    pub behavior: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<PermissionSuggestion>,
+}
+
 /// A pending tool-approval request from the agent, awaiting the user's
 /// widget click. Serializable so it appears in `vibewatch status` output;
 /// the held socket stream lives in `ApprovalRegistry`, not here.
@@ -75,6 +100,8 @@ pub struct PendingApproval {
     pub tool: String,
     #[serde(default)]
     pub detail: Option<String>,
+    #[serde(default)]
+    pub choices: Vec<ApprovalChoice>,
 }
 
 /// A single monitored agent session.
@@ -556,6 +583,7 @@ mod tests {
             request_id: "req-xyz".into(),
             tool: "Bash".into(),
             detail: Some("rm -rf /tmp/foo".into()),
+            choices: vec![],
         });
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains(r#""pending_approval":"#));
@@ -569,5 +597,48 @@ mod tests {
         let s = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("pending_approval"));
+    }
+
+    #[test]
+    fn pending_approval_has_choices_field_defaulting_empty() {
+        let p = PendingApproval {
+            request_id: "r1".into(),
+            tool: "Bash".into(),
+            detail: None,
+            choices: vec![],
+        };
+        assert!(p.choices.is_empty());
+    }
+
+    #[test]
+    fn permission_suggestion_serializes_with_type_rename() {
+        let s = PermissionSuggestion {
+            kind: "addRules".into(),
+            rules: vec![PermissionRule {
+                tool_name: "Read".into(),
+                rule_content: "//home/**".into(),
+            }],
+            behavior: "allow".into(),
+            destination: "session".into(),
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains(r#""type":"addRules""#), "got {json}");
+        assert!(json.contains(r#""behavior":"allow""#));
+        assert!(json.contains(r#""destination":"session""#));
+        assert!(json.contains(r#""toolName":"Read""#),
+            "PermissionRule must serialize with camelCase to match Claude payload; got {json}");
+        assert!(!json.contains("tool_name"));
+    }
+
+    #[test]
+    fn approval_choice_omits_suggestion_when_none() {
+        let c = ApprovalChoice {
+            label: "Yes".into(),
+            behavior: "allow".into(),
+            suggestion: None,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("suggestion"), "got {json}");
+        assert!(json.contains(r#""label":"Yes""#));
     }
 }

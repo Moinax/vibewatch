@@ -413,6 +413,7 @@ mod tests {
             request_id: "r1".into(),
             tool: "Bash".into(),
             detail: Some("ls".into()),
+            choices: vec![],
         });
         assert!(has_pending_approval(&s));
     }
