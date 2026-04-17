@@ -103,13 +103,24 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
 
     eprintln!("vibewatch: daemon ready (headless)");
 
+    let approval_registry = crate::approval::ApprovalRegistry::new();
+
     loop {
         match server.accept().await {
             Ok(stream) => {
                 let registry = registry.clone();
                 let sound_player = sound_player.clone();
+                let approval_registry = approval_registry.clone();
                 tokio::spawn(async move {
-                    handle_connection(stream, registry, sound_player, None::<Arc<dyn Fn() + Send + Sync>>).await;
+                    handle_connection(
+                        stream,
+                        registry,
+                        sound_player,
+                        None::<Arc<dyn Fn() + Send + Sync>>,
+                        None::<Arc<dyn Fn() + Send + Sync>>,
+                        approval_registry,
+                    )
+                    .await;
                 });
             }
             Err(e) => eprintln!("vibewatch: accept error: {}", e),
@@ -140,6 +151,17 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
             glib::MainContext::default().invoke(move || {
                 if let Some(win) = win_weak.upgrade() {
                     win.set_visible(!win.is_visible());
+                }
+            });
+        });
+
+        let show_weak = glib::SendWeakRef::from(window.downgrade());
+        let show_fn: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let show_weak = show_weak.clone();
+            glib::MainContext::default().invoke(move || {
+                if let Some(win) = show_weak.upgrade() {
+                    win.set_visible(true);
+                    win.present();
                 }
             });
         });
@@ -180,14 +202,26 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
 
                 eprintln!("vibewatch: daemon ready");
 
+                let approval_registry = crate::approval::ApprovalRegistry::new();
+
                 loop {
                     match server.accept().await {
                         Ok(stream) => {
                             let registry = registry.clone();
                             let sound_player = sound_player.clone();
                             let toggle_fn = toggle_fn.clone();
+                            let show_fn = show_fn.clone();
+                            let approval_registry = approval_registry.clone();
                             tokio::spawn(async move {
-                                handle_connection(stream, registry, sound_player, Some(toggle_fn)).await;
+                                handle_connection(
+                                    stream,
+                                    registry,
+                                    sound_player,
+                                    Some(toggle_fn),
+                                    Some(show_fn),
+                                    approval_registry,
+                                )
+                                .await;
                             });
                         }
                         Err(e) => eprintln!("vibewatch: accept error: {}", e),
@@ -211,6 +245,8 @@ async fn handle_connection(
     registry: SessionRegistry,
     sound_player: Arc<SoundPlayer>,
     toggle_sender: Option<Arc<dyn Fn() + Send + Sync>>,
+    show_sender: Option<Arc<dyn Fn() + Send + Sync>>,
+    approval_registry: crate::approval::ApprovalRegistry,
 ) {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
