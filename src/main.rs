@@ -323,6 +323,26 @@ async fn handle_connection(
                     session.touch();
                     registry.register(session);
                 }
+                // Claude Code flushes the final assistant text block to its
+                // JSONL transcript slightly after the Stop hook fires. Re-read
+                // once after a short delay so the panel picks up that last
+                // message instead of the next-to-last one.
+                let registry = registry.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                    if let Some(mut session) = registry.get(&session_id) {
+                        let agent = session.agent;
+                        if let Some(text) = transcript::read_last_assistant_line(
+                            agent,
+                            &session_id,
+                            &mut session.transcript_path,
+                        ) {
+                            session.last_agent_text = Some(text);
+                            session.last_agent_text_at = now_epoch();
+                            registry.register(session);
+                        }
+                    }
+                });
             }
             InboundEvent::GetStatus => {
                 let sessions = registry.all();
