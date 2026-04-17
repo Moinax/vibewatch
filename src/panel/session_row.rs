@@ -81,6 +81,11 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     action_label.set_max_width_chars(1);
     content.append(&action_label);
 
+    if let Some(ref pending) = session.pending_approval {
+        let bar = build_approval_bar(pending.request_id.clone());
+        content.append(&bar);
+    }
+
     card.append(&content);
 
     let pid = session.pid;
@@ -116,6 +121,44 @@ fn format_elapsed(session: &Session) -> String {
     } else {
         "\u{2014}".to_string()
     }
+}
+
+/// Test hook: does this session currently expect a widget approval click?
+pub(crate) fn has_pending_approval(session: &Session) -> bool {
+    session.pending_approval.is_some()
+}
+
+/// Build a horizontal box containing Accept + Deny buttons, wired to send
+/// `ApprovalDecision` over the IPC socket when clicked.
+fn build_approval_bar(request_id: String) -> gtk::Box {
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    bar.add_css_class("approval-bar");
+    bar.set_halign(gtk::Align::Start);
+    bar.set_margin_top(4);
+
+    let accept = gtk::Button::with_label("Accept");
+    accept.add_css_class("approval-accept");
+    let rid_a = request_id.clone();
+    accept.connect_clicked(move |_| {
+        let rid = rid_a.clone();
+        std::thread::spawn(move || {
+            send_approval_decision(&rid, true);
+        });
+    });
+    bar.append(&accept);
+
+    let deny = gtk::Button::with_label("Deny");
+    deny.add_css_class("approval-deny");
+    let rid_d = request_id;
+    deny.connect_clicked(move |_| {
+        let rid = rid_d.clone();
+        std::thread::spawn(move || {
+            send_approval_decision(&rid, false);
+        });
+    });
+    bar.append(&deny);
+
+    bar
 }
 
 /// Maximum characters of prompt/agent text to render before ellipsizing.
@@ -209,9 +252,14 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
     }
 }
 
+/// Stub — implemented in Task 10.
+fn send_approval_decision(_request_id: &str, _approved: bool) {
+    eprintln!("send_approval_decision: stub (Task 10 wires this up)");
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{action_line, describe};
+    use super::{action_line, describe, has_pending_approval};
     use crate::session::{AgentKind, Session, SessionStatus};
 
     fn mk(agent: AgentKind) -> Session {
@@ -329,5 +377,22 @@ mod tests {
         s.current_tool = Some("Edit".into());
         s.tool_detail = Some("src/main.rs".into());
         assert_eq!(action_line(&s), "Editing src/main.rs");
+    }
+
+    #[test]
+    fn has_pending_approval_returns_true_when_set() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.pending_approval = Some(crate::session::PendingApproval {
+            request_id: "r1".into(),
+            tool: "Bash".into(),
+            detail: Some("ls".into()),
+        });
+        assert!(has_pending_approval(&s));
+    }
+
+    #[test]
+    fn has_pending_approval_returns_false_when_none() {
+        let s = mk(AgentKind::ClaudeCode);
+        assert!(!has_pending_approval(&s));
     }
 }
