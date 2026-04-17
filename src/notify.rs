@@ -5,6 +5,67 @@ use std::io::Read;
 use crate::config::Config;
 use crate::ipc::{send_event, InboundEvent};
 
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
+
+/// Outcome of a blocking permission-request round-trip with the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionDecision {
+    Allow,
+    Deny,
+    Ask,
+}
+
+impl PermissionDecision {
+    fn as_claude_str(self) -> &'static str {
+        match self {
+            PermissionDecision::Allow => "allow",
+            PermissionDecision::Deny => "deny",
+            PermissionDecision::Ask => "ask",
+        }
+    }
+}
+
+/// Connect to the daemon, send a `PermissionRequest` event, keep the stream
+/// open and block reading one JSON decision line. `timeout` bounds the whole
+/// exchange. Returns the parsed decision. Connection failure is returned as
+/// `Err` so the caller can translate to `Ask`.
+pub async fn send_permission_request(
+    socket_path: &std::path::Path,
+    event: &InboundEvent,
+    timeout: std::time::Duration,
+) -> anyhow::Result<PermissionDecision> {
+    use anyhow::Context;
+    let mut stream = UnixStream::connect(socket_path)
+        .await
+        .context("connect to vibewatch daemon")?;
+
+    let mut json = serde_json::to_string(event)?;
+    json.push('\n');
+    stream.write_all(json.as_bytes()).await?;
+    stream.flush().await?;
+
+    let (read_half, _write_half) = stream.into_split();
+    let mut reader = tokio::io::BufReader::new(read_half);
+    let mut line = String::new();
+
+    let read_fut = reader.read_line(&mut line);
+    match tokio::time::timeout(timeout, read_fut).await {
+        Ok(Ok(n)) if n > 0 => {
+            let v: serde_json::Value = serde_json::from_str(line.trim())?;
+            let approved = v.get("approved").and_then(|x| x.as_bool()).unwrap_or(false);
+            Ok(if approved {
+                PermissionDecision::Allow
+            } else {
+                PermissionDecision::Deny
+            })
+        }
+        Ok(Ok(_)) => Ok(PermissionDecision::Ask), // EOF — treat as fallback
+        Ok(Err(e)) => Err(anyhow::anyhow!("read error: {e}")),
+        Err(_) => Ok(PermissionDecision::Ask),    // timeout
+    }
+}
+
 /// Claude Code hook JSON envelope (received on stdin)
 #[derive(Debug, Deserialize)]
 pub struct ClaudeCodeHook {
@@ -51,8 +112,33 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
 
     let config = Config::load()?;
     let socket_path = config.socket_path();
-    send_event(&socket_path, &event).await?;
 
+    if agent == "claude-code" && event_type == "permission-request" {
+        let decision = match send_permission_request(
+            &socket_path,
+            &event,
+            std::time::Duration::from_secs(580),
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("vibewatch: permission-request fallback ask ({e})");
+                PermissionDecision::Ask
+            }
+        };
+        let out = serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "permissionDecision": decision.as_claude_str(),
+                "permissionDecisionReason": "via vibewatch widget",
+            }
+        });
+        println!("{}", serde_json::to_string(&out)?);
+        return Ok(());
+    }
+
+    send_event(&socket_path, &event).await?;
     Ok(())
 }
 
@@ -369,5 +455,61 @@ mod tests {
             }
             _ => panic!("expected PermissionRequest"),
         }
+    }
+
+    #[tokio::test]
+    async fn send_permission_request_reads_decision_line() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        use tokio::net::{UnixListener, UnixStream};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("v.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+
+        let server_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.split();
+            let mut reader = tokio::io::BufReader::new(read_half);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            assert!(line.contains("\"event\":\"permission_request\""));
+            write_half
+                .write_all(b"{\"approved\":true}\n")
+                .await
+                .unwrap();
+            write_half.flush().await.unwrap();
+            let mut discard = String::new();
+            let _ = reader.read_line(&mut discard).await;
+        });
+
+        let event = InboundEvent::PermissionRequest {
+            session_id: "s1".into(),
+            request_id: Some("r1".into()),
+            tool: Some("Bash".into()),
+            detail: Some("ls".into()),
+            pid: Some(42),
+        };
+        let decision = send_permission_request(&path, &event, std::time::Duration::from_secs(2))
+            .await
+            .expect("round-trip succeeds");
+        assert_eq!(decision, PermissionDecision::Allow);
+
+        let _ = server_task.await;
+    }
+
+    #[tokio::test]
+    async fn send_permission_request_errors_when_daemon_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("v.sock");
+        // Don't bind a listener — connect will fail, function returns Err.
+        let event = InboundEvent::PermissionRequest {
+            session_id: "s1".into(),
+            request_id: Some("r1".into()),
+            tool: Some("Bash".into()),
+            detail: None,
+            pid: None,
+        };
+        let result = send_permission_request(&path, &event, std::time::Duration::from_millis(100)).await;
+        assert!(result.is_err(), "missing daemon socket should produce an error");
     }
 }
