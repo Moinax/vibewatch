@@ -3,6 +3,7 @@ pub mod session;
 pub mod transcript;
 pub mod ipc;
 pub mod notify;
+pub mod approval;
 pub mod scanner;
 pub mod waybar;
 pub mod sound;

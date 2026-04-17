@@ -2,6 +2,7 @@ mod compositor;
 mod config;
 mod ipc;
 mod notify;
+mod approval;
 mod scanner;
 mod session;
 mod transcript;
