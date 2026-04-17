@@ -110,16 +110,6 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
         .read_to_string(&mut stdin_buf)
         .context("failed to read stdin")?;
 
-    if event_type == "permission-request" {
-        // Dump full raw payload via the daemon-visible UnixStream path
-        // (stderr from a hook process is hard to capture). Write a tiny
-        // log file we can tail.
-        let _ = std::fs::write(
-            "/tmp/vibewatch-permission-request.json",
-            &stdin_buf,
-        );
-    }
-
     let event = match agent {
         "claude-code" => parse_claude_code(&stdin_buf, event_type)?,
         "codex" => parse_codex(&stdin_buf, event_type)?,
