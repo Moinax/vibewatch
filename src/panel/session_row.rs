@@ -35,9 +35,9 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     let name_label = gtk::Label::new(Some(&session.display_name()));
     name_label.add_css_class("session-name");
     name_label.set_hexpand(true);
-    name_label.set_halign(gtk::Align::Start);
+    name_label.set_halign(gtk::Align::Fill);
+    name_label.set_xalign(0.0);
     name_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    name_label.set_max_width_chars(22);
     header.append(&name_label);
 
     let agent_badge = gtk::Label::new(Some(session.agent.short_name()));
