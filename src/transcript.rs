@@ -22,7 +22,10 @@ pub fn read_last_assistant_line(
             let home = dirs::home_dir()?;
             read_last_assistant_line_in(agent, &home.join(".claude"), session_id, cached_path)
         }
-        AgentKind::Codex => None, // Task 5/6
+        AgentKind::Codex => {
+            let home = dirs::home_dir()?;
+            read_last_assistant_line_in(agent, &home.join(".codex"), session_id, cached_path)
+        }
     }
 }
 
@@ -104,6 +107,54 @@ fn parse_claude(content: &str) -> Option<String> {
     None
 }
 
+/// Parse a Codex JSONL file and return the last non-empty assistant text line.
+fn parse_codex(content: &str) -> Option<String> {
+    for line in content.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if value.get("type").and_then(|t| t.as_str()) != Some("response_item") {
+            continue;
+        }
+        let payload = match value.get("payload") {
+            Some(p) => p,
+            None => continue,
+        };
+        if payload.get("type").and_then(|t| t.as_str()) != Some("message")
+            || payload.get("role").and_then(|r| r.as_str()) != Some("assistant")
+        {
+            continue;
+        }
+        let content_arr = match payload.get("content").and_then(|c| c.as_array()) {
+            Some(a) => a,
+            None => continue,
+        };
+        let mut joined = String::new();
+        for block in content_arr {
+            if block.get("type").and_then(|t| t.as_str()) == Some("output_text") {
+                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                    if !joined.is_empty() {
+                        joined.push('\n');
+                    }
+                    joined.push_str(text);
+                }
+            }
+        }
+        if joined.is_empty() {
+            continue;
+        }
+        if let Some(last) = last_non_empty_line(&joined) {
+            return Some(last);
+        }
+    }
+    None
+}
+
 /// Testable variant of `read_last_assistant_line` that accepts an explicit
 /// `.claude`-equivalent root directory.
 pub(crate) fn read_last_assistant_line_in(
@@ -126,7 +177,18 @@ pub(crate) fn read_last_assistant_line_in(
             let content = std::fs::read_to_string(&path).ok()?;
             parse_claude(&content)
         }
-        AgentKind::Codex => None, // Task 5/6
+        AgentKind::Codex => {
+            let path = match cached_path {
+                Some(p) if p.exists() => p.clone(),
+                _ => {
+                    let resolved = resolve_codex_path_in(root, session_id)?;
+                    *cached_path = Some(resolved.clone());
+                    resolved
+                }
+            };
+            let content = std::fs::read_to_string(&path).ok()?;
+            parse_codex(&content)
+        }
     }
 }
 
@@ -300,5 +362,38 @@ mod tests {
     fn codex_path_none_for_unknown_session() {
         let got = resolve_codex_path_in(&codex_root(), "nope");
         assert!(got.is_none());
+    }
+
+    #[test]
+    fn codex_ends_with_text_returns_last_non_empty_line() {
+        let got = read_last_assistant_line_in(
+            AgentKind::Codex,
+            &codex_root(),
+            "codex0002-0000-0000-0000-000000000002",
+            &mut None,
+        );
+        assert_eq!(got.as_deref(), Some("All set."));
+    }
+
+    #[test]
+    fn codex_empty_returns_none() {
+        let got = read_last_assistant_line_in(
+            AgentKind::Codex,
+            &codex_root(),
+            "codex0003-0000-0000-0000-000000000003",
+            &mut None,
+        );
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn codex_malformed_lines_are_skipped() {
+        let got = read_last_assistant_line_in(
+            AgentKind::Codex,
+            &codex_root(),
+            "codex0004-0000-0000-0000-000000000004",
+            &mut None,
+        );
+        assert_eq!(got.as_deref(), Some("Survived malformed lines."));
     }
 }

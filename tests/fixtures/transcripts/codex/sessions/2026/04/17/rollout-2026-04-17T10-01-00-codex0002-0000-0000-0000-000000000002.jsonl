@@ -1,0 +1,3 @@
+{"timestamp":"2026-04-17T10:01:01Z","type":"session_meta","payload":{"id":"codex0002-0000-0000-0000-000000000002"}}
+{"timestamp":"2026-04-17T10:01:02Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}
+{"timestamp":"2026-04-17T10:01:03Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Working on it.\nAll set."}],"phase":"final_answer"}}
