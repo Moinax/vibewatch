@@ -4,6 +4,7 @@ mod ipc;
 mod notify;
 mod scanner;
 mod session;
+mod transcript;
 mod sound;
 mod waybar;
 

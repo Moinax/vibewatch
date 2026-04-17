@@ -1,5 +1,6 @@
 pub mod config;
 pub mod session;
+pub mod transcript;
 pub mod ipc;
 pub mod notify;
 pub mod scanner;
