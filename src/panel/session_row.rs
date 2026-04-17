@@ -252,9 +252,36 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
     }
 }
 
-/// Stub — implemented in Task 10.
-fn send_approval_decision(_request_id: &str, _approved: bool) {
-    eprintln!("send_approval_decision: stub (Task 10 wires this up)");
+/// Send an `ApprovalDecision` event to the running daemon on its IPC socket.
+/// Called from Accept/Deny button click handlers on a spawned OS thread.
+fn send_approval_decision(request_id: &str, approved: bool) {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("vibewatch: failed to build tokio rt for approval: {e}");
+            return;
+        }
+    };
+    let request_id = request_id.to_string();
+    rt.block_on(async move {
+        let config = match crate::config::Config::load() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("vibewatch: config load failed: {e}");
+                return;
+            }
+        };
+        let event = crate::ipc::InboundEvent::ApprovalDecision {
+            request_id,
+            approved,
+        };
+        if let Err(e) = crate::ipc::send_event(&config.socket_path(), &event).await {
+            eprintln!("vibewatch: send_event ApprovalDecision failed: {e}");
+        }
+    });
 }
 
 #[cfg(test)]
