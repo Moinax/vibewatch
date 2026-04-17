@@ -258,6 +258,15 @@ async fn handle_connection(
                     session.last_tool = session.current_tool.take();
                     session.last_tool_detail = session.tool_detail.take();
                     session.status = SessionStatus::Thinking;
+                    let agent = session.agent;
+                    if let Some(text) = transcript::read_last_assistant_line(
+                        agent,
+                        &session_id,
+                        &mut session.transcript_path,
+                    ) {
+                        session.last_agent_text = Some(text);
+                        session.last_agent_text_at = now_epoch();
+                    }
                     session.touch();
                     registry.register(session);
                 }
@@ -269,6 +278,7 @@ async fn handle_connection(
                 if let Some(mut session) = get_session(&registry, &session_id) {
                     session.status = SessionStatus::Thinking;
                     session.last_prompt = prompt;
+                    session.last_prompt_at = now_epoch();
                     session.current_tool = None;
                     session.tool_detail = None;
                     if let Some(name) = session::read_transcript_name(&session_id) {
@@ -301,6 +311,15 @@ async fn handle_connection(
                     session.status = SessionStatus::Idle;
                     session.current_tool = None;
                     session.tool_detail = None;
+                    let agent = session.agent;
+                    if let Some(text) = transcript::read_last_assistant_line(
+                        agent,
+                        &session_id,
+                        &mut session.transcript_path,
+                    ) {
+                        session.last_agent_text = Some(text);
+                        session.last_agent_text_at = now_epoch();
+                    }
                     session.touch();
                     registry.register(session);
                 }
@@ -326,6 +345,13 @@ async fn handle_connection(
 /// Get an existing session by ID.
 fn get_session(registry: &SessionRegistry, session_id: &str) -> Option<Session> {
     registry.get(session_id)
+}
+
+fn now_epoch() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 fn parse_agent_kind(s: &str) -> AgentKind {
