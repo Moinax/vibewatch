@@ -83,6 +83,8 @@ pub struct ClaudeCodeHook {
     pub prompt: Option<String>,
     #[serde(default)]
     pub transcript_path: Option<String>,
+    #[serde(default)]
+    pub permission_suggestions: Vec<crate::session::PermissionSuggestion>,
 }
 
 /// Codex hook JSON envelope
@@ -237,7 +239,7 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 tool: hook.tool_name,
                 detail: extract_tool_detail(&hook.tool_input),
                 pid: Some(pid),
-                permission_suggestions: vec![],
+                permission_suggestions: hook.permission_suggestions,
             })
         }
         "permission-denied" => Ok(InboundEvent::PermissionDenied {
@@ -472,6 +474,24 @@ mod tests {
                 assert_eq!(tool.as_deref(), Some("Bash"));
                 assert_eq!(detail.as_deref(), Some("rm -rf /tmp"));
                 assert!(pid.is_some());
+            }
+            _ => panic!("expected PermissionRequest"),
+        }
+    }
+
+    #[test]
+    fn permission_request_parses_permission_suggestions() {
+        let json = r#"{"session_id":"s1","hook_event_name":"permission-request","tool_name":"Read","tool_input":{"file_path":"/etc/hosts"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//etc/**"}],"behavior":"allow","destination":"session"}]}"#;
+        let event = parse_claude_code(json, "permission-request").unwrap();
+        match event {
+            InboundEvent::PermissionRequest { permission_suggestions, .. } => {
+                assert_eq!(permission_suggestions.len(), 1);
+                assert_eq!(permission_suggestions[0].kind, "addRules");
+                assert_eq!(permission_suggestions[0].behavior, "allow");
+                assert_eq!(permission_suggestions[0].destination, "session");
+                assert_eq!(permission_suggestions[0].rules.len(), 1);
+                assert_eq!(permission_suggestions[0].rules[0].tool_name, "Read");
+                assert_eq!(permission_suggestions[0].rules[0].rule_content, "//etc/**");
             }
             _ => panic!("expected PermissionRequest"),
         }
