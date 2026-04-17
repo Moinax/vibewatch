@@ -31,7 +31,7 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
     gtk::style_context_add_provider_for_display(
         &gtk::gdk::Display::default().unwrap(),
         &css_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        gtk::STYLE_PROVIDER_PRIORITY_USER,
     );
 
     // Main layout box
