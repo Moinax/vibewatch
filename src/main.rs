@@ -397,8 +397,17 @@ async fn handle_connection(
                     } else {
                         b"{\"approved\":false}\n".as_slice()
                     };
-                    let _ = entry.write_half.write_all(line).await;
-                    let _ = entry.write_half.flush().await;
+                    if let Err(e) = entry.write_half.write_all(line).await {
+                        eprintln!(
+                            "vibewatch: failed to write approval decision for {}: {}",
+                            request_id, e
+                        );
+                    } else if let Err(e) = entry.write_half.flush().await {
+                        eprintln!(
+                            "vibewatch: failed to flush approval decision for {}: {}",
+                            request_id, e
+                        );
+                    }
                     // Clear the session's pending approval.
                     if let Some(mut s) = registry.get(&entry.session_id) {
                         s.pending_approval = None;
