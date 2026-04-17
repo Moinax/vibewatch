@@ -58,21 +58,22 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     content.append(&header);
 
-    let desc_label = gtk::Label::new(Some(&describe(session)));
-    desc_label.add_css_class("status-desc");
-    desc_label.set_halign(gtk::Align::Start);
-    desc_label.set_hexpand(true);
-    desc_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    content.append(&desc_label);
-
-    if let Some(action_text) = action_line(session) {
-        let action_label = gtk::Label::new(Some(&action_text));
-        action_label.add_css_class("action-line");
-        action_label.add_css_class(session.status.css_class());
-        action_label.set_halign(gtk::Align::Start);
-        action_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        content.append(&action_label);
+    if let Some(desc_text) = describe(session) {
+        let desc_label = gtk::Label::new(Some(&desc_text));
+        desc_label.add_css_class("status-desc");
+        desc_label.set_halign(gtk::Align::Start);
+        desc_label.set_hexpand(true);
+        desc_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        content.append(&desc_label);
     }
+
+    let action_text = action_line(session);
+    let action_label = gtk::Label::new(Some(&action_text));
+    action_label.add_css_class("action-line");
+    action_label.add_css_class(session.status.css_class());
+    action_label.set_halign(gtk::Align::Start);
+    action_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    content.append(&action_label);
 
     card.append(&content);
 
@@ -115,22 +116,20 @@ fn format_elapsed(session: &Session) -> String {
 const DESCRIBE_MAX_CHARS: usize = 60;
 
 /// Description-line content for a session: latest of user prompt / agent text,
-/// with a speaker prefix. Falls back to a status-based string when neither
-/// text is available.
-pub(crate) fn describe(session: &Session) -> String {
+/// with a speaker prefix. Returns `None` when neither has been captured yet —
+/// the action line carries the session status in that case.
+pub(crate) fn describe(session: &Session) -> Option<String> {
     let user = session.last_prompt.as_deref().zip(session.last_prompt_at);
     let agent = session.last_agent_text.as_deref().zip(session.last_agent_text_at);
     match (user, agent) {
-        (Some((p, _)), None) => render_user(p),
-        (None, Some((a, _))) => render_agent(session, a),
-        (Some((p, pu)), Some((a, au))) => {
-            if pu > au {
-                render_user(p)
-            } else {
-                render_agent(session, a)
-            }
-        }
-        (None, None) => fallback_for_status(session.status),
+        (Some((p, _)), None) => Some(render_user(p)),
+        (None, Some((a, _))) => Some(render_agent(session, a)),
+        (Some((p, pu)), Some((a, au))) => Some(if pu > au {
+            render_user(p)
+        } else {
+            render_agent(session, a)
+        }),
+        (None, None) => None,
     }
 }
 
@@ -156,30 +155,22 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn fallback_for_status(status: SessionStatus) -> String {
-    match status {
-        SessionStatus::Idle | SessionStatus::Running => "Idle".into(),
-        SessionStatus::Stopped => "Stopped".into(),
-        SessionStatus::Thinking => "Thinking...".into(),
-        SessionStatus::Executing => "Working...".into(),
-        SessionStatus::WaitingApproval => "Awaiting approval".into(),
-    }
-}
-
-fn action_line(session: &Session) -> Option<String> {
+/// Short action-line summary of what the agent is doing right now.
+/// Rendered on every row, regardless of whether any text has been captured.
+fn action_line(session: &Session) -> String {
     if session.status == SessionStatus::WaitingApproval {
         let tool = session.current_tool.as_deref().unwrap_or("tool");
-        return Some(format!("Needs approval: {}", tool));
+        return format!("Needs approval: {}", tool);
     }
     if let (Some(tool), Some(detail)) = (&session.current_tool, &session.tool_detail) {
-        return Some(describe_tool(tool, detail, true));
+        return describe_tool(tool, detail, true);
     }
-    if session.status == SessionStatus::Thinking {
-        if let (Some(tool), Some(detail)) = (&session.last_tool, &session.last_tool_detail) {
-            return Some(describe_tool(tool, detail, false));
-        }
+    match session.status {
+        SessionStatus::Thinking | SessionStatus::Executing => "Thinking".into(),
+        SessionStatus::Stopped => "Stopped".into(),
+        SessionStatus::Idle | SessionStatus::Running => "Idle".into(),
+        SessionStatus::WaitingApproval => "Awaiting approval".into(),
     }
-    None
 }
 
 fn focus_session(window_id: Option<&str>, pid: u32) {
@@ -214,7 +205,7 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::describe;
+    use super::{action_line, describe};
     use crate::session::{AgentKind, Session, SessionStatus};
 
     fn mk(agent: AgentKind) -> Session {
@@ -226,7 +217,7 @@ mod tests {
         let mut s = mk(AgentKind::ClaudeCode);
         s.last_prompt = Some("fix the deploy".into());
         s.last_prompt_at = Some(100);
-        assert_eq!(describe(&s), "You: \"fix the deploy\"");
+        assert_eq!(describe(&s).as_deref(), Some("You: \"fix the deploy\""));
     }
 
     #[test]
@@ -234,7 +225,7 @@ mod tests {
         let mut s = mk(AgentKind::ClaudeCode);
         s.last_agent_text = Some("Tests pass.".into());
         s.last_agent_text_at = Some(100);
-        assert_eq!(describe(&s), "Claude: \"Tests pass.\"");
+        assert_eq!(describe(&s).as_deref(), Some("Claude: \"Tests pass.\""));
     }
 
     #[test]
@@ -242,7 +233,7 @@ mod tests {
         let mut s = mk(AgentKind::Codex);
         s.last_agent_text = Some("All good.".into());
         s.last_agent_text_at = Some(100);
-        assert_eq!(describe(&s), "Codex: \"All good.\"");
+        assert_eq!(describe(&s).as_deref(), Some("Codex: \"All good.\""));
     }
 
     #[test]
@@ -252,7 +243,7 @@ mod tests {
         s.last_prompt_at = Some(200);
         s.last_agent_text = Some("done".into());
         s.last_agent_text_at = Some(100);
-        assert_eq!(describe(&s), "You: \"please do X\"");
+        assert_eq!(describe(&s).as_deref(), Some("You: \"please do X\""));
     }
 
     #[test]
@@ -262,34 +253,20 @@ mod tests {
         s.last_prompt_at = Some(100);
         s.last_agent_text = Some("done".into());
         s.last_agent_text_at = Some(100);
-        assert_eq!(describe(&s), "Claude: \"done\"");
+        assert_eq!(describe(&s).as_deref(), Some("Claude: \"done\""));
     }
 
     #[test]
-    fn idle_fallback_when_nothing_captured() {
+    fn describe_returns_none_when_nothing_captured() {
         let s = mk(AgentKind::ClaudeCode);
-        assert_eq!(describe(&s), "Idle");
+        assert!(describe(&s).is_none());
     }
 
     #[test]
-    fn stopped_fallback() {
+    fn describe_returns_none_when_nothing_captured_even_if_stopped() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Stopped;
-        assert_eq!(describe(&s), "Stopped");
-    }
-
-    #[test]
-    fn executing_fallback_when_no_text() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.status = SessionStatus::Executing;
-        assert_eq!(describe(&s), "Working...");
-    }
-
-    #[test]
-    fn waiting_approval_fallback_when_no_text() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.status = SessionStatus::WaitingApproval;
-        assert_eq!(describe(&s), "Awaiting approval");
+        assert!(describe(&s).is_none());
     }
 
     #[test]
@@ -298,28 +275,53 @@ mod tests {
         let long: String = "x".repeat(200);
         s.last_prompt = Some(long.clone());
         s.last_prompt_at = Some(1);
-        let out = describe(&s);
+        let out = describe(&s).unwrap();
         assert!(out.starts_with("You: \""));
         assert!(out.ends_with("...\""));
         assert!(out.len() < long.len() + 20);
     }
 
     #[test]
+    fn action_line_idle_by_default() {
+        let s = mk(AgentKind::ClaudeCode);
+        assert_eq!(action_line(&s), "Idle");
+    }
+
+    #[test]
+    fn action_line_thinking_when_thinking() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Thinking;
+        assert_eq!(action_line(&s), "Thinking");
+    }
+
+    #[test]
+    fn action_line_thinking_when_executing_without_tool() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Executing;
+        assert_eq!(action_line(&s), "Thinking");
+    }
+
+    #[test]
+    fn action_line_stopped_when_stopped() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Stopped;
+        assert_eq!(action_line(&s), "Stopped");
+    }
+
+    #[test]
     fn action_line_shows_needs_approval_for_waiting() {
-        use super::action_line;
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::WaitingApproval;
         s.current_tool = Some("Bash".into());
-        assert_eq!(action_line(&s).as_deref(), Some("Needs approval: Bash"));
+        assert_eq!(action_line(&s), "Needs approval: Bash");
     }
 
     #[test]
     fn action_line_still_shows_live_tool_when_executing() {
-        use super::action_line;
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Executing;
         s.current_tool = Some("Edit".into());
         s.tool_detail = Some("src/main.rs".into());
-        assert_eq!(action_line(&s).as_deref(), Some("Editing src/main.rs"));
+        assert_eq!(action_line(&s), "Editing src/main.rs");
     }
 }
