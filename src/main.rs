@@ -388,6 +388,10 @@ async fn handle_connection(
                 detail,
                 pid,
             } => {
+                eprintln!(
+                    "vibewatch: recv PermissionRequest session={} request_id={:?} tool={:?} pid={:?}",
+                    session_id, request_id, tool, pid
+                );
                 let request_id = match request_id {
                     Some(r) => r,
                     None => {
@@ -441,18 +445,31 @@ async fn handle_connection(
                 }
             }
             InboundEvent::ApprovalDecision { request_id, approved } => {
+                eprintln!(
+                    "vibewatch: recv ApprovalDecision request_id={} approved={}",
+                    request_id, approved
+                );
                 if let Some(mut entry) = approval_registry.take(&request_id).await {
+                    eprintln!(
+                        "vibewatch: took ApprovalRegistry entry for request_id={} session_id={}",
+                        request_id, entry.session_id
+                    );
                     let line = if approved {
                         b"{\"approved\":true}\n".as_slice()
                     } else {
                         b"{\"approved\":false}\n".as_slice()
                     };
-                    if let Err(e) = entry.write_half.write_all(line).await {
-                        eprintln!(
+                    match entry.write_half.write_all(line).await {
+                        Ok(_) => eprintln!(
+                            "vibewatch: wrote decision line for request_id={}",
+                            request_id
+                        ),
+                        Err(e) => eprintln!(
                             "vibewatch: failed to write approval decision for {}: {}",
                             request_id, e
-                        );
-                    } else if let Err(e) = entry.write_half.flush().await {
+                        ),
+                    }
+                    if let Err(e) = entry.write_half.flush().await {
                         eprintln!(
                             "vibewatch: failed to flush approval decision for {}: {}",
                             request_id, e
@@ -467,6 +484,11 @@ async fn handle_connection(
                         s.touch();
                         registry.register(s);
                     }
+                } else {
+                    eprintln!(
+                        "vibewatch: NO entry in ApprovalRegistry for request_id={} (stale click or never registered)",
+                        request_id
+                    );
                 }
             }
             InboundEvent::Stop { session_id, pid } => {

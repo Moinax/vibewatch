@@ -114,6 +114,7 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
     let socket_path = config.socket_path();
 
     if agent == "claude-code" && event_type == "permission-request" {
+        eprintln!("vibewatch-hook: permission-request starting, waiting for daemon response");
         let decision = match send_permission_request(
             &socket_path,
             &event,
@@ -121,20 +122,27 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
         )
         .await
         {
-            Ok(d) => d,
+            Ok(d) => {
+                eprintln!("vibewatch-hook: got decision: {:?}", d);
+                d
+            }
             Err(e) => {
-                eprintln!("vibewatch: permission-request fallback ask ({e})");
+                eprintln!("vibewatch-hook: permission-request fallback ask ({e})");
                 PermissionDecision::Ask
             }
         };
         let out = serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": "PermissionRequest",
-                "permissionDecision": decision.as_claude_str(),
-                "permissionDecisionReason": "via vibewatch widget",
+                "decision": {
+                    "behavior": decision.as_claude_str(),
+                    "reason": "via vibewatch widget",
+                },
             }
         });
-        println!("{}", serde_json::to_string(&out)?);
+        let out_str = serde_json::to_string(&out)?;
+        eprintln!("vibewatch-hook: emitting stdout: {}", out_str);
+        println!("{}", out_str);
         return Ok(());
     }
 
