@@ -105,6 +105,31 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
 
     let approval_registry = crate::approval::ApprovalRegistry::new();
 
+    let reaper_registry = registry.clone();
+    let reaper_approval = approval_registry.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+        ticker.tick().await; // skip first immediate tick
+        loop {
+            ticker.tick().await;
+            let stale = reaper_approval
+                .reap_stale(std::time::Duration::from_secs(580))
+                .await;
+            for entry in stale {
+                eprintln!(
+                    "vibewatch: reaping stale approval for session {}",
+                    entry.session_id
+                );
+                if let Some(mut s) = reaper_registry.get(&entry.session_id) {
+                    s.pending_approval = None;
+                    s.status = SessionStatus::Thinking;
+                    reaper_registry.register(s);
+                }
+                // Dropping `entry` closes the write half so the hook read returns EOF.
+            }
+        }
+    });
+
     loop {
         match server.accept().await {
             Ok(stream) => {
@@ -203,6 +228,31 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                 eprintln!("vibewatch: daemon ready");
 
                 let approval_registry = crate::approval::ApprovalRegistry::new();
+
+                let reaper_registry = registry.clone();
+                let reaper_approval = approval_registry.clone();
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+                    ticker.tick().await; // skip first immediate tick
+                    loop {
+                        ticker.tick().await;
+                        let stale = reaper_approval
+                            .reap_stale(std::time::Duration::from_secs(580))
+                            .await;
+                        for entry in stale {
+                            eprintln!(
+                                "vibewatch: reaping stale approval for session {}",
+                                entry.session_id
+                            );
+                            if let Some(mut s) = reaper_registry.get(&entry.session_id) {
+                                s.pending_approval = None;
+                                s.status = SessionStatus::Thinking;
+                                reaper_registry.register(s);
+                            }
+                            // Dropping `entry` closes the write half so the hook read returns EOF.
+                        }
+                    }
+                });
 
                 loop {
                     match server.accept().await {
