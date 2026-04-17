@@ -199,57 +199,57 @@ window.csd,
     letter-spacing: 0.3px;
 }
 
-/* ── Approval bar (Accept / Deny) ─────────────────────────────── */
+/* ── Approval bar (Accept / Scope / Deny) ─────────────────────── */
+/* Matches the .pill-badge aesthetic: coloured text on a very subtle
+   same-hue translucent background, thin border. */
 
 .approval-bar {
     margin-top: 6px;
 }
 
 .approval-accept,
-.approval-deny {
+.approval-deny,
+.approval-scope {
     font-size: 11px;
     font-weight: 600;
-    padding: 3px 12px;
-    border-radius: 6px;
-    border: 1px solid transparent;
+    letter-spacing: 0.2px;
+    padding: 3px 10px;
+    border-radius: 5px;
+    border: 1px solid rgba(88, 91, 112, 0.30);
+    background-color: rgba(49, 50, 68, 0.50);
     min-height: 22px;
+    color: #cdd6f4;
 }
 
 .approval-accept {
-    color: #1e1e2e;
-    background-color: #a6e3a1;
-    border-color: rgba(166, 227, 161, 0.6);
+    color: #a6e3a1;
+    border-color: rgba(166, 227, 161, 0.25);
+    background-color: rgba(166, 227, 161, 0.08);
 }
 
 .approval-accept:hover {
-    background-color: #b8ecb3;
-    box-shadow: 0 0 6px rgba(166, 227, 161, 0.35);
-}
-
-.approval-deny {
-    color: #1e1e2e;
-    background-color: #f38ba8;
-    border-color: rgba(243, 139, 168, 0.6);
-}
-
-.approval-deny:hover {
-    background-color: #f7a3ba;
-    box-shadow: 0 0 6px rgba(243, 139, 168, 0.35);
+    background-color: rgba(166, 227, 161, 0.18);
+    border-color: rgba(166, 227, 161, 0.45);
 }
 
 .approval-scope {
-    color: #1e1e2e;
-    background-color: #94e2d5;
-    border-color: rgba(148, 226, 213, 0.6);
-    border-width: 1px;
-    border-style: solid;
-    border-radius: 6px;
-    padding: 3px 12px;
-    font-size: 11px;
-    font-weight: 600;
+    color: #b4befe;
+    border-color: rgba(180, 190, 254, 0.25);
+    background-color: rgba(180, 190, 254, 0.08);
 }
 
 .approval-scope:hover {
-    background-color: #a6ebe0;
-    box-shadow: 0 0 6px rgba(148, 226, 213, 0.35);
+    background-color: rgba(180, 190, 254, 0.18);
+    border-color: rgba(180, 190, 254, 0.45);
+}
+
+.approval-deny {
+    color: #f38ba8;
+    border-color: rgba(243, 139, 168, 0.25);
+    background-color: rgba(243, 139, 168, 0.08);
+}
+
+.approval-deny:hover {
+    background-color: rgba(243, 139, 168, 0.18);
+    border-color: rgba(243, 139, 168, 0.45);
 }
