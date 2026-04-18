@@ -134,6 +134,21 @@ impl ApprovalChoice {
         });
         out
     }
+
+    /// Build choices for AskUserQuestion: one button per option label, no
+    /// Yes/No wrapping. `behavior` is `"answer"` (a sentinel — the daemon
+    /// writes the label back and the hook plugs it into
+    /// `hookSpecificOutput.updatedInput.answers`).
+    pub fn from_labels(labels: &[String]) -> Vec<ApprovalChoice> {
+        labels
+            .iter()
+            .map(|label| ApprovalChoice {
+                label: label.clone(),
+                behavior: "answer".to_string(),
+                suggestion: None,
+            })
+            .collect()
+    }
 }
 
 /// A pending tool-approval request from the agent, awaiting the user's

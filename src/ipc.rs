@@ -57,6 +57,18 @@ pub enum InboundEvent {
         #[serde(default)]
         pid: Option<u32>,
     },
+    /// Claude Code's built-in AskUserQuestion tool, intercepted at PreToolUse
+    /// with a synthesized `updatedInput.answers`. The daemon blocks the hook
+    /// until the user clicks a widget button, then writes the chosen label
+    /// back on the stream.
+    AskUserQuestion {
+        session_id: String,
+        request_id: String,
+        #[serde(default)]
+        pid: Option<u32>,
+        question: String,
+        option_labels: Vec<String>,
+    },
     Stop {
         session_id: String,
         #[serde(default)]

@@ -390,8 +390,9 @@ async fn handle_connection(
                 permission_suggestions,
             } => {
                 eprintln!(
-                    "vibewatch: recv PermissionRequest session={} request_id={:?} tool={:?} pid={:?}",
-                    session_id, request_id, tool, pid
+                    "vibewatch: recv PermissionRequest session={} request_id={:?} tool={:?} pid={:?} suggestions={}",
+                    session_id, request_id, tool, pid,
+                    serde_json::to_string(&permission_suggestions).unwrap_or_default(),
                 );
                 let request_id = match request_id {
                     Some(r) => r,
@@ -440,6 +441,45 @@ async fn handle_connection(
                 approval_registry.insert(request_id, entry).await;
                 return;
             }
+            InboundEvent::AskUserQuestion {
+                session_id,
+                request_id,
+                pid,
+                question,
+                option_labels,
+            } => {
+                eprintln!(
+                    "vibewatch: recv AskUserQuestion session={} request_id={} pid={:?} labels={:?}",
+                    session_id, request_id, pid, option_labels
+                );
+                let tool_name = "AskUserQuestion".to_string();
+                if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
+                    session.status = SessionStatus::WaitingApproval;
+                    session.current_tool = Some(tool_name.clone());
+                    session.tool_detail = Some(question.clone());
+                    let choices = crate::session::ApprovalChoice::from_labels(&option_labels);
+                    session.pending_approval = Some(crate::session::PendingApproval {
+                        request_id: request_id.clone(),
+                        tool: tool_name,
+                        detail: Some(question),
+                        choices,
+                    });
+                    session.touch();
+                    registry.register(session);
+                }
+                sound_player.play(SoundEvent::ApprovalNeeded);
+                if let Some(ref show) = show_sender {
+                    show();
+                }
+
+                let entry = crate::approval::ApprovalEntry {
+                    write_half,
+                    session_id,
+                    created_at: std::time::Instant::now(),
+                };
+                approval_registry.insert(request_id, entry).await;
+                return;
+            }
             InboundEvent::PermissionDenied { session_id, pid } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     session.status = SessionStatus::Thinking;
@@ -465,17 +505,18 @@ async fn handle_connection(
                 let chosen = registry
                     .get(&entry.session_id)
                     .and_then(|s| s.pending_approval.as_ref().and_then(|p| p.choices.get(choice_index).cloned()));
-                let (behavior_str, suggestion) = match chosen {
-                    Some(c) => (c.behavior, c.suggestion),
+                let (label, behavior_str, suggestion) = match chosen {
+                    Some(c) => (c.label, c.behavior, c.suggestion),
                     None => {
                         eprintln!(
                             "vibewatch: no choice at index {} for request_id={}; denying",
                             choice_index, request_id
                         );
-                        ("deny".to_string(), None)
+                        ("".to_string(), "deny".to_string(), None)
                     }
                 };
                 let response_json = serde_json::json!({
+                    "label": label,
                     "behavior": behavior_str,
                     "suggestion": suggestion,
                 });
