@@ -1,5 +1,7 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 pub struct Options {
     pub no_service: bool,
@@ -8,14 +10,91 @@ pub struct Options {
     pub uninstall: bool,
 }
 
-pub fn run(opts: Options) -> Result<()> {
-    if opts.uninstall {
-        eprintln!("vibewatch install: uninstall not implemented yet");
+fn settings_path() -> PathBuf {
+    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        PathBuf::from(dir).join("settings.json")
     } else {
-        eprintln!("vibewatch install: not implemented yet");
+        dirs::home_dir()
+            .expect("HOME must resolve")
+            .join(".claude")
+            .join("settings.json")
     }
-    // Consume unused fields so clippy stays quiet.
-    let _ = (opts.no_service, opts.no_hooks, opts.dry_run);
+}
+
+pub fn apply_hooks_merge(path: &Path, dry_run: bool) -> Result<()> {
+    if !path.exists() {
+        eprintln!(
+            "vibewatch install: {} does not exist yet; skipping hook merge. \
+             Run vibewatch install again after Claude Code creates it.",
+            path.display()
+        );
+        return Ok(());
+    }
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let original: Value = serde_json::from_str(&contents)
+        .with_context(|| format!("parsing {}", path.display()))?;
+    let merged = merge_hooks(original.clone());
+    if merged == original {
+        eprintln!(
+            "vibewatch install: hooks already present in {}",
+            path.display()
+        );
+        return Ok(());
+    }
+    if dry_run {
+        eprintln!(
+            "vibewatch install: [dry-run] would merge hooks into {}",
+            path.display()
+        );
+        return Ok(());
+    }
+    let mut out = serde_json::to_string_pretty(&merged)?;
+    out.push('\n');
+    fs::write(path, out).with_context(|| format!("writing {}", path.display()))?;
+    eprintln!("vibewatch install: merged hooks into {}", path.display());
+    Ok(())
+}
+
+pub fn apply_hooks_unmerge(path: &Path, dry_run: bool) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let contents = fs::read_to_string(path)?;
+    let original: Value = serde_json::from_str(&contents)?;
+    let stripped = unmerge_hooks(original.clone());
+    if stripped == original {
+        return Ok(());
+    }
+    if dry_run {
+        eprintln!(
+            "vibewatch install: [dry-run] would remove vibewatch hooks from {}",
+            path.display()
+        );
+        return Ok(());
+    }
+    let mut out = serde_json::to_string_pretty(&stripped)?;
+    out.push('\n');
+    fs::write(path, out)?;
+    eprintln!(
+        "vibewatch install: removed vibewatch hooks from {}",
+        path.display()
+    );
+    Ok(())
+}
+
+pub fn run(opts: Options) -> Result<()> {
+    let path = settings_path();
+    if opts.uninstall {
+        if !opts.no_hooks {
+            apply_hooks_unmerge(&path, opts.dry_run)?;
+        }
+    } else {
+        if !opts.no_hooks {
+            apply_hooks_merge(&path, opts.dry_run)?;
+        }
+    }
+    let _ = opts.no_service; // wired up in Task 4
     Ok(())
 }
 
@@ -218,6 +297,47 @@ mod tests {
             .collect();
         assert!(cmds.iter().any(|c| c == "some-other-tool"));
         assert!(cmds.iter().any(|c| c.contains("vibewatch")));
+    }
+
+    #[test]
+    fn apply_hooks_merge_is_idempotent_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        std::fs::write(&path, r#"{"permissions":{"defaultMode":"auto"}}"#).unwrap();
+        apply_hooks_merge(&path, false).unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        apply_hooks_merge(&path, false).unwrap();
+        let second = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(first, second, "second merge must produce identical output");
+    }
+
+    #[test]
+    fn apply_hooks_merge_dry_run_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        let input = r#"{"permissions":{"defaultMode":"auto"}}"#;
+        std::fs::write(&path, input).unwrap();
+        apply_hooks_merge(&path, true).unwrap();
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, input, "--dry-run must not modify the file");
+    }
+
+    #[test]
+    fn apply_hooks_unmerge_restores_pre_install_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("settings.json");
+        std::fs::write(&path, r#"{"permissions":{"defaultMode":"auto"}}"#).unwrap();
+        apply_hooks_merge(&path, false).unwrap();
+        apply_hooks_unmerge(&path, false).unwrap();
+        let final_value: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        // "hooks" key should be either absent or an empty object
+        let hooks_empty = match final_value.get("hooks") {
+            None => true,
+            Some(v) => v.as_object().map(|o| o.is_empty()).unwrap_or(false),
+        };
+        assert!(hooks_empty, "hooks key should be empty/absent after uninstall");
+        assert_eq!(final_value["permissions"]["defaultMode"], "auto");
     }
 
     #[test]
