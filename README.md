@@ -44,82 +44,28 @@ vibewatch fixes that. One glance at your bar tells you which sessions are runnin
 
 ## Install
 
-From source (requires a recent Rust toolchain):
+```bash
+curl -fsSL https://raw.githubusercontent.com/Moinax/vibewatch/main/install.sh | sh
+```
+
+That script does three things automatically: builds the binary (via `cargo install --git`), installs the user-systemd service, and merges vibewatch's hooks into `~/.claude/settings.json`.
+
+You'll still need to do three short steps by hand — `vibewatch install` prints copy-paste snippets for each:
+
+1. Add `exec-once = ~/.cargo/bin/vibewatch daemon` (Hyprland) or the equivalent `spawn-at-startup` line (Niri) to your compositor config.
+2. Include `~/.config/vibewatch/waybar-module.jsonc` in your Waybar layout and add `"custom/vibewatch"` to your modules.
+3. (Optional) For cleanest widget-click-to-focus on Hyprland, add `cursor { no_warps = true }` and `input { mouse_refocus = false }`.
+
+Flags: `vibewatch install --help` — `--no-service`, `--no-hooks`, `--dry-run`, `--uninstall`.
+
+## Uninstall
 
 ```bash
-cargo install --git https://github.com/Moinax/vibewatch
+vibewatch install --uninstall
+cargo uninstall vibewatch
 ```
 
-Headless install (no GUI panel, no sound):
-
-```bash
-cargo install --git https://github.com/Moinax/vibewatch --no-default-features
-```
-
-## Quick start
-
-### 1. Run the daemon
-
-```bash
-vibewatch daemon
-```
-
-Or as a user service:
-
-```bash
-install -Dm644 contrib/vibewatch.service ~/.config/systemd/user/vibewatch.service
-systemctl --user enable --now vibewatch
-```
-
-### 2. Wire it into Waybar
-
-See [`contrib/waybar-module.jsonc`](contrib/waybar-module.jsonc) — add the snippet to your Waybar config and drop `"custom/vibewatch"` into your modules list.
-
-```jsonc
-"custom/vibewatch": {
-    "exec": "vibewatch status",
-    "return-type": "json",
-    "interval": 2,
-    "on-click": "vibewatch toggle-panel",
-    "format": "{}"
-}
-```
-
-### 3. Wire it into your agents
-
-<details>
-<summary><b>Claude Code</b> — add to <code>~/.claude/settings.json</code></summary>
-
-```json
-{
-  "hooks": {
-    "SessionStart":      [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify session-start --agent claude-code",      "async": true }] }],
-    "UserPromptSubmit":  [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify user-prompt-submit --agent claude-code", "async": true }] }],
-    "PreToolUse":        [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify pre-tool-use --agent claude-code",       "async": true }] }],
-    "PostToolUse":       [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify post-tool-use --agent claude-code",      "async": true }] }],
-    "PermissionRequest": [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify permission-request --agent claude-code" }] }],
-    "Stop":              [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify stop --agent claude-code",               "async": true }] }]
-  }
-}
-```
-
-The `PermissionRequest` hook **must run synchronously** (no `async: true`) — that's how vibewatch forwards your click back to Claude Code as the permission decision.
-</details>
-
-<details>
-<summary><b>Codex</b> — add to <code>~/.codex/hooks.json</code></summary>
-
-```json
-{
-  "hooks": {
-    "SessionStart": [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify session-start --agent codex" }] }],
-    "PreToolUse":   [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify pre-tool-use --agent codex" }] }],
-    "PostToolUse":  [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify post-tool-use --agent codex" }] }],
-    "Stop":         [{ "matcher": "", "hooks": [{ "type": "command", "command": "vibewatch notify stop --agent codex" }] }]
-  }
-}
-```
-</details>
+`--uninstall` stops & disables the service, removes the unit file, strips vibewatch hooks from `~/.claude/settings.json` (other hooks untouched), and deletes `~/.config/vibewatch/`.
 
 ## Configuration
 
