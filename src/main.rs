@@ -1,6 +1,7 @@
 mod compositor;
 mod config;
 mod ipc;
+mod install;
 mod notify;
 mod approval;
 mod scanner;
@@ -45,6 +46,21 @@ enum Commands {
     Status,
     /// Toggle the overlay panel visibility
     TogglePanel,
+    /// Install vibewatch's systemd user service and Claude Code hooks.
+    Install {
+        /// Skip systemd user unit install/enable.
+        #[arg(long)]
+        no_service: bool,
+        /// Skip Claude Code hooks merge.
+        #[arg(long)]
+        no_hooks: bool,
+        /// Print every action but change nothing on disk.
+        #[arg(long)]
+        dry_run: bool,
+        /// Reverse the install: stop service, strip hooks, remove snippet.
+        #[arg(long)]
+        uninstall: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -60,6 +76,15 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::TogglePanel => {
             tokio::runtime::Runtime::new()?.block_on(run_toggle_panel())
+        }
+        Commands::Install { no_service, no_hooks, dry_run, uninstall } => {
+            install::run(install::Options {
+                no_service,
+                no_hooks,
+                dry_run,
+                uninstall,
+            })?;
+            Ok(())
         }
     }
 }
