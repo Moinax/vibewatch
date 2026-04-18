@@ -53,23 +53,25 @@ fn event_to_slug(event: &str) -> String {
 }
 
 /// Merge vibewatch's hook entries into a parsed settings.json value.
-/// Idempotent: re-running produces byte-equal output.
+/// Idempotent: re-running on an already-merged value returns an equal
+/// Value; byte-level idempotence of the serialised form is verified in
+/// the disk-I/O tests added in Task 3.
 pub fn merge_hooks(mut settings: Value) -> Value {
     let hooks = settings
         .as_object_mut()
-        .expect("settings must be a JSON object")
+        .expect("settings.json root must be a JSON object")
         .entry("hooks")
         .or_insert_with(|| serde_json::json!({}));
     let hooks_obj = hooks
         .as_object_mut()
-        .expect("settings.hooks must be a JSON object");
+        .expect("settings.json \"hooks\" key must be a JSON object");
 
     for (event, async_flag) in HOOK_EVENTS {
         let command = command_for(event);
         let entry = hooks_obj
             .entry(event)
             .or_insert_with(|| serde_json::json!([]));
-        let array = entry.as_array_mut().expect("event entry must be an array");
+        let array = entry.as_array_mut().expect("settings.json hooks.<event> must be an array");
 
         // Find or create the matcher-"" group.
         let group_idx = array.iter().position(|g| {
@@ -86,7 +88,7 @@ pub fn merge_hooks(mut settings: Value) -> Value {
         let group_hooks = group
             .get_mut("hooks")
             .and_then(|v| v.as_array_mut())
-            .expect("group.hooks must be an array");
+            .expect("settings.json hooks.<event>[*].hooks must be an array");
 
         let already_present = group_hooks.iter().any(|h| {
             h.get("command").and_then(|c| c.as_str()) == Some(command.as_str())
@@ -111,6 +113,8 @@ pub fn merge_hooks(mut settings: Value) -> Value {
 
 /// Remove vibewatch's hook entries (anything whose command string contains
 /// "vibewatch"). Other tools' hooks in the same event array are preserved.
+/// Only inspects the six known HOOK_EVENTS keys; vibewatch commands nested
+/// under non-standard event names are left alone.
 pub fn unmerge_hooks(mut settings: Value) -> Value {
     let Some(hooks_obj) = settings
         .as_object_mut()
