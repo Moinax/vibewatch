@@ -60,8 +60,10 @@ pub fn apply_hooks_unmerge(path: &Path, dry_run: bool) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let contents = fs::read_to_string(path)?;
-    let original: Value = serde_json::from_str(&contents)?;
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let original: Value = serde_json::from_str(&contents)
+        .with_context(|| format!("parsing {}", path.display()))?;
     let stripped = unmerge_hooks(original.clone());
     if stripped == original {
         return Ok(());
@@ -75,7 +77,8 @@ pub fn apply_hooks_unmerge(path: &Path, dry_run: bool) -> Result<()> {
     }
     let mut out = serde_json::to_string_pretty(&stripped)?;
     out.push('\n');
-    fs::write(path, out)?;
+    fs::write(path, out)
+        .with_context(|| format!("writing {}", path.display()))?;
     eprintln!(
         "vibewatch install: removed vibewatch hooks from {}",
         path.display()
