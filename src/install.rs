@@ -96,12 +96,18 @@ pub fn run(opts: Options) -> Result<()> {
         if !opts.no_service {
             apply_service_uninstall(opts.dry_run)?;
         }
+        apply_waybar_uninstall(opts.dry_run)?;
+        eprintln!("vibewatch install: uninstall complete");
     } else {
         if !opts.no_service {
             apply_service_install(opts.dry_run)?;
         }
         if !opts.no_hooks {
             apply_hooks_merge(&path, opts.dry_run)?;
+        }
+        apply_waybar_install(opts.dry_run)?;
+        if !opts.dry_run {
+            print_manual_steps();
         }
     }
     Ok(())
@@ -339,6 +345,80 @@ pub fn apply_service_uninstall(dry_run: bool) -> Result<()> {
         .args(["--user", "daemon-reload"])
         .status();
     Ok(())
+}
+
+const WAYBAR_SNIPPET: &str = include_str!("../contrib/waybar-module.jsonc");
+
+fn waybar_snippet_path() -> PathBuf {
+    dirs::config_dir()
+        .expect("XDG_CONFIG_HOME or ~/.config must resolve")
+        .join("vibewatch")
+        .join("waybar-module.jsonc")
+}
+
+pub fn apply_waybar_install(dry_run: bool) -> Result<()> {
+    let path = waybar_snippet_path();
+    let current = fs::read_to_string(&path).unwrap_or_default();
+    if current == WAYBAR_SNIPPET {
+        return Ok(());
+    }
+    if dry_run {
+        eprintln!(
+            "vibewatch install: [dry-run] would drop {}",
+            path.display()
+        );
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, WAYBAR_SNIPPET)?;
+    eprintln!("vibewatch install: wrote {}", path.display());
+    Ok(())
+}
+
+pub fn apply_waybar_uninstall(dry_run: bool) -> Result<()> {
+    let path = waybar_snippet_path();
+    if !path.exists() {
+        return Ok(());
+    }
+    if dry_run {
+        eprintln!(
+            "vibewatch install: [dry-run] would remove {}",
+            path.display()
+        );
+        return Ok(());
+    }
+    fs::remove_file(&path)?;
+    // Best-effort: remove ~/.config/vibewatch if empty.
+    if let Some(parent) = path.parent() {
+        let _ = fs::remove_dir(parent);
+    }
+    eprintln!("vibewatch install: removed {}", path.display());
+    Ok(())
+}
+
+pub fn print_manual_steps() {
+    eprintln!();
+    eprintln!("vibewatch install: three manual steps remain:");
+    eprintln!();
+    eprintln!("1. Compositor autostart (paste into your compositor config):");
+    eprintln!("   Hyprland  (~/.config/hypr/*.conf):");
+    eprintln!("     exec-once = ~/.cargo/bin/vibewatch daemon");
+    eprintln!("   Niri      (~/.config/niri/config.kdl):");
+    eprintln!(
+        "     spawn-at-startup \"sh\" \"-c\" \"~/.cargo/bin/vibewatch daemon\""
+    );
+    eprintln!();
+    eprintln!("2. Waybar — include the module snippet and wire it into your layout:");
+    eprintln!("   Snippet: {}", waybar_snippet_path().display());
+    eprintln!("   Include it in your Waybar config and add \"custom/vibewatch\"");
+    eprintln!("   to your modules-* array.");
+    eprintln!();
+    eprintln!("3. (Optional) Hyprland click-focus tip — stop cursor from warping:");
+    eprintln!("     cursor {{ no_warps     = true }}");
+    eprintln!("     input  {{ mouse_refocus = false }}");
+    eprintln!();
 }
 
 #[cfg(test)]
