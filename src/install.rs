@@ -22,6 +22,18 @@ fn settings_path() -> PathBuf {
     }
 }
 
+fn read_json(path: &Path) -> Result<Value> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&contents).with_context(|| format!("parsing {}", path.display()))
+}
+
+fn write_json(path: &Path, value: &Value) -> Result<()> {
+    let mut out = serde_json::to_string_pretty(value)?;
+    out.push('\n');
+    fs::write(path, out).with_context(|| format!("writing {}", path.display()))
+}
+
 pub fn apply_hooks_merge(path: &Path, dry_run: bool) -> Result<()> {
     if !path.exists() {
         eprintln!(
@@ -31,10 +43,7 @@ pub fn apply_hooks_merge(path: &Path, dry_run: bool) -> Result<()> {
         );
         return Ok(());
     }
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let original: Value = serde_json::from_str(&contents)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let original = read_json(path)?;
     let merged = merge_hooks(original.clone());
     if merged == original {
         eprintln!(
@@ -50,9 +59,7 @@ pub fn apply_hooks_merge(path: &Path, dry_run: bool) -> Result<()> {
         );
         return Ok(());
     }
-    let mut out = serde_json::to_string_pretty(&merged)?;
-    out.push('\n');
-    fs::write(path, out).with_context(|| format!("writing {}", path.display()))?;
+    write_json(path, &merged)?;
     eprintln!("vibewatch install: merged hooks into {}", path.display());
     Ok(())
 }
@@ -61,10 +68,7 @@ pub fn apply_hooks_unmerge(path: &Path, dry_run: bool) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let original: Value = serde_json::from_str(&contents)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let original = read_json(path)?;
     let stripped = unmerge_hooks(original.clone());
     if stripped == original {
         return Ok(());
@@ -76,10 +80,7 @@ pub fn apply_hooks_unmerge(path: &Path, dry_run: bool) -> Result<()> {
         );
         return Ok(());
     }
-    let mut out = serde_json::to_string_pretty(&stripped)?;
-    out.push('\n');
-    fs::write(path, out)
-        .with_context(|| format!("writing {}", path.display()))?;
+    write_json(path, &stripped)?;
     eprintln!(
         "vibewatch install: removed vibewatch hooks from {}",
         path.display()
@@ -113,43 +114,27 @@ pub fn run(opts: Options) -> Result<()> {
     Ok(())
 }
 
-/// Every Claude Code hook event vibewatch registers, plus whether its
-/// entry is flagged `async: true` in settings.json. The synchronous
-/// entry (PermissionRequest) is what powers the widget approve/deny +
-/// AskUserQuestion flows.
-pub const HOOK_EVENTS: [(&str, bool); 6] = [
-    ("SessionStart",      true),
-    ("UserPromptSubmit",  true),
-    ("PreToolUse",        true),
-    ("PostToolUse",       true),
-    ("PermissionRequest", false),
-    ("Stop",              true),
+/// Every Claude Code hook event vibewatch registers. The tuple is
+/// `(PascalCase event name, notify subcommand slug, async flag)`. The
+/// slug must match the `vibewatch notify` subcommand arms in
+/// `src/notify.rs`. The synchronous entry (PermissionRequest) is what
+/// powers the widget approve/deny + AskUserQuestion flows.
+pub(crate) const HOOK_EVENTS: [(&str, &str, bool); 6] = [
+    ("SessionStart",      "session-start",      true),
+    ("UserPromptSubmit",  "user-prompt-submit", true),
+    ("PreToolUse",        "pre-tool-use",       true),
+    ("PostToolUse",       "post-tool-use",      true),
+    ("PermissionRequest", "permission-request", false),
+    ("Stop",              "stop",               true),
 ];
 
-/// Canonical hook command for a given event.
-pub fn command_for(event: &str) -> String {
-    format!(
-        "~/.cargo/bin/vibewatch notify {} --agent claude-code",
-        event_to_slug(event)
-    )
-}
-
-fn event_to_slug(event: &str) -> String {
-    // SessionStart -> session-start
-    let mut out = String::new();
-    for (i, c) in event.chars().enumerate() {
-        if c.is_uppercase() && i > 0 {
-            out.push('-');
-        }
-        out.extend(c.to_lowercase());
-    }
-    out
+/// Canonical hook command for a given `vibewatch notify` slug.
+pub(crate) fn command_for(slug: &str) -> String {
+    format!("~/.cargo/bin/vibewatch notify {} --agent claude-code", slug)
 }
 
 /// Merge vibewatch's hook entries into a parsed settings.json value.
-/// Idempotent: re-running on an already-merged value returns an equal
-/// Value; byte-level idempotence of the serialised form is verified in
-/// the disk-I/O tests added in Task 3.
+/// Idempotent: re-running on an already-merged value returns an equal Value.
 pub fn merge_hooks(mut settings: Value) -> Value {
     let hooks = settings
         .as_object_mut()
@@ -160,8 +145,8 @@ pub fn merge_hooks(mut settings: Value) -> Value {
         .as_object_mut()
         .expect("settings.json \"hooks\" key must be a JSON object");
 
-    for (event, async_flag) in HOOK_EVENTS {
-        let command = command_for(event);
+    for (event, slug, async_flag) in HOOK_EVENTS {
+        let command = command_for(slug);
         let entry = hooks_obj
             .entry(event)
             .or_insert_with(|| serde_json::json!([]));
@@ -218,8 +203,7 @@ pub fn unmerge_hooks(mut settings: Value) -> Value {
         return settings;
     };
 
-    let event_names: Vec<String> = HOOK_EVENTS.iter().map(|(e, _)| e.to_string()).collect();
-    for event in &event_names {
+    for (event, _, _) in HOOK_EVENTS {
         let Some(entry) = hooks_obj.get_mut(event) else { continue };
         let Some(array) = entry.as_array_mut() else { continue };
 
@@ -451,7 +435,7 @@ mod tests {
     #[test]
     fn merge_hooks_adds_all_six_events() {
         let merged = merge_hooks(json!({}));
-        for (event, _) in HOOK_EVENTS {
+        for (event, _, _) in HOOK_EVENTS {
             assert!(
                 merged["hooks"][event].is_array(),
                 "missing hooks.{}", event
