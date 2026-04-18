@@ -51,23 +51,16 @@ pub enum InboundEvent {
         pid: Option<u32>,
         #[serde(default)]
         permission_suggestions: Vec<crate::session::PermissionSuggestion>,
+        /// Button labels for tools whose UI is really a multiple-choice
+        /// (currently just `AskUserQuestion` with a single non-multiSelect
+        /// question). Empty for ordinary permission prompts.
+        #[serde(default)]
+        option_labels: Vec<String>,
     },
     PermissionDenied {
         session_id: String,
         #[serde(default)]
         pid: Option<u32>,
-    },
-    /// Claude Code's built-in AskUserQuestion tool, intercepted at PreToolUse
-    /// with a synthesized `updatedInput.answers`. The daemon blocks the hook
-    /// until the user clicks a widget button, then writes the chosen label
-    /// back on the stream.
-    AskUserQuestion {
-        session_id: String,
-        request_id: String,
-        #[serde(default)]
-        pid: Option<u32>,
-        question: String,
-        option_labels: Vec<String>,
     },
     Stop {
         session_id: String,

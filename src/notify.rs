@@ -132,15 +132,6 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
         }
     }
 
-    // AskUserQuestion is a synchronous PreToolUse intercept: we block until
-    // the user clicks a widget button, then emit `hookSpecificOutput.
-    // updatedInput.answers` so Claude Code skips its terminal prompt.
-    // If the payload isn't a single, non-multiSelect question we fall through
-    // to a normal PreToolUse event and let Claude prompt in the terminal.
-    if agent == "claude-code" && event_type == "ask-user-question" {
-        return handle_ask_user_question(&stdin_buf).await;
-    }
-
     let event = match agent {
         "claude-code" => parse_claude_code(&stdin_buf, event_type)?,
         "codex" => parse_codex(&stdin_buf, event_type)?,
@@ -151,6 +142,11 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
     let socket_path = config.socket_path();
 
     if agent == "claude-code" && event_type == "permission-request" {
+        // Cache info we need to build the AskUserQuestion decision shape
+        // if/when we answer via a real option label rather than allow/deny.
+        let (is_ask_user_question, original_tool_input, question_text) =
+            ask_user_question_context(&stdin_buf);
+
         eprintln!("vibewatch-hook: permission-request starting, waiting for daemon response");
         let result = match send_permission_request(
             &socket_path,
@@ -168,15 +164,41 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
                 PermissionDecisionResult::ask()
             }
         };
-        let mut decision = serde_json::json!({
-            "behavior": result.behavior,
-            "reason": "via vibewatch widget",
-        });
-        if let Some(sug) = result.suggestion {
-            if let serde_json::Value::Object(ref mut map) = decision {
-                map.insert("suggestion".to_string(), serde_json::to_value(sug)?);
+
+        let decision = if is_ask_user_question
+            && result.behavior == "answer"
+            && result.label.is_some()
+        {
+            // AskUserQuestion: merge answers into the original tool_input and
+            // return it as `updatedInput` so Claude Code uses it instead of
+            // (or in race with) prompting in the terminal.
+            let mut updated_input = original_tool_input.unwrap_or(serde_json::json!({}));
+            let mut answers = serde_json::Map::new();
+            answers.insert(
+                question_text.unwrap_or_default(),
+                serde_json::Value::String(result.label.unwrap_or_default()),
+            );
+            if let serde_json::Value::Object(ref mut map) = updated_input {
+                map.insert("answers".to_string(), serde_json::Value::Object(answers));
             }
-        }
+            serde_json::json!({
+                "behavior": "allow",
+                "reason": "answered via vibewatch widget",
+                "updatedInput": updated_input,
+            })
+        } else {
+            let mut decision = serde_json::json!({
+                "behavior": result.behavior,
+                "reason": "via vibewatch widget",
+            });
+            if let Some(sug) = result.suggestion {
+                if let serde_json::Value::Object(ref mut map) = decision {
+                    map.insert("suggestion".to_string(), serde_json::to_value(sug)?);
+                }
+            }
+            decision
+        };
+
         let out = serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": "PermissionRequest",
@@ -193,114 +215,64 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Synchronous PreToolUse intercept for `AskUserQuestion`. Parses the
-/// `questions[0]` options, blocks on the widget, and emits a PreToolUse
-/// hook output that plants the chosen answer into `updatedInput.answers`
-/// so Claude Code uses it without prompting the user in the terminal.
-///
-/// Only supported for a single, non-multiSelect question. Anything else
-/// silently returns Ok with no stdout so Claude falls back to its terminal
-/// prompt.
-async fn handle_ask_user_question(stdin_buf: &str) -> anyhow::Result<()> {
-    let hook: ClaudeCodeHook = serde_json::from_str(stdin_buf)
-        .context("failed to parse Claude Code hook JSON")?;
+/// If the stdin payload is an `AskUserQuestion` permission-request with a
+/// single non-multiSelect question, return `(true, original tool_input,
+/// question text)` so the caller can merge the widget's answer back into
+/// `decision.updatedInput`. Otherwise return `(false, None, None)`.
+fn ask_user_question_context(
+    stdin_buf: &str,
+) -> (bool, Option<serde_json::Value>, Option<String>) {
+    let Ok(hook) = serde_json::from_str::<ClaudeCodeHook>(stdin_buf) else {
+        return (false, None, None);
+    };
     if hook.tool_name.as_deref() != Some("AskUserQuestion") {
-        return Ok(());
+        return (false, None, None);
     }
-    let Some(tool_input) = hook.tool_input.clone() else {
-        return Ok(());
+    let Some(tool_input) = hook.tool_input else {
+        return (false, None, None);
     };
     let Some(questions) = tool_input.get("questions").and_then(|v| v.as_array()) else {
-        return Ok(());
+        return (false, None, None);
     };
-    // Unsupported shapes — let Claude prompt in the terminal.
     if questions.len() != 1 {
-        return Ok(());
+        return (false, None, None);
     }
     let q = &questions[0];
     if q.get("multiSelect").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return Ok(());
+        return (false, None, None);
     }
     let question_text = q
         .get("question")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let labels: Vec<String> = q
-        .get("options")
+    (true, Some(tool_input), Some(question_text))
+}
+
+/// Extract the option labels from an `AskUserQuestion` `tool_input` when it's
+/// a single non-multiSelect question. Returns an empty vec otherwise.
+fn extract_ask_user_question_labels(tool_input: &Option<serde_json::Value>) -> Vec<String> {
+    let Some(input) = tool_input.as_ref() else {
+        return Vec::new();
+    };
+    let Some(questions) = input.get("questions").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    if questions.len() != 1 {
+        return Vec::new();
+    }
+    let q = &questions[0];
+    if q.get("multiSelect").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Vec::new();
+    }
+    q.get("options")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
                 .filter_map(|opt| opt.get("label").and_then(|v| v.as_str()).map(String::from))
                 .collect()
         })
-        .unwrap_or_default();
-    if labels.is_empty() {
-        return Ok(());
-    }
-
-    let pid = parent_pid();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let request_id = format!("{}-{}-{}", hook.session_id, pid, nanos);
-    let event = InboundEvent::AskUserQuestion {
-        session_id: hook.session_id,
-        request_id,
-        pid: Some(pid),
-        question: question_text.clone(),
-        option_labels: labels.clone(),
-    };
-
-    let config = Config::load()?;
-    let socket_path = config.socket_path();
-
-    eprintln!("vibewatch-hook: ask-user-question starting, {} option(s)", labels.len());
-    let result = match send_permission_request(
-        &socket_path,
-        &event,
-        std::time::Duration::from_secs(580),
-    )
-    .await
-    {
-        Ok(r) => {
-            eprintln!("vibewatch-hook: ask-user-question decision: {:?}", r);
-            r
-        }
-        Err(e) => {
-            eprintln!("vibewatch-hook: ask-user-question fallback ({e}) — no stdout, terminal prompt will fire");
-            return Ok(());
-        }
-    };
-    let Some(picked_label) = result.label else {
-        eprintln!("vibewatch-hook: no label in response — no stdout");
-        return Ok(());
-    };
-
-    // Build updatedInput = original tool_input with answers filled in.
-    let mut updated_input = tool_input;
-    let mut answers = serde_json::Map::new();
-    answers.insert(question_text, serde_json::Value::String(picked_label));
-    if let serde_json::Value::Object(ref mut map) = updated_input {
-        map.insert(
-            "answers".to_string(),
-            serde_json::Value::Object(answers),
-        );
-    }
-
-    let out = serde_json::json!({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": "answered via vibewatch widget",
-            "updatedInput": updated_input,
-        }
-    });
-    let out_str = serde_json::to_string(&out)?;
-    eprintln!("vibewatch-hook: emitting ask-user-question stdout: {}", out_str);
-    println!("{}", out_str);
-    Ok(())
+        .unwrap_or_default()
 }
 
 /// Get the parent PID (the claude process that spawned this hook).
@@ -374,6 +346,11 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let request_id = format!("{}-{}-{}", hook.session_id, pid, nanos);
+            let option_labels = if hook.tool_name.as_deref() == Some("AskUserQuestion") {
+                extract_ask_user_question_labels(&hook.tool_input)
+            } else {
+                Vec::new()
+            };
             Ok(InboundEvent::PermissionRequest {
                 session_id: hook.session_id,
                 request_id: Some(request_id),
@@ -381,6 +358,7 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 detail: extract_tool_detail(&hook.tool_input),
                 pid: Some(pid),
                 permission_suggestions: hook.permission_suggestions,
+                option_labels,
             })
         }
         "permission-denied" => Ok(InboundEvent::PermissionDenied {
@@ -670,6 +648,7 @@ mod tests {
             detail: Some("ls".into()),
             pid: Some(42),
             permission_suggestions: vec![],
+            option_labels: vec![],
         };
         let result = send_permission_request(&path, &event, std::time::Duration::from_secs(2))
             .await
@@ -692,6 +671,7 @@ mod tests {
             detail: None,
             pid: None,
             permission_suggestions: vec![],
+            option_labels: vec![],
         };
         let result = send_permission_request(&path, &event, std::time::Duration::from_millis(100)).await;
         assert!(result.is_err(), "missing daemon socket should produce an error");

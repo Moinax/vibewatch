@@ -388,11 +388,13 @@ async fn handle_connection(
                 detail,
                 pid,
                 permission_suggestions,
+                option_labels,
             } => {
                 eprintln!(
-                    "vibewatch: recv PermissionRequest session={} request_id={:?} tool={:?} pid={:?} suggestions={}",
+                    "vibewatch: recv PermissionRequest session={} request_id={:?} tool={:?} pid={:?} suggestions={} option_labels={:?}",
                     session_id, request_id, tool, pid,
                     serde_json::to_string(&permission_suggestions).unwrap_or_default(),
+                    option_labels,
                 );
                 let request_id = match request_id {
                     Some(r) => r,
@@ -414,10 +416,17 @@ async fn handle_connection(
                     session.status = SessionStatus::WaitingApproval;
                     session.current_tool = Some(tool_name.clone());
                     session.tool_detail = detail.clone();
-                    let choices = crate::session::ApprovalChoice::build_from(
-                        &tool_name,
-                        &permission_suggestions,
-                    );
+                    // AskUserQuestion with a single non-multiSelect question
+                    // carries option_labels — render them as the buttons.
+                    // Everything else falls back to Yes / suggestions… / No.
+                    let choices = if option_labels.is_empty() {
+                        crate::session::ApprovalChoice::build_from(
+                            &tool_name,
+                            &permission_suggestions,
+                        )
+                    } else {
+                        crate::session::ApprovalChoice::from_labels(&option_labels)
+                    };
                     session.pending_approval = Some(crate::session::PendingApproval {
                         request_id: request_id.clone(),
                         tool: tool_name,
@@ -433,45 +442,6 @@ async fn handle_connection(
                 }
 
                 // Move write_half into the registry and exit the handler.
-                let entry = crate::approval::ApprovalEntry {
-                    write_half,
-                    session_id,
-                    created_at: std::time::Instant::now(),
-                };
-                approval_registry.insert(request_id, entry).await;
-                return;
-            }
-            InboundEvent::AskUserQuestion {
-                session_id,
-                request_id,
-                pid,
-                question,
-                option_labels,
-            } => {
-                eprintln!(
-                    "vibewatch: recv AskUserQuestion session={} request_id={} pid={:?} labels={:?}",
-                    session_id, request_id, pid, option_labels
-                );
-                let tool_name = "AskUserQuestion".to_string();
-                if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
-                    session.status = SessionStatus::WaitingApproval;
-                    session.current_tool = Some(tool_name.clone());
-                    session.tool_detail = Some(question.clone());
-                    let choices = crate::session::ApprovalChoice::from_labels(&option_labels);
-                    session.pending_approval = Some(crate::session::PendingApproval {
-                        request_id: request_id.clone(),
-                        tool: tool_name,
-                        detail: Some(question),
-                        choices,
-                    });
-                    session.touch();
-                    registry.register(session);
-                }
-                sound_player.play(SoundEvent::ApprovalNeeded);
-                if let Some(ref show) = show_sender {
-                    show();
-                }
-
                 let entry = crate::approval::ApprovalEntry {
                     write_half,
                     session_id,
