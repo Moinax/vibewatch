@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub struct Options {
     pub no_service: bool,
@@ -92,12 +93,17 @@ pub fn run(opts: Options) -> Result<()> {
         if !opts.no_hooks {
             apply_hooks_unmerge(&path, opts.dry_run)?;
         }
+        if !opts.no_service {
+            apply_service_uninstall(opts.dry_run)?;
+        }
     } else {
+        if !opts.no_service {
+            apply_service_install(opts.dry_run)?;
+        }
         if !opts.no_hooks {
             apply_hooks_merge(&path, opts.dry_run)?;
         }
     }
-    let _ = opts.no_service; // wired up in Task 4
     Ok(())
 }
 
@@ -241,6 +247,100 @@ pub fn unmerge_hooks(mut settings: Value) -> Value {
     settings
 }
 
+const SERVICE_NAME: &str = "vibewatch.service";
+const SERVICE_BODY: &str = include_str!("../contrib/vibewatch.service");
+
+fn systemd_unit_path() -> PathBuf {
+    dirs::config_dir()
+        .expect("XDG_CONFIG_HOME or ~/.config must resolve")
+        .join("systemd")
+        .join("user")
+        .join(SERVICE_NAME)
+}
+
+fn has_systemctl() -> bool {
+    Command::new("systemctl")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+pub fn apply_service_install(dry_run: bool) -> Result<()> {
+    if !has_systemctl() {
+        eprintln!("vibewatch install: systemctl not found; skipping service install");
+        return Ok(());
+    }
+    let path = systemd_unit_path();
+    let current = fs::read_to_string(&path).unwrap_or_default();
+    let needs_write = current != SERVICE_BODY;
+    if dry_run {
+        if needs_write {
+            eprintln!(
+                "vibewatch install: [dry-run] would write {}",
+                path.display()
+            );
+        }
+        eprintln!(
+            "vibewatch install: [dry-run] would enable --now {}",
+            SERVICE_NAME
+        );
+        return Ok(());
+    }
+    if needs_write {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, SERVICE_BODY)
+            .with_context(|| format!("writing {}", path.display()))?;
+        eprintln!("vibewatch install: wrote {}", path.display());
+    }
+    let _ = Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .status();
+    match Command::new("systemctl")
+        .args(["--user", "enable", "--now", SERVICE_NAME])
+        .status()
+    {
+        Ok(s) if s.success() => {
+            eprintln!("vibewatch install: enabled & started {}", SERVICE_NAME);
+        }
+        Ok(s) => eprintln!(
+            "vibewatch install: systemctl enable --now exited with {}",
+            s
+        ),
+        Err(e) => eprintln!(
+            "vibewatch install: systemctl enable --now failed: {e}"
+        ),
+    }
+    Ok(())
+}
+
+pub fn apply_service_uninstall(dry_run: bool) -> Result<()> {
+    if !has_systemctl() {
+        return Ok(());
+    }
+    if dry_run {
+        eprintln!(
+            "vibewatch install: [dry-run] would disable+stop {} and remove the unit file",
+            SERVICE_NAME
+        );
+        return Ok(());
+    }
+    let _ = Command::new("systemctl")
+        .args(["--user", "disable", "--now", SERVICE_NAME])
+        .status();
+    let path = systemd_unit_path();
+    if path.exists() {
+        fs::remove_file(&path)?;
+        eprintln!("vibewatch install: removed {}", path.display());
+    }
+    let _ = Command::new("systemctl")
+        .args(["--user", "daemon-reload"])
+        .status();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +465,15 @@ mod tests {
         assert_eq!(cmds, vec!["some-other-tool".to_string()]);
         let all = serde_json::to_string(&stripped).unwrap();
         assert!(!all.contains("vibewatch"), "vibewatch string still present: {all}");
+    }
+
+    #[test]
+    fn systemd_unit_path_points_into_config() {
+        let p = systemd_unit_path();
+        let s = p.to_string_lossy();
+        assert!(
+            s.ends_with("systemd/user/vibewatch.service"),
+            "unexpected path: {s}"
+        );
     }
 }
