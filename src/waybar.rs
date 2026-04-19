@@ -25,6 +25,14 @@ const LATTE: Palette = Palette {
     dim: "#8c8fa1",
 };
 
+/// Nerd Font glyph \u{f544} (= `nf-md-robot_happy`). Rendered by waybar's
+/// font stack; falls back to the replacement char if the user has no Nerd
+/// Font installed.
+const LOGO_GLYPH: &str = "\u{f544}";
+/// Same filled circle the panel uses as its row indicator (`\u{25cf}`).
+/// Colored via Pango to match `.indicator.<status>` in palette-*.css.
+const INDICATOR_DOT: &str = "\u{25cf}";
+
 /// Cached once per process — theme toggles require a daemon restart, which
 /// is acceptable given this runs on a waybar-driven 2s poll cadence.
 fn active_palette() -> &'static Palette {
@@ -113,7 +121,7 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
     };
 
     let text = if count == 0 {
-        "\u{f544}".to_string()
+        LOGO_GLYPH.to_string()
     } else {
         let s = if count == 1 {
             active[0]
@@ -124,18 +132,17 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
         // All-idle: the specific session's display name carries no signal
         // (none of them are doing anything). Swap it for the app brand so
         // the widget identifies itself at rest.
-        let name = if class == "idle" {
+        let all_idle = active.iter().all(|s| s.status == SessionStatus::Idle);
+        let name = if all_idle {
             "VibeWatch".to_string()
         } else {
             pango_escape(&s.display_name())
         };
         if count == 1 {
-            format!("\u{f544} {} {}", name, status_span)
+            format!("{} {} {}", LOGO_GLYPH, name, status_span)
         } else {
-            // Same colored ● used as the panel row indicator — matches
-            // `.indicator.<status>` colors from palette-*.css.
-            let dot = decorate(s.status, "\u{25cf}");
-            format!("{} \u{f544} {} {} {}", count, dot, name, status_span)
+            let dot = decorate(s.status, INDICATOR_DOT);
+            format!("{} {} {} {} {}", count, LOGO_GLYPH, dot, name, status_span)
         }
     };
 
