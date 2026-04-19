@@ -80,10 +80,15 @@ fn read_session_name_from_cmdline(pid: u32) -> Option<String> {
 
 /// Background scanner loop. Runs every 3 seconds, discovering CLI agent
 /// processes via /proc and GUI agent windows via the compositor.
+///
+/// `status_notify` is pulsed at the end of every iteration so the waybar
+/// `SubscribeStatus` subscriber learns about sessions that disappeared when
+/// their PID died — those removals bypass the hook handler entirely.
 pub async fn run_scanner(
     registry: SessionRegistry,
     compositor: Box<dyn Compositor>,
     config: Config,
+    status_notify: std::sync::Arc<tokio::sync::Notify>,
 ) {
     loop {
         // Remove sessions whose PID is no longer alive
@@ -167,6 +172,7 @@ pub async fn run_scanner(
             }
         }
 
+        status_notify.notify_waiters();
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
 }

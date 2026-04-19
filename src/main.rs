@@ -124,16 +124,18 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
 
     let server = IpcServer::bind(&socket_path)?;
 
+    let status_notify: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
+
     let compositor = compositor::create_compositor(&config.general.compositor)?;
     let scanner_registry = registry.clone();
+    let scanner_notify = status_notify.clone();
     tokio::spawn(async move {
-        scanner::run_scanner(scanner_registry, compositor, config).await;
+        scanner::run_scanner(scanner_registry, compositor, config, scanner_notify).await;
     });
 
     eprintln!("vibewatch: daemon ready (headless)");
 
     let approval_registry = crate::approval::ApprovalRegistry::new();
-    let status_notify: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
 
     let reaper_registry = registry.clone();
     let reaper_approval = approval_registry.clone();
@@ -254,15 +256,17 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                     }
                 };
 
+                let status_notify: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
+
                 let scanner_registry = registry.clone();
+                let scanner_notify = status_notify.clone();
                 tokio::spawn(async move {
-                    scanner::run_scanner(scanner_registry, compositor, config).await;
+                    scanner::run_scanner(scanner_registry, compositor, config, scanner_notify).await;
                 });
 
                 eprintln!("vibewatch: daemon ready");
 
                 let approval_registry = crate::approval::ApprovalRegistry::new();
-                let status_notify: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
 
                 let reaper_registry = registry.clone();
                 let reaper_approval = approval_registry.clone();

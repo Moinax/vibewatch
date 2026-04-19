@@ -61,6 +61,10 @@ async fn test_daemon_ipc_flow() {
     assert_eq!(sessions[0].id, "test-session-1");
     assert_eq!(sessions[0].agent, vibewatch::session::AgentKind::ClaudeCode);
 
+    // The registered session defaults to Idle, so the widget collapses to
+    // the "VibeWatch" brand label. We just verify the status builder sees
+    // the session (class="idle") and produces non-empty output.
     let status = vibewatch::waybar::build_status(&sessions);
-    assert!(status.text.contains("Claude"));
+    assert_eq!(status.class, "idle");
+    assert!(status.text.contains("VibeWatch"));
 }
