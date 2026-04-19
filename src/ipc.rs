@@ -68,6 +68,10 @@ pub enum InboundEvent {
         pid: Option<u32>,
     },
     GetStatus,
+    /// Subscribe to status updates. The connection stays open; the daemon
+    /// writes one JSON line per state change (prefixed with an immediate
+    /// snapshot so the subscriber doesn't wait for the next transition).
+    SubscribeStatus,
     TogglePanel,
     ApprovalDecision {
         request_id: String,

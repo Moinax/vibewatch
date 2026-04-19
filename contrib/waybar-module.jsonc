@@ -1,8 +1,10 @@
 {
     "custom/vibewatch": {
-        "exec": "vibewatch status",
+        // Long-running subscriber: one JSON line per state change, pushed
+        // from the daemon. No `interval` — waybar reads each new line as
+        // an update.
+        "exec": "vibewatch status --watch",
         "return-type": "json",
-        "interval": 2,
         "on-click": "vibewatch toggle-panel",
         "format": "{}",
         "tooltip": false

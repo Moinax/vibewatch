@@ -110,6 +110,8 @@ The **status word** is colored by the daemon using the [Catppuccin](https://catp
 
 So the inline color always looks "right" on any bar theme without needing user CSS. The one thing you do want to style yourself is the `.attention` state (a session is blocked on a widget click), because its visibility depends on your bar's background.
 
+The widget uses Waybar's **continuous** custom-module mode: `vibewatch status --watch` stays connected to the daemon and writes one JSON line per transition, so the bar updates the instant a tool starts or a prompt arrives — no 2 s polling lag. The module config has no `interval` field (see `contrib/waybar-module.jsonc`).
+
 A reference snippet lives at [`contrib/waybar-style.css`](contrib/waybar-style.css) — drop it into your waybar `style.css` or `@import` it:
 
 ```css
@@ -124,7 +126,8 @@ Or copy the three rules directly and tweak the peach background to match your ba
 | Command                             | Description                                                   |
 |-------------------------------------|---------------------------------------------------------------|
 | `vibewatch daemon`                  | Start the daemon (auto-embeds the GTK panel when `WAYLAND_DISPLAY` is set) |
-| `vibewatch status`                  | Emit the current session snapshot as JSON (for Waybar)        |
+| `vibewatch status`                  | Emit the current session snapshot as JSON (one-shot)          |
+| `vibewatch status --watch`          | Stream JSON lines on every state change (for Waybar continuous mode) |
 | `vibewatch toggle-panel`            | Show/hide the overlay panel                                   |
 | `vibewatch notify <event> --agent <name>` | Forward a hook event (reads the payload from stdin)     |
 

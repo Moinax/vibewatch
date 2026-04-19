@@ -42,8 +42,12 @@ enum Commands {
         #[arg(long, default_value = "claude-code")]
         agent: String,
     },
-    /// Print current session status
-    Status,
+    /// Print current session status. With `--watch`, keep the socket open
+    /// and stream a JSON line on every state change (waybar "continuous" mode).
+    Status {
+        #[arg(long)]
+        watch: bool,
+    },
     /// Toggle the overlay panel visibility
     TogglePanel,
     /// Install vibewatch's systemd user service and Claude Code hooks.
@@ -71,8 +75,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Notify { event, agent } => {
             tokio::runtime::Runtime::new()?.block_on(notify::handle_notify(&event, &agent))
         }
-        Commands::Status => {
-            tokio::runtime::Runtime::new()?.block_on(run_status())
+        Commands::Status { watch } => {
+            tokio::runtime::Runtime::new()?.block_on(run_status(watch))
         }
         Commands::TogglePanel => {
             tokio::runtime::Runtime::new()?.block_on(run_toggle_panel())
@@ -129,9 +133,11 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
     eprintln!("vibewatch: daemon ready (headless)");
 
     let approval_registry = crate::approval::ApprovalRegistry::new();
+    let status_notify: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
 
     let reaper_registry = registry.clone();
     let reaper_approval = approval_registry.clone();
+    let reaper_notify = status_notify.clone();
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
         ticker.tick().await; // skip first immediate tick
@@ -149,6 +155,7 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
                     s.pending_approval = None;
                     s.status = SessionStatus::Thinking;
                     reaper_registry.register(s);
+                    reaper_notify.notify_waiters();
                 }
                 // Dropping `entry` closes the write half so the hook read returns EOF.
             }
@@ -161,6 +168,7 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
                 let registry = registry.clone();
                 let sound_player = sound_player.clone();
                 let approval_registry = approval_registry.clone();
+                let status_notify = status_notify.clone();
                 tokio::spawn(async move {
                     handle_connection(
                         stream,
@@ -169,6 +177,7 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
                         None::<Arc<dyn Fn() + Send + Sync>>,
                         None::<Arc<dyn Fn() + Send + Sync>>,
                         approval_registry,
+                        status_notify,
                     )
                     .await;
                 });
@@ -253,9 +262,11 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                 eprintln!("vibewatch: daemon ready");
 
                 let approval_registry = crate::approval::ApprovalRegistry::new();
+                let status_notify: Arc<tokio::sync::Notify> = Arc::new(tokio::sync::Notify::new());
 
                 let reaper_registry = registry.clone();
                 let reaper_approval = approval_registry.clone();
+                let reaper_notify = status_notify.clone();
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
                     ticker.tick().await; // skip first immediate tick
@@ -273,6 +284,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                                 s.pending_approval = None;
                                 s.status = SessionStatus::Thinking;
                                 reaper_registry.register(s);
+                                reaper_notify.notify_waiters();
                             }
                             // Dropping `entry` closes the write half so the hook read returns EOF.
                         }
@@ -287,6 +299,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                             let toggle_fn = toggle_fn.clone();
                             let show_fn = show_fn.clone();
                             let approval_registry = approval_registry.clone();
+                            let status_notify = status_notify.clone();
                             tokio::spawn(async move {
                                 handle_connection(
                                     stream,
@@ -295,6 +308,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                                     Some(toggle_fn),
                                     Some(show_fn),
                                     approval_registry,
+                                    status_notify,
                                 )
                                 .await;
                             });
@@ -322,6 +336,7 @@ async fn handle_connection(
     toggle_sender: Option<Arc<dyn Fn() + Send + Sync>>,
     show_sender: Option<Arc<dyn Fn() + Send + Sync>>,
     approval_registry: crate::approval::ApprovalRegistry,
+    status_notify: Arc<tokio::sync::Notify>,
 ) {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -346,6 +361,7 @@ async fn handle_connection(
                 session.session_name = session_name;
                 session.terminal = Some(session::detect_terminal(pid));
                 registry.register(session);
+                status_notify.notify_waiters();
             }
             InboundEvent::PreToolUse {
                 session_id,
@@ -361,6 +377,7 @@ async fn handle_connection(
                     session.touch();
                     log_transition(&session.id, prev, session.status, &format!("tool={}", tool));
                     registry.register(session);
+                    status_notify.notify_waiters();
                 } else {
                     log_drop("PreToolUse", &session_id, pid);
                 }
@@ -388,6 +405,7 @@ async fn handle_connection(
                     session.touch();
                     log_transition(&session.id, prev, session.status, "PostToolUse");
                     registry.register(session);
+                    status_notify.notify_waiters();
                 } else {
                     log_drop("PostToolUse", &session_id, pid);
                 }
@@ -413,6 +431,7 @@ async fn handle_connection(
                     session.touch();
                     log_transition(&session.id, prev, session.status, "UserPromptSubmit");
                     registry.register(session);
+                    status_notify.notify_waiters();
                 } else {
                     log_drop("UserPromptSubmit", &session_id, pid);
                 }
@@ -441,6 +460,7 @@ async fn handle_connection(
                             session.current_tool = tool;
                             session.touch();
                             registry.register(session);
+                            status_notify.notify_waiters();
                             sound_player.play(SoundEvent::ApprovalNeeded);
                         }
                         continue;
@@ -473,6 +493,7 @@ async fn handle_connection(
                     session.touch();
                     log_transition(&session.id, prev, session.status, "PermissionRequest");
                     registry.register(session);
+                    status_notify.notify_waiters();
                 } else {
                     log_drop("PermissionRequest", &session_id, pid);
                 }
@@ -498,6 +519,7 @@ async fn handle_connection(
                     session.pending_approval = None;
                     session.touch();
                     registry.register(session);
+                    status_notify.notify_waiters();
                 }
             }
             InboundEvent::ApprovalDecision { request_id, choice_index } => {
@@ -557,6 +579,7 @@ async fn handle_connection(
                     s.tool_detail = None;
                     s.touch();
                     registry.register(s);
+                    status_notify.notify_waiters();
                 }
             }
             InboundEvent::Stop { session_id, pid } => {
@@ -578,11 +601,13 @@ async fn handle_connection(
                     session.touch();
                     log_transition(&session.id, prev, session.status, "Stop");
                     registry.register(session);
+                    status_notify.notify_waiters();
                 } else {
                     log_drop("Stop", &session_id, pid);
                 }
                 let registry = registry.clone();
                 let sid = session_id.clone();
+                let late_notify = status_notify.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                     if let Some(mut session) = registry.get(&sid) {
@@ -595,6 +620,7 @@ async fn handle_connection(
                             session.last_agent_text = Some(text);
                             session.last_agent_text_at = now_epoch();
                             registry.register(session);
+                            late_notify.notify_waiters();
                         }
                     }
                 });
@@ -602,18 +628,33 @@ async fn handle_connection(
             InboundEvent::GetStatus => {
                 let sessions = registry.all();
                 let status = waybar::build_status(&sessions);
-                // `class` is a single-element array so waybar replaces the
-                // widget's class list each poll instead of accumulating stale
-                // classes (e.g. `active` lingering after a transition to idle).
-                let waybar_json = serde_json::json!({
-                    "text": status.text,
-                    "class": [status.class],
-                });
-                let mut json = waybar_json.to_string();
+                let mut json = waybar_payload(&status);
                 json.push('\n');
                 let _ = write_half.write_all(json.as_bytes()).await;
                 let _ = write_half.flush().await;
                 return;
+            }
+            InboundEvent::SubscribeStatus => {
+                // Push one line per state change. The initial line is emitted
+                // immediately so the subscriber doesn't wait for the next
+                // transition to render something.
+                let mut last_payload = String::new();
+                loop {
+                    let sessions = registry.all();
+                    let status = waybar::build_status(&sessions);
+                    let mut json = waybar_payload(&status);
+                    if json != last_payload {
+                        last_payload = json.clone();
+                        json.push('\n');
+                        if write_half.write_all(json.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        if write_half.flush().await.is_err() {
+                            return;
+                        }
+                    }
+                    status_notify.notified().await;
+                }
             }
             InboundEvent::TogglePanel => {
                 if let Some(ref sender) = toggle_sender {
@@ -653,6 +694,17 @@ fn log_drop(event: &str, session_id: &str, pid: Option<u32>) {
     );
 }
 
+/// Serialize a `StatusResponse` as the JSON payload waybar consumes. `class`
+/// is a single-element array so waybar replaces the widget's class list each
+/// update instead of accumulating stale classes.
+fn waybar_payload(status: &ipc::StatusResponse) -> String {
+    serde_json::json!({
+        "text": status.text,
+        "class": [status.class],
+    })
+    .to_string()
+}
+
 fn now_epoch() -> Option<u64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -671,20 +723,50 @@ fn parse_agent_kind(s: &str) -> AgentKind {
 }
 
 /// Connect to the daemon and print current status as Waybar JSON.
-async fn run_status() -> anyhow::Result<()> {
+async fn run_status(watch: bool) -> anyhow::Result<()> {
     let config = Config::load()?;
     let socket_path = config.socket_path();
+
+    if watch {
+        return run_status_watch(&socket_path).await;
+    }
 
     match ipc::send_event(&socket_path, &InboundEvent::GetStatus).await {
         Ok(Some(response)) => {
             println!("{}", response);
         }
-        Ok(None) => {
+        Ok(None) | Err(_) => {
             waybar::print_waybar_status(&[]);
         }
-        Err(_) => {
-            waybar::print_waybar_status(&[]);
-        }
+    }
+
+    Ok(())
+}
+
+/// Streaming subscriber: keep the daemon connection open and forward each JSON
+/// line the daemon pushes on state change. If the daemon is down or the socket
+/// drops, print an idle payload so waybar still renders something, then exit
+/// (waybar will respawn us).
+async fn run_status_watch(socket_path: &std::path::Path) -> anyhow::Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::UnixStream;
+
+    let Ok(mut stream) = UnixStream::connect(socket_path).await else {
+        waybar::print_waybar_status(&[]);
+        return Ok(());
+    };
+
+    let event = serde_json::to_string(&InboundEvent::SubscribeStatus)?;
+    stream.write_all(event.as_bytes()).await?;
+    stream.write_all(b"\n").await?;
+    stream.flush().await?;
+
+    let (read_half, _write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half).lines();
+    while let Ok(Some(line)) = reader.next_line().await {
+        println!("{}", line);
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
     }
 
     Ok(())
