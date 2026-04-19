@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 /// Kind of AI agent being monitored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentKind {
     ClaudeCode,
@@ -42,7 +42,7 @@ impl fmt::Display for AgentKind {
 }
 
 /// Current status of an agent session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     Thinking,
@@ -174,6 +174,11 @@ pub struct Session {
     pub tool_detail: Option<String>,
     pub last_tool: Option<String>,
     pub last_tool_detail: Option<String>,
+    /// Unix epoch seconds when `last_tool` finished (PostToolUse). Used by
+    /// the panel's line-1 picker so a completed tool stays visible as the
+    /// most recent event until a newer prompt or agent text arrives.
+    #[serde(default)]
+    pub last_tool_at: Option<u64>,
     pub last_prompt: Option<String>,
     pub session_name: Option<String>,
     pub window_id: Option<String>,
@@ -210,6 +215,7 @@ impl Session {
             tool_detail: None,
             last_tool: None,
             last_tool_detail: None,
+            last_tool_at: None,
             last_prompt: None,
             session_name: None,
             window_id: None,
@@ -254,6 +260,22 @@ impl Session {
     /// Update the last-seen timestamp.
     pub fn touch(&mut self) {
         // No-op for now — started_at_epoch is set once at creation
+    }
+
+    /// Store a new transcript line as `last_agent_text` and stamp
+    /// `last_agent_text_at`, but only when `text` actually differs from what's
+    /// already stored. Returns whether a mutation happened — callers use it
+    /// to skip unnecessary re-registers and notify wakes.
+    pub fn set_last_agent_text_if_changed(&mut self, text: String) -> bool {
+        if self.last_agent_text.as_deref() == Some(text.as_str()) {
+            return false;
+        }
+        self.last_agent_text = Some(text);
+        self.last_agent_text_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs());
+        true
     }
 
     /// Human-readable one-line status.

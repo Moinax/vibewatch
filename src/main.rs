@@ -392,6 +392,7 @@ async fn handle_connection(
                     let prev = session.status;
                     session.last_tool = session.current_tool.take();
                     session.last_tool_detail = session.tool_detail.take();
+                    session.last_tool_at = now_epoch();
                     session.status = SessionStatus::Thinking;
                     let agent = session.agent;
                     if let Some(text) = transcript::read_last_assistant_line(
@@ -399,8 +400,7 @@ async fn handle_connection(
                         &session_id,
                         &mut session.transcript_path,
                     ) {
-                        session.last_agent_text = Some(text);
-                        session.last_agent_text_at = now_epoch();
+                        session.set_last_agent_text_if_changed(text);
                     }
                     session.touch();
                     log_transition(&session.id, prev, session.status, "PostToolUse");
@@ -595,8 +595,7 @@ async fn handle_connection(
                         &session_id,
                         &mut session.transcript_path,
                     ) {
-                        session.last_agent_text = Some(text);
-                        session.last_agent_text_at = now_epoch();
+                        session.set_last_agent_text_if_changed(text);
                     }
                     session.touch();
                     log_transition(&session.id, prev, session.status, "Stop");
@@ -617,10 +616,10 @@ async fn handle_connection(
                             &sid,
                             &mut session.transcript_path,
                         ) {
-                            session.last_agent_text = Some(text);
-                            session.last_agent_text_at = now_epoch();
-                            registry.register(session);
-                            late_notify.notify_waiters();
+                            if session.set_last_agent_text_if_changed(text) {
+                                registry.register(session);
+                                late_notify.notify_waiters();
+                            }
                         }
                     }
                 });

@@ -188,41 +188,56 @@ fn build_choice_bar(
 /// Maximum characters of prompt/agent text to render before ellipsizing.
 const DESCRIBE_MAX_CHARS: usize = 60;
 
-/// First content line: whichever of "live tool call" / "last prompt" / "last
-/// agent text" is most current. Returns `None` only when nothing has been
-/// captured yet (fresh session, no activity).
-///
-/// While a tool is running (Executing/WaitingApproval with tool+detail), the
-/// tool action wins — it's the freshest thing happening. Once the tool
-/// finishes, the agent text posted by PostToolUse takes over.
+/// First content line: the freshest of "live tool" / "last prompt" / "last
+/// agent text" / "last completed tool". Returns `None` only when nothing has
+/// been captured yet. A completed tool stays visible as the "last event"
+/// until a newer prompt or agent sentence arrives.
 pub(crate) fn top_line(session: &Session) -> Option<String> {
     if matches!(
         session.status,
         SessionStatus::Executing | SessionStatus::WaitingApproval
     ) {
-        if let (Some(tool), Some(detail)) = (&session.current_tool, &session.tool_detail) {
-            return Some(truncate(&describe_tool(tool, detail, true), DESCRIBE_MAX_CHARS));
-        }
         if let Some(tool) = session.current_tool.as_deref() {
-            // Tool is running but the hook payload had no `command`/`file_path`
-            // (common for MCP and AskUserQuestion-style inputs). Show the
-            // tool name anyway so line 1 still reflects what's happening now.
-            return Some(format!("Running {}", prettify_tool_name(tool)));
+            return Some(render_tool(tool, session.tool_detail.as_deref(), true));
         }
     }
 
-    let user = session.last_prompt.as_deref().zip(session.last_prompt_at);
-    let agent = session.last_agent_text.as_deref().zip(session.last_agent_text_at);
-    match (user, agent) {
-        (Some((p, _)), None) => Some(render_user(p)),
-        (None, Some((a, _))) => Some(render_agent(session, a)),
-        (Some((p, pu)), Some((a, au))) => Some(if pu > au {
-            render_user(p)
-        } else {
-            render_agent(session, a)
-        }),
-        (None, None) => None,
+    #[derive(Clone, Copy)]
+    enum Kind {
+        User,
+        Agent,
+        Tool,
     }
+    // Array order is the tiebreak: `max_by_key` returns the last maximum,
+    // so on equal timestamps Agent > User > Tool — prefer a sentence over
+    // a raw tool summary when both land in the same second.
+    let candidates: [(Kind, Option<u64>); 3] = [
+        (Kind::Tool, session.last_tool_at),
+        (Kind::User, session.last_prompt_at),
+        (Kind::Agent, session.last_agent_text_at),
+    ];
+
+    let (kind, _) = candidates
+        .iter()
+        .filter_map(|(k, t)| t.map(|ts| (*k, ts)))
+        .max_by_key(|(_, ts)| *ts)?;
+
+    match kind {
+        Kind::User => session.last_prompt.as_deref().map(render_user),
+        Kind::Agent => session.last_agent_text.as_deref().map(|a| render_agent(session, a)),
+        Kind::Tool => session
+            .last_tool
+            .as_deref()
+            .map(|t| render_tool(t, session.last_tool_detail.as_deref(), false)),
+    }
+}
+
+fn render_tool(tool: &str, detail: Option<&str>, present: bool) -> String {
+    if let Some(d) = detail {
+        return truncate(&describe_tool(tool, d, present), DESCRIBE_MAX_CHARS);
+    }
+    let verb = if present { "Running" } else { "Ran" };
+    format!("{} {}", verb, prettify_tool_name(tool))
 }
 
 fn render_user(text: &str) -> String {
@@ -417,15 +432,56 @@ mod tests {
     #[test]
     fn top_line_falls_back_to_agent_text_after_post_tool_use() {
         // PostToolUse clears current_tool and sets status to Thinking — the
-        // last agent text becomes the freshest thing to show.
+        // agent text (newer than any prior event) wins.
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Thinking;
         s.last_tool = Some("Edit".into());
+        s.last_tool_at = Some(400);
         s.last_agent_text = Some("Applied the change.".into());
         s.last_agent_text_at = Some(500);
         assert_eq!(
             top_line(&s).as_deref(),
             Some("Claude: \"Applied the change.\"")
+        );
+    }
+
+    #[test]
+    fn top_line_sticks_on_completed_tool_when_its_the_newest_event() {
+        // Agent wrote a sentence, then ran an Edit tool; nothing new has
+        // landed since the tool finished. The tool is the freshest event,
+        // so it should remain on line 1 as a past-tense summary until a
+        // newer prompt/agent text arrives.
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Thinking;
+        s.last_agent_text = Some("I'll fix it.".into());
+        s.last_agent_text_at = Some(100);
+        s.last_tool = Some("Edit".into());
+        s.last_tool_detail = Some("src/main.rs".into());
+        s.last_tool_at = Some(200);
+        assert_eq!(top_line(&s).as_deref(), Some("Edited src/main.rs"));
+    }
+
+    #[test]
+    fn top_line_renders_ran_fallback_for_completed_mcp_tool() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Thinking;
+        s.last_tool = Some("mcp__claude_ai_Linear__list_issues".into());
+        s.last_tool_at = Some(300);
+        assert_eq!(top_line(&s).as_deref(), Some("Ran Linear.list_issues"));
+    }
+
+    #[test]
+    fn top_line_new_prompt_replaces_completed_tool() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Thinking;
+        s.last_tool = Some("Edit".into());
+        s.last_tool_detail = Some("src/main.rs".into());
+        s.last_tool_at = Some(200);
+        s.last_prompt = Some("also update the tests".into());
+        s.last_prompt_at = Some(300);
+        assert_eq!(
+            top_line(&s).as_deref(),
+            Some("You: \"also update the tests\"")
         );
     }
 

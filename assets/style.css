@@ -125,7 +125,7 @@ window.csd,
 /* ── Row 2: Status description ────────────────────────────────── */
 
 .status-desc {
-    color: @cat_text_muted;
+    color: @cat_text;
     font-size: 11px;
     letter-spacing: 0.1px;
 }

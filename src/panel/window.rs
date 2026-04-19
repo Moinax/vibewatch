@@ -1,12 +1,43 @@
+use std::hash::{Hash, Hasher};
+
 use gtk4 as gtk;
 use gtk4_layer_shell::LayerShell;
 use libadwaita as adw;
 
 use adw::prelude::*;
 
-use crate::session::SessionRegistry;
+use crate::session::{Session, SessionRegistry};
 
 use super::session_row;
+
+/// Hash the panel-visible fields of every session. The 10 Hz timer uses this
+/// to skip rebuilds when nothing the panel renders has changed — far cheaper
+/// than the previous full-JSON-serialize-and-compare.
+fn sessions_fingerprint(sessions: &[Session]) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    sessions.len().hash(&mut h);
+    for s in sessions {
+        s.id.hash(&mut h);
+        s.status.hash(&mut h);
+        s.current_tool.hash(&mut h);
+        s.tool_detail.hash(&mut h);
+        s.last_tool.hash(&mut h);
+        s.last_tool_detail.hash(&mut h);
+        s.last_tool_at.hash(&mut h);
+        s.last_prompt.hash(&mut h);
+        s.last_prompt_at.hash(&mut h);
+        s.last_agent_text.hash(&mut h);
+        s.last_agent_text_at.hash(&mut h);
+        s.session_name.hash(&mut h);
+        s.terminal.hash(&mut h);
+        s.started_at_epoch.hash(&mut h);
+        s.pending_approval
+            .as_ref()
+            .map(|p| (&p.request_id, p.choices.len()))
+            .hash(&mut h);
+    }
+    h.finish()
+}
 
 pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
@@ -80,21 +111,21 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
     // Skip polling when window is hidden to avoid unnecessary work
     let list_ref = session_list;
     let win_ref = window.clone();
-    let last_snapshot: std::rc::Rc<std::cell::RefCell<String>> =
-        std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+    // `None` means "rebuild on next tick" — used when the window was just
+    // shown so we always repaint from a fresh registry read.
+    let last_fingerprint: std::rc::Rc<std::cell::RefCell<Option<u64>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
     gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-        // Skip polling when hidden
         if !win_ref.is_visible() {
-            // Clear snapshot so we rebuild immediately when shown again
-            *last_snapshot.borrow_mut() = String::new();
+            *last_fingerprint.borrow_mut() = None;
             return gtk::glib::ControlFlow::Continue;
         }
 
         let sessions = registry.all();
-        let snapshot = serde_json::to_string(&sessions).unwrap_or_default();
-        let mut prev = last_snapshot.borrow_mut();
-        if *prev != snapshot {
-            *prev = snapshot;
+        let fp = sessions_fingerprint(&sessions);
+        let mut prev = last_fingerprint.borrow_mut();
+        if *prev != Some(fp) {
+            *prev = Some(fp);
             drop(prev);
             rebuild_list(&list_ref, &sessions);
             // Resize window height to match content
