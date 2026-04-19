@@ -53,7 +53,7 @@ That script does three things automatically: builds the binary (via `cargo insta
 You'll still need to do three short steps by hand — `vibewatch install` prints copy-paste snippets for each:
 
 1. Add `exec-once = ~/.cargo/bin/vibewatch daemon` (Hyprland) or the equivalent `spawn-at-startup` line (Niri) to your compositor config.
-2. Include `~/.config/vibewatch/waybar-module.jsonc` in your Waybar layout and add `"custom/vibewatch"` to your modules.
+2. Include `~/.config/vibewatch/waybar-module.jsonc` in your Waybar layout and add `"custom/vibewatch"` to your modules. Optionally import [`contrib/waybar-style.css`](contrib/waybar-style.css) into your waybar `style.css` — see [Waybar styling](#waybar-styling) below.
 3. (Optional) For cleanest widget-click-to-focus on Hyprland, add `cursor { no_warps = true }` and `input { mouse_refocus = false }`.
 
 Flags: `vibewatch install --help` — `--no-service`, `--no-hooks`, `--dry-run`, `--uninstall`.
@@ -88,6 +88,36 @@ window_class = "cursor"
 [agents.webstorm]
 window_class = "jetbrains-webstorm"
 ```
+
+## Waybar styling
+
+The vibewatch daemon emits the status line as a JSON object with three relevant fields:
+
+| Field    | Meaning                                                                                          |
+|----------|--------------------------------------------------------------------------------------------------|
+| `text`   | Widget label, e.g. `🤖 Claude: <span foreground="#74c7ec">thinking</span>` — Pango markup inline |
+| `class`  | One of `idle`, `active`, `attention` (as a single-element array so waybar replaces on each poll) |
+| `sessions` | Full session snapshot (panel consumers; ignored by waybar)                                     |
+
+The **status word** is colored by the daemon using the [Catppuccin](https://catppuccin.com/) palette (Mocha when the system is in dark mode, Latte otherwise — detected via `gsettings get org.gnome.desktop.interface color-scheme`):
+
+| Status                  | Mocha     | Latte     |
+|-------------------------|-----------|-----------|
+| `thinking`              | `#74c7ec` | `#209fb5` |
+| `executing` / `running` | `#a6e3a1` | `#40a02b` |
+| `waiting-approval`      | *(skipped — handled by `.attention` CSS background)* | |
+| `idle` / `stopped`      | `#6c7086` | `#8c8fa1` |
+
+So the inline color always looks "right" on any bar theme without needing user CSS. The one thing you do want to style yourself is the `.attention` state (a session is blocked on a widget click), because its visibility depends on your bar's background.
+
+A reference snippet lives at [`contrib/waybar-style.css`](contrib/waybar-style.css) — drop it into your waybar `style.css` or `@import` it:
+
+```css
+/* in ~/.config/waybar/style.css */
+@import url("/path/to/contrib/waybar-style.css");
+```
+
+Or copy the three rules directly and tweak the peach background to match your bar's accent color — e.g. `rgba(255, 100, 255, 0.5)` for a magenta theme. The selector is `#custom-vibewatch.attention`.
 
 ## CLI
 

@@ -312,12 +312,6 @@ impl SessionRegistry {
         map.insert(session.id.clone(), session);
     }
 
-    /// Remove any session matching the given PID (used to deduplicate scanner vs hook sessions).
-    pub fn remove_by_pid(&self, pid: u32) {
-        let mut map = self.sessions.write().unwrap();
-        map.retain(|_, s| s.pid != pid);
-    }
-
     /// Update the session name. Returns false if the session does not exist.
     pub fn set_session_name(&self, id: &str, name: String) -> bool {
         let mut map = self.sessions.write().unwrap();
@@ -385,11 +379,11 @@ impl SessionRegistry {
         }
     }
 
-    /// Look up a session by id; if missing and a scanner-discovered session
-    /// exists for the same `pid`, rename it in-place to `new_id` and return
-    /// the renamed session. This rehomes scanner sessions under real hook
-    /// session ids when hooks start arriving (e.g. after a daemon restart
-    /// while an agent session was already running).
+    /// Look up a session by id; if missing and any session exists for the
+    /// same `pid`, rename it in-place to `new_id` and return the renamed
+    /// session. Rehomes scanner sessions under real hook session ids, and
+    /// also recovers when a parent session's id was superseded (e.g. by a
+    /// sibling SessionStart on the same process).
     pub fn get_or_adopt(&self, new_id: &str, pid: u32) -> Option<Session> {
         let mut map = self.sessions.write().unwrap();
         if let Some(s) = map.get(new_id) {
@@ -397,7 +391,7 @@ impl SessionRegistry {
         }
         let adopt_id = map
             .iter()
-            .find(|(id, s)| s.pid == pid && id.starts_with("scan-"))
+            .find(|(_, s)| s.pid == pid)
             .map(|(id, _)| id.clone())?;
         let mut session = map.remove(&adopt_id)?;
         session.id = new_id.to_string();
@@ -614,7 +608,27 @@ mod tests {
     }
 
     #[test]
-    fn registry_get_or_adopt_returns_none_when_no_scan_match() {
+    fn registry_get_or_adopt_rehomes_uuid_session_by_pid() {
+        // When a sibling SessionStart (subagent/Task) previously overwrote the
+        // parent session's entry, a plain UUID session — not a scan- one —
+        // is sitting in the registry with the parent PID. Hooks for the
+        // original session must still be able to adopt it.
+        let registry = SessionRegistry::new();
+        let mut prior = Session::new("old-uuid-111".into(), AgentKind::ClaudeCode, 7777);
+        prior.status = SessionStatus::Thinking;
+        registry.register(prior);
+
+        let adopted = registry
+            .get_or_adopt("new-uuid-222", 7777)
+            .expect("adopts sibling uuid session by pid");
+        assert_eq!(adopted.id, "new-uuid-222");
+        assert_eq!(adopted.status, SessionStatus::Thinking);
+        assert!(registry.get("old-uuid-111").is_none());
+        assert!(registry.get("new-uuid-222").is_some());
+    }
+
+    #[test]
+    fn registry_get_or_adopt_returns_none_when_no_pid_match() {
         let registry = SessionRegistry::new();
         registry.register(Session::new("scan-claude-1".into(), AgentKind::ClaudeCode, 1));
         // Different pid — should NOT adopt.

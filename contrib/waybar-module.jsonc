@@ -5,6 +5,6 @@
         "interval": 2,
         "on-click": "vibewatch toggle-panel",
         "format": "{}",
-        "tooltip": true
+        "tooltip": false
     }
 }

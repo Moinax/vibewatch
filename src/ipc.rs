@@ -75,13 +75,11 @@ pub enum InboundEvent {
     },
 }
 
-/// Status response for Waybar/panel
+/// Status response for Waybar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub text: String,
-    pub tooltip: String,
     pub class: String,
-    pub sessions: Vec<crate::session::Session>,
 }
 
 /// Unix socket IPC server.
@@ -182,7 +180,6 @@ pub async fn send_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{AgentKind, Session};
 
     #[test]
     fn test_parse_session_start() {
@@ -239,17 +236,13 @@ mod tests {
 
     #[test]
     fn test_serialize_status_response() {
-        let session = Session::new("s1".into(), AgentKind::ClaudeCode, 1234);
         let response = StatusResponse {
             text: "1 active".into(),
-            tooltip: "Claude Code (s1): Running".into(),
             class: "active".into(),
-            sessions: vec![session],
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"text\":\"1 active\""));
         assert!(json.contains("\"class\":\"active\""));
-        assert!(json.contains("\"sessions\":["));
     }
 
     #[tokio::test]

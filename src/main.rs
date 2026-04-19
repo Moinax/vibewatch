@@ -340,7 +340,6 @@ async fn handle_connection(
                 cwd,
                 session_name,
             } => {
-                registry.remove_by_pid(pid);
                 let kind = parse_agent_kind(&agent);
                 let mut session = Session::new(session_id, kind, pid);
                 session.cwd = cwd;
@@ -355,11 +354,15 @@ async fn handle_connection(
                 pid,
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
+                    let prev = session.status;
                     session.status = SessionStatus::Executing;
-                    session.current_tool = Some(tool);
+                    session.current_tool = Some(tool.clone());
                     session.tool_detail = detail;
                     session.touch();
+                    log_transition(&session.id, prev, session.status, &format!("tool={}", tool));
                     registry.register(session);
+                } else {
+                    log_drop("PreToolUse", &session_id, pid);
                 }
             }
             InboundEvent::PostToolUse {
@@ -369,6 +372,7 @@ async fn handle_connection(
                 pid,
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
+                    let prev = session.status;
                     session.last_tool = session.current_tool.take();
                     session.last_tool_detail = session.tool_detail.take();
                     session.status = SessionStatus::Thinking;
@@ -382,7 +386,10 @@ async fn handle_connection(
                         session.last_agent_text_at = now_epoch();
                     }
                     session.touch();
+                    log_transition(&session.id, prev, session.status, "PostToolUse");
                     registry.register(session);
+                } else {
+                    log_drop("PostToolUse", &session_id, pid);
                 }
                 if !success {
                     sound_player.play(SoundEvent::Error);
@@ -394,6 +401,7 @@ async fn handle_connection(
                 pid,
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
+                    let prev = session.status;
                     session.status = SessionStatus::Thinking;
                     session.last_prompt = prompt;
                     session.last_prompt_at = now_epoch();
@@ -403,7 +411,10 @@ async fn handle_connection(
                         session.session_name = Some(name);
                     }
                     session.touch();
+                    log_transition(&session.id, prev, session.status, "UserPromptSubmit");
                     registry.register(session);
+                } else {
+                    log_drop("UserPromptSubmit", &session_id, pid);
                 }
             }
             InboundEvent::PermissionRequest {
@@ -438,6 +449,7 @@ async fn handle_connection(
                 let tool_name = tool.clone().unwrap_or_else(|| "tool".into());
 
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
+                    let prev = session.status;
                     session.status = SessionStatus::WaitingApproval;
                     session.current_tool = Some(tool_name.clone());
                     session.tool_detail = detail.clone();
@@ -459,7 +471,10 @@ async fn handle_connection(
                         choices,
                     });
                     session.touch();
+                    log_transition(&session.id, prev, session.status, "PermissionRequest");
                     registry.register(session);
+                } else {
+                    log_drop("PermissionRequest", &session_id, pid);
                 }
                 sound_player.play(SoundEvent::ApprovalNeeded);
                 if let Some(ref show) = show_sender {
@@ -546,6 +561,7 @@ async fn handle_connection(
             }
             InboundEvent::Stop { session_id, pid } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
+                    let prev = session.status;
                     session.status = SessionStatus::Idle;
                     session.current_tool = None;
                     session.tool_detail = None;
@@ -560,7 +576,10 @@ async fn handle_connection(
                         session.last_agent_text_at = now_epoch();
                     }
                     session.touch();
+                    log_transition(&session.id, prev, session.status, "Stop");
                     registry.register(session);
+                } else {
+                    log_drop("Stop", &session_id, pid);
                 }
                 let registry = registry.clone();
                 let sid = session_id.clone();
@@ -583,7 +602,14 @@ async fn handle_connection(
             InboundEvent::GetStatus => {
                 let sessions = registry.all();
                 let status = waybar::build_status(&sessions);
-                let mut json = serde_json::to_string(&status).unwrap_or_default();
+                // `class` is a single-element array so waybar replaces the
+                // widget's class list each poll instead of accumulating stale
+                // classes (e.g. `active` lingering after a transition to idle).
+                let waybar_json = serde_json::json!({
+                    "text": status.text,
+                    "class": [status.class],
+                });
+                let mut json = waybar_json.to_string();
                 json.push('\n');
                 let _ = write_half.write_all(json.as_bytes()).await;
                 let _ = write_half.flush().await;
@@ -599,8 +625,8 @@ async fn handle_connection(
 }
 
 /// Look up a session for a hook event. If `pid` is provided and the id is not
-/// found, try to adopt a matching `scan-*` session (handles daemon restart while
-/// an agent is already running).
+/// found, try to adopt a same-PID session (handles daemon restart while an
+/// agent is already running, and sibling SessionStart events on the same PID).
 fn lookup_session(
     registry: &SessionRegistry,
     session_id: &str,
@@ -611,6 +637,20 @@ fn lookup_session(
     } else {
         registry.get(session_id)
     }
+}
+
+fn log_transition(session_id: &str, prev: SessionStatus, next: SessionStatus, ctx: &str) {
+    eprintln!(
+        "vibewatch: trans session={} {:?} -> {:?} ({})",
+        session_id, prev, next, ctx
+    );
+}
+
+fn log_drop(event: &str, session_id: &str, pid: Option<u32>) {
+    eprintln!(
+        "vibewatch: DROP {} session={} pid={:?} — no session found",
+        event, session_id, pid
+    );
 }
 
 fn now_epoch() -> Option<u64> {

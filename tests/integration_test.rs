@@ -63,5 +63,4 @@ async fn test_daemon_ipc_flow() {
 
     let status = vibewatch::waybar::build_status(&sessions);
     assert!(status.text.contains("Claude"));
-    assert!(status.tooltip.contains("Claude Code"));
 }

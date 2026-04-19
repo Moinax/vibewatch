@@ -1,0 +1,31 @@
+/*
+ * Vibewatch waybar widget — recommended styles.
+ *
+ * The status word ("thinking", "Bash", "exec", "idle", …) is colored inline
+ * via Pango markup from the vibewatch daemon, using the Catppuccin palette
+ * (Mocha when the system is in dark mode, Latte otherwise). Only the
+ * `.attention` state and transitions are styled here.
+ *
+ * Drop this into your waybar style.css (or @import it). Tweak the
+ * `.attention` background to match your bar's accent if you prefer.
+ */
+
+#custom-vibewatch {
+    transition:
+        color 0.25s ease-in-out,
+        background 0.25s ease-in-out;
+}
+
+/* Idle & active states: let the inline Pango color speak for itself.
+ * Set a default text color for the non-colored parts (icon, agent name). */
+#custom-vibewatch.idle,
+#custom-vibewatch.active {
+    color: white;
+}
+
+/* Attention: a session is waiting for the user's Accept/Deny click.
+ * Uses the Catppuccin Mocha peach. Swap to #fe640b for Latte. */
+#custom-vibewatch.attention {
+    color: #11111b;
+    background: rgba(250, 179, 135, 0.85);
+}
