@@ -82,7 +82,7 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
     let win_ref = window.clone();
     let last_snapshot: std::rc::Rc<std::cell::RefCell<String>> =
         std::rc::Rc::new(std::cell::RefCell::new(String::new()));
-    gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+    gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         // Skip polling when hidden
         if !win_ref.is_visible() {
             // Clear snapshot so we rebuild immediately when shown again

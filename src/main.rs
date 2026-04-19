@@ -743,18 +743,38 @@ async fn run_status(watch: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Streaming subscriber: keep the daemon connection open and forward each JSON
-/// line the daemon pushes on state change. If the daemon is down or the socket
-/// drops, print an idle payload so waybar still renders something, then exit
-/// (waybar will respawn us).
+/// Streaming subscriber: keep forwarding daemon-pushed JSON lines to stdout
+/// forever. Reconnects on socket drops (daemon restart) so waybar's
+/// continuous custom-module stays alive across daemon upgrades.
 async fn run_status_watch(socket_path: &std::path::Path) -> anyhow::Result<()> {
+    const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+    let mut emitted_offline = false;
+
+    loop {
+        match stream_once(socket_path).await {
+            Ok(()) => {
+                // Daemon closed the connection cleanly. Mark the widget
+                // offline so waybar doesn't keep showing stale state.
+                emit_offline();
+                emitted_offline = true;
+            }
+            Err(_) => {
+                if !emitted_offline {
+                    emit_offline();
+                    emitted_offline = true;
+                }
+            }
+        }
+        tokio::time::sleep(RETRY).await;
+        emitted_offline = false;
+    }
+}
+
+async fn stream_once(socket_path: &std::path::Path) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
 
-    let Ok(mut stream) = UnixStream::connect(socket_path).await else {
-        waybar::print_waybar_status(&[]);
-        return Ok(());
-    };
+    let mut stream = UnixStream::connect(socket_path).await?;
 
     let event = serde_json::to_string(&InboundEvent::SubscribeStatus)?;
     stream.write_all(event.as_bytes()).await?;
@@ -763,13 +783,18 @@ async fn run_status_watch(socket_path: &std::path::Path) -> anyhow::Result<()> {
 
     let (read_half, _write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half).lines();
-    while let Ok(Some(line)) = reader.next_line().await {
+    while let Some(line) = reader.next_line().await? {
         println!("{}", line);
         use std::io::Write;
         let _ = std::io::stdout().flush();
     }
-
     Ok(())
+}
+
+fn emit_offline() {
+    waybar::print_waybar_status(&[]);
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
 }
 
 /// Toggle the panel by sending a TogglePanel IPC event to the daemon.

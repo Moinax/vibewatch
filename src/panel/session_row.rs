@@ -1,7 +1,7 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 
-use crate::session::{describe_tool, parent_pid, Session, SessionStatus};
+use crate::session::{describe_tool, parent_pid, prettify_tool_name, Session, SessionStatus};
 
 /// Build a ListBoxRow widget for a single session.
 ///
@@ -59,7 +59,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     content.append(&header);
 
-    if let Some(desc_text) = describe(session) {
+    if let Some(desc_text) = top_line(session) {
         let desc_label = gtk::Label::new(Some(&desc_text));
         desc_label.add_css_class("status-desc");
         desc_label.set_halign(gtk::Align::Fill);
@@ -70,8 +70,8 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
         content.append(&desc_label);
     }
 
-    let action_text = action_line(session);
-    let action_label = gtk::Label::new(Some(&action_text));
+    let state_text = state_label(session);
+    let action_label = gtk::Label::new(Some(&state_text));
     action_label.add_css_class("action-line");
     action_label.add_css_class(session.status.css_class());
     action_label.set_halign(gtk::Align::Fill);
@@ -188,10 +188,29 @@ fn build_choice_bar(
 /// Maximum characters of prompt/agent text to render before ellipsizing.
 const DESCRIBE_MAX_CHARS: usize = 60;
 
-/// Description-line content for a session: latest of user prompt / agent text,
-/// with a speaker prefix. Returns `None` when neither has been captured yet —
-/// the action line carries the session status in that case.
-pub(crate) fn describe(session: &Session) -> Option<String> {
+/// First content line: whichever of "live tool call" / "last prompt" / "last
+/// agent text" is most current. Returns `None` only when nothing has been
+/// captured yet (fresh session, no activity).
+///
+/// While a tool is running (Executing/WaitingApproval with tool+detail), the
+/// tool action wins — it's the freshest thing happening. Once the tool
+/// finishes, the agent text posted by PostToolUse takes over.
+pub(crate) fn top_line(session: &Session) -> Option<String> {
+    if matches!(
+        session.status,
+        SessionStatus::Executing | SessionStatus::WaitingApproval
+    ) {
+        if let (Some(tool), Some(detail)) = (&session.current_tool, &session.tool_detail) {
+            return Some(truncate(&describe_tool(tool, detail, true), DESCRIBE_MAX_CHARS));
+        }
+        if let Some(tool) = session.current_tool.as_deref() {
+            // Tool is running but the hook payload had no `command`/`file_path`
+            // (common for MCP and AskUserQuestion-style inputs). Show the
+            // tool name anyway so line 1 still reflects what's happening now.
+            return Some(format!("Running {}", prettify_tool_name(tool)));
+        }
+    }
+
     let user = session.last_prompt.as_deref().zip(session.last_prompt_at);
     let agent = session.last_agent_text.as_deref().zip(session.last_agent_text_at);
     match (user, agent) {
@@ -228,22 +247,10 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Short action-line summary of what the agent is doing right now.
-/// Rendered on every row, regardless of whether any text has been captured.
-fn action_line(session: &Session) -> String {
-    if session.status == SessionStatus::WaitingApproval {
-        let tool = session.current_tool.as_deref().unwrap_or("tool");
-        return format!("Needs approval: {}", tool);
-    }
-    if let (Some(tool), Some(detail)) = (&session.current_tool, &session.tool_detail) {
-        return describe_tool(tool, detail, true);
-    }
-    match session.status {
-        SessionStatus::Thinking | SessionStatus::Executing => "Thinking".into(),
-        SessionStatus::Stopped => "Stopped".into(),
-        SessionStatus::Idle | SessionStatus::Running => "Idle".into(),
-        SessionStatus::WaitingApproval => "Awaiting approval".into(),
-    }
+/// Short state word for the second line — same vocabulary as the waybar
+/// widget (`idle`, `thinking`, `Bash`, `Edit`, `approval`, `stopped`).
+fn state_label(session: &Session) -> String {
+    session.inline_status()
 }
 
 fn focus_session(window_id: Option<&str>, pid: u32) {
@@ -310,7 +317,7 @@ fn send_approval_decision(request_id: &str, choice_index: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{action_line, button_css_class, button_label, describe, has_pending_approval};
+    use super::{button_css_class, button_label, has_pending_approval, state_label, top_line};
     use crate::session::{AgentKind, Session, SessionStatus};
 
     fn mk(agent: AgentKind) -> Session {
@@ -318,116 +325,163 @@ mod tests {
     }
 
     #[test]
-    fn user_only_renders_you_prefix() {
+    fn top_line_user_only_renders_you_prefix() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.last_prompt = Some("fix the deploy".into());
         s.last_prompt_at = Some(100);
-        assert_eq!(describe(&s).as_deref(), Some("You: \"fix the deploy\""));
+        assert_eq!(top_line(&s).as_deref(), Some("You: \"fix the deploy\""));
     }
 
     #[test]
-    fn agent_only_renders_agent_prefix() {
+    fn top_line_agent_only_renders_agent_prefix() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.last_agent_text = Some("Tests pass.".into());
         s.last_agent_text_at = Some(100);
-        assert_eq!(describe(&s).as_deref(), Some("Claude: \"Tests pass.\""));
+        assert_eq!(top_line(&s).as_deref(), Some("Claude: \"Tests pass.\""));
     }
 
     #[test]
-    fn codex_agent_uses_codex_prefix() {
+    fn top_line_codex_agent_uses_codex_prefix() {
         let mut s = mk(AgentKind::Codex);
         s.last_agent_text = Some("All good.".into());
         s.last_agent_text_at = Some(100);
-        assert_eq!(describe(&s).as_deref(), Some("Codex: \"All good.\""));
+        assert_eq!(top_line(&s).as_deref(), Some("Codex: \"All good.\""));
     }
 
     #[test]
-    fn user_wins_when_newer() {
+    fn top_line_user_wins_when_newer() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.last_prompt = Some("please do X".into());
         s.last_prompt_at = Some(200);
         s.last_agent_text = Some("done".into());
         s.last_agent_text_at = Some(100);
-        assert_eq!(describe(&s).as_deref(), Some("You: \"please do X\""));
+        assert_eq!(top_line(&s).as_deref(), Some("You: \"please do X\""));
     }
 
     #[test]
-    fn agent_wins_when_newer_or_equal() {
+    fn top_line_agent_wins_when_newer_or_equal() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.last_prompt = Some("please do X".into());
         s.last_prompt_at = Some(100);
         s.last_agent_text = Some("done".into());
         s.last_agent_text_at = Some(100);
-        assert_eq!(describe(&s).as_deref(), Some("Claude: \"done\""));
+        assert_eq!(top_line(&s).as_deref(), Some("Claude: \"done\""));
     }
 
     #[test]
-    fn describe_returns_none_when_nothing_captured() {
+    fn top_line_none_when_nothing_captured() {
         let s = mk(AgentKind::ClaudeCode);
-        assert!(describe(&s).is_none());
+        assert!(top_line(&s).is_none());
     }
 
     #[test]
-    fn describe_returns_none_when_nothing_captured_even_if_stopped() {
+    fn top_line_none_when_stopped_with_no_content() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Stopped;
-        assert!(describe(&s).is_none());
+        assert!(top_line(&s).is_none());
     }
 
     #[test]
-    fn long_text_is_truncated_with_ellipsis() {
+    fn top_line_live_tool_wins_while_executing() {
+        // Executing with tool+detail overrides older prompt/agent text — the
+        // running tool is always "freshest".
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Executing;
+        s.current_tool = Some("Edit".into());
+        s.tool_detail = Some("src/main.rs".into());
+        s.last_agent_text = Some("done".into());
+        s.last_agent_text_at = Some(999);
+        assert_eq!(top_line(&s).as_deref(), Some("Editing src/main.rs"));
+    }
+
+    #[test]
+    fn top_line_running_fallback_when_no_detail() {
+        // MCP tools and AskUserQuestion don't carry `command`/`file_path`, so
+        // the hook sets `current_tool` but leaves `tool_detail` empty. We
+        // still want line 1 to reflect what's happening.
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Executing;
+        s.current_tool = Some("mcp__claude_ai_Linear__list_issues".into());
+        assert_eq!(top_line(&s).as_deref(), Some("Running Linear.list_issues"));
+    }
+
+    #[test]
+    fn top_line_live_tool_wins_while_waiting_approval() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::WaitingApproval;
+        s.current_tool = Some("Bash".into());
+        s.tool_detail = Some("rm -rf /tmp/foo".into());
+        assert_eq!(top_line(&s).as_deref(), Some("rm -rf /tmp/foo"));
+    }
+
+    #[test]
+    fn top_line_falls_back_to_agent_text_after_post_tool_use() {
+        // PostToolUse clears current_tool and sets status to Thinking — the
+        // last agent text becomes the freshest thing to show.
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Thinking;
+        s.last_tool = Some("Edit".into());
+        s.last_agent_text = Some("Applied the change.".into());
+        s.last_agent_text_at = Some(500);
+        assert_eq!(
+            top_line(&s).as_deref(),
+            Some("Claude: \"Applied the change.\"")
+        );
+    }
+
+    #[test]
+    fn top_line_long_text_is_truncated_with_ellipsis() {
         let mut s = mk(AgentKind::ClaudeCode);
         let long: String = "x".repeat(200);
         s.last_prompt = Some(long.clone());
         s.last_prompt_at = Some(1);
-        let out = describe(&s).unwrap();
+        let out = top_line(&s).unwrap();
         assert!(out.starts_with("You: \""));
         assert!(out.ends_with("...\""));
         assert!(out.len() < long.len() + 20);
     }
 
     #[test]
-    fn action_line_idle_by_default() {
+    fn state_label_idle_by_default() {
         let s = mk(AgentKind::ClaudeCode);
-        assert_eq!(action_line(&s), "Idle");
+        assert_eq!(state_label(&s), "idle");
     }
 
     #[test]
-    fn action_line_thinking_when_thinking() {
+    fn state_label_thinking_when_thinking() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Thinking;
-        assert_eq!(action_line(&s), "Thinking");
+        assert_eq!(state_label(&s), "thinking");
     }
 
     #[test]
-    fn action_line_thinking_when_executing_without_tool() {
+    fn state_label_exec_fallback_when_no_tool() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Executing;
-        assert_eq!(action_line(&s), "Thinking");
+        assert_eq!(state_label(&s), "exec");
     }
 
     #[test]
-    fn action_line_stopped_when_stopped() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.status = SessionStatus::Stopped;
-        assert_eq!(action_line(&s), "Stopped");
-    }
-
-    #[test]
-    fn action_line_shows_needs_approval_for_waiting() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.status = SessionStatus::WaitingApproval;
-        s.current_tool = Some("Bash".into());
-        assert_eq!(action_line(&s), "Needs approval: Bash");
-    }
-
-    #[test]
-    fn action_line_still_shows_live_tool_when_executing() {
+    fn state_label_shows_tool_name_when_executing() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Executing;
         s.current_tool = Some("Edit".into());
-        s.tool_detail = Some("src/main.rs".into());
-        assert_eq!(action_line(&s), "Editing src/main.rs");
+        assert_eq!(state_label(&s), "Edit");
+    }
+
+    #[test]
+    fn state_label_stopped_when_stopped() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Stopped;
+        assert_eq!(state_label(&s), "stopped");
+    }
+
+    #[test]
+    fn state_label_approval_when_waiting() {
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::WaitingApproval;
+        s.current_tool = Some("Bash".into());
+        assert_eq!(state_label(&s), "approval");
     }
 
     #[test]

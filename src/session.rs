@@ -265,13 +265,11 @@ impl Session {
     /// Short inline status text for waybar/status display.
     pub fn inline_status(&self) -> String {
         match self.status {
-            SessionStatus::Executing => {
-                if let Some(tool) = &self.current_tool {
-                    tool.clone()
-                } else {
-                    "exec".to_string()
-                }
-            }
+            SessionStatus::Executing => self
+                .current_tool
+                .as_deref()
+                .map(prettify_tool_name)
+                .unwrap_or_else(|| "exec".to_string()),
             SessionStatus::WaitingApproval => "approval".to_string(),
             SessionStatus::Thinking => "thinking".to_string(),
             SessionStatus::Running => "idle".to_string(),
@@ -471,8 +469,25 @@ pub fn describe_tool(tool: &str, detail: &str, present: bool) -> String {
         ("Bash", _) => detail.to_string(),
         ("Grep" | "Glob", true) => format!("Searching {}", detail),
         ("Grep" | "Glob", false) => format!("Searched {}", detail),
-        (_, _) => format!("{}: {}", tool, detail),
+        (_, _) => format!("{}: {}", prettify_tool_name(tool), detail),
     }
+}
+
+/// Prettify a raw Claude Code tool name for display.
+///
+/// MCP tool names arrive as `mcp__<server>__<tool>` and can be very long
+/// (e.g. `mcp__claude_ai_Linear__list_issues`). We collapse the server
+/// segment to its last underscore-token and join with a dot, giving
+/// `Linear.list_issues`. Everything else is returned unchanged.
+pub fn prettify_tool_name(name: &str) -> String {
+    let Some(rest) = name.strip_prefix("mcp__") else {
+        return name.to_string();
+    };
+    let Some((server, tool)) = rest.split_once("__") else {
+        return name.to_string();
+    };
+    let server_short = server.rsplit('_').next().unwrap_or(server);
+    format!("{}.{}", server_short, tool)
 }
 
 #[cfg(test)]
@@ -569,6 +584,39 @@ mod tests {
 
         registry.update_status("s1", SessionStatus::Stopped);
         assert_eq!(registry.active_count(), 1);
+    }
+
+    #[test]
+    fn prettify_mcp_name_shortens_to_server_dot_tool() {
+        assert_eq!(
+            prettify_tool_name("mcp__claude_ai_Linear__list_issues"),
+            "Linear.list_issues"
+        );
+        assert_eq!(
+            prettify_tool_name("mcp__plugin_context7_context7__query-docs"),
+            "context7.query-docs"
+        );
+    }
+
+    #[test]
+    fn prettify_passes_through_non_mcp_names() {
+        assert_eq!(prettify_tool_name("Bash"), "Bash");
+        assert_eq!(prettify_tool_name("AskUserQuestion"), "AskUserQuestion");
+        assert_eq!(prettify_tool_name(""), "");
+    }
+
+    #[test]
+    fn prettify_handles_malformed_mcp_name() {
+        // Missing second `__` separator — leave unchanged.
+        assert_eq!(prettify_tool_name("mcp__weird_name"), "mcp__weird_name");
+    }
+
+    #[test]
+    fn inline_status_prettifies_mcp_tool() {
+        let mut s = Session::new("s".into(), AgentKind::ClaudeCode, 1);
+        s.status = SessionStatus::Executing;
+        s.current_tool = Some("mcp__claude_ai_Linear__list_issues".into());
+        assert_eq!(s.inline_status(), "Linear.list_issues");
     }
 
     #[test]
