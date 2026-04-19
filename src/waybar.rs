@@ -112,27 +112,30 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
         }
     };
 
-    let text = match count {
-        0 => "\u{f544}".to_string(),
-        1 => {
-            let s = active[0];
-            format!(
-                "\u{f544} {}: {}",
-                s.agent.short_name(),
-                decorate(s.status, &s.inline_status())
-            )
-        }
-        _ => {
-            let most_interesting = active
-                .iter()
-                .max_by_key(|s| s.interest_priority())
-                .unwrap();
-            format!(
-                "\u{f544} {} \u{00b7} {}: {}",
-                count,
-                most_interesting.agent.short_name(),
-                decorate(most_interesting.status, &most_interesting.inline_status())
-            )
+    let text = if count == 0 {
+        "\u{f544}".to_string()
+    } else {
+        let s = if count == 1 {
+            active[0]
+        } else {
+            active.iter().max_by_key(|s| s.interest_priority()).unwrap()
+        };
+        let status_span = decorate(s.status, &s.inline_status());
+        // All-idle: the specific session's display name carries no signal
+        // (none of them are doing anything). Swap it for the app brand so
+        // the widget identifies itself at rest.
+        let name = if class == "idle" {
+            "VibeWatch".to_string()
+        } else {
+            pango_escape(&s.display_name())
+        };
+        if count == 1 {
+            format!("\u{f544} {} {}", name, status_span)
+        } else {
+            // Same colored ● used as the panel row indicator — matches
+            // `.indicator.<status>` colors from palette-*.css.
+            let dot = decorate(s.status, "\u{25cf}");
+            format!("{} \u{f544} {} {} {}", count, dot, name, status_span)
         }
     };
 
@@ -156,9 +159,12 @@ mod tests {
     use super::*;
     use crate::session::{AgentKind, SessionStatus};
 
-    fn make_session(id: &str, agent: AgentKind, status: SessionStatus) -> Session {
-        let mut s = Session::new(id.to_string(), agent, 1000);
+    /// Build a session with a pinned `session_name` so assertions don't
+    /// depend on `/proc/<pid>/cwd` resolution inside `display_name()`.
+    fn make_named(name: &str, agent: AgentKind, status: SessionStatus) -> Session {
+        let mut s = Session::new(format!("{}-id", name), agent, 1000);
         s.status = status;
+        s.session_name = Some(name.to_string());
         s
     }
 
@@ -179,76 +185,78 @@ mod tests {
 
     #[test]
     fn test_thinking_uses_sapphire_dark() {
-        let sessions = vec![make_session(
-            "s1",
+        let sessions = vec![make_named(
+            "dotfiles",
             AgentKind::ClaudeCode,
             SessionStatus::Thinking,
         )];
         let status = dark(&sessions);
         assert_eq!(
             status.text,
-            "\u{f544} Claude: <span foreground=\"#74c7ec\">thinking</span>"
+            "\u{f544} dotfiles <span foreground=\"#74c7ec\">thinking</span>"
         );
         assert_eq!(status.class, "active");
     }
 
     #[test]
     fn test_thinking_uses_sapphire_light() {
-        let sessions = vec![make_session(
-            "s1",
+        let sessions = vec![make_named(
+            "dotfiles",
             AgentKind::ClaudeCode,
             SessionStatus::Thinking,
         )];
         let status = light(&sessions);
         assert_eq!(
             status.text,
-            "\u{f544} Claude: <span foreground=\"#209fb5\">thinking</span>"
+            "\u{f544} dotfiles <span foreground=\"#209fb5\">thinking</span>"
         );
     }
 
     #[test]
-    fn test_executing_uses_green() {
+    fn test_executing_wins_over_thinking_in_multi() {
+        // Executing beats Thinking via interest_priority, so the executing
+        // session's name is the one shown (and the dot is green).
         let sessions = vec![
-            make_session("s1", AgentKind::ClaudeCode, SessionStatus::Thinking),
-            make_session("s2", AgentKind::Codex, SessionStatus::Executing),
+            make_named("dotfiles", AgentKind::ClaudeCode, SessionStatus::Thinking),
+            make_named("vibewatch", AgentKind::Codex, SessionStatus::Executing),
         ];
         let status = dark(&sessions);
         assert_eq!(
             status.text,
-            "\u{f544} 2 \u{00b7} Codex: <span foreground=\"#a6e3a1\">exec</span>"
+            "2 \u{f544} <span foreground=\"#a6e3a1\">\u{25cf}</span> vibewatch <span foreground=\"#a6e3a1\">exec</span>"
         );
         assert_eq!(status.class, "active");
     }
 
     #[test]
     fn test_attention_class_when_waiting_approval() {
-        let sessions = vec![make_session(
-            "s1",
+        let sessions = vec![make_named(
+            "dotfiles",
             AgentKind::ClaudeCode,
             SessionStatus::WaitingApproval,
         )];
         let status = dark(&sessions);
         assert_eq!(status.class, "attention");
-        assert_eq!(status.text, "\u{f544} Claude: approval");
+        assert_eq!(status.text, "\u{f544} dotfiles approval");
     }
 
     #[test]
     fn test_stopped_sessions_excluded_from_count() {
         let sessions = vec![
-            make_session("s1", AgentKind::ClaudeCode, SessionStatus::Thinking),
-            make_session("s2", AgentKind::Codex, SessionStatus::Stopped),
+            make_named("dotfiles", AgentKind::ClaudeCode, SessionStatus::Thinking),
+            make_named("vibewatch", AgentKind::Codex, SessionStatus::Stopped),
         ];
         let status = dark(&sessions);
         assert_eq!(
             status.text,
-            "\u{f544} Claude: <span foreground=\"#74c7ec\">thinking</span>"
+            "\u{f544} dotfiles <span foreground=\"#74c7ec\">thinking</span>"
         );
     }
 
     #[test]
-    fn test_idle_session_uses_dim_text() {
-        let sessions = vec![make_session(
-            "s1",
+    fn test_idle_single_swaps_name_for_brand() {
+        let sessions = vec![make_named(
+            "dotfiles",
             AgentKind::ClaudeCode,
             SessionStatus::Idle,
         )];
@@ -256,30 +264,44 @@ mod tests {
         assert_eq!(status.class, "idle");
         assert_eq!(
             status.text,
-            "\u{f544} Claude: <span foreground=\"#6c7086\">idle</span>"
+            "\u{f544} VibeWatch <span foreground=\"#6c7086\">idle</span>"
+        );
+    }
+
+    #[test]
+    fn test_idle_multi_swaps_name_for_brand() {
+        let sessions = vec![
+            make_named("dotfiles", AgentKind::ClaudeCode, SessionStatus::Idle),
+            make_named("vibewatch", AgentKind::Codex, SessionStatus::Idle),
+        ];
+        let status = dark(&sessions);
+        assert_eq!(status.class, "idle");
+        assert_eq!(
+            status.text,
+            "2 \u{f544} <span foreground=\"#6c7086\">\u{25cf}</span> VibeWatch <span foreground=\"#6c7086\">idle</span>"
         );
     }
 
     #[test]
     fn test_pango_escape_in_tool_name() {
-        let mut session = make_session("s1", AgentKind::ClaudeCode, SessionStatus::Executing);
+        let mut session = make_named("dotfiles", AgentKind::ClaudeCode, SessionStatus::Executing);
         session.current_tool = Some("A&B<x>".to_string());
         let status = dark(&[session]);
         assert_eq!(
             status.text,
-            "\u{f544} Claude: <span foreground=\"#a6e3a1\">A&amp;B&lt;x&gt;</span>"
+            "\u{f544} dotfiles <span foreground=\"#a6e3a1\">A&amp;B&lt;x&gt;</span>"
         );
     }
 
     #[test]
     fn test_executing_tool_detail_green_span() {
-        let mut session = make_session("s1", AgentKind::ClaudeCode, SessionStatus::Executing);
+        let mut session = make_named("dotfiles", AgentKind::ClaudeCode, SessionStatus::Executing);
         session.current_tool = Some("Bash".to_string());
         session.tool_detail = Some("npm test".to_string());
         let status = dark(&[session]);
         assert_eq!(
             status.text,
-            "\u{f544} Claude: <span foreground=\"#a6e3a1\">Bash</span>"
+            "\u{f544} dotfiles <span foreground=\"#a6e3a1\">Bash</span>"
         );
     }
 }
