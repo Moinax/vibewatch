@@ -394,9 +394,6 @@ async fn handle_connection(
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
-                    // If a prompt was still marked pending, the tool ran —
-                    // the user must have answered in the TUI. Clear it so the
-                    // widget stops showing a stale question.
                     if session.pending_approval.is_some() {
                         release_held_approvals(&approval_registry, &session.id).await;
                         session.pending_approval = None;
@@ -431,9 +428,6 @@ async fn handle_connection(
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
-                    // A new user prompt implicitly resolves any lingering
-                    // permission question — whether by answering it in the
-                    // TUI first or by typing something else.
                     if session.pending_approval.is_some() {
                         release_held_approvals(&approval_registry, &session.id).await;
                         session.pending_approval = None;
@@ -486,13 +480,13 @@ async fn handle_connection(
                 };
                 let tool_name = tool.clone().unwrap_or_else(|| "tool".into());
 
-                // If a prior prompt was still pending for this session, it's
-                // moot now — release its held hook socket before we overwrite
-                // `pending_approval` with the new request.
-                release_held_approvals(&approval_registry, &session_id).await;
-
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
+                    // Any prior prompt is moot now — release its held socket
+                    // before we overwrite `pending_approval`.
+                    if session.pending_approval.is_some() {
+                        release_held_approvals(&approval_registry, &session.id).await;
+                    }
                     session.status = SessionStatus::WaitingApproval;
                     session.current_tool = Some(tool_name.clone());
                     session.tool_detail = detail.clone();
@@ -801,25 +795,13 @@ async fn run_status(watch: bool) -> anyhow::Result<()> {
 /// continuous custom-module stays alive across daemon upgrades.
 async fn run_status_watch(socket_path: &std::path::Path) -> anyhow::Result<()> {
     const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
-    let mut emitted_offline = false;
 
     loop {
-        match stream_once(socket_path).await {
-            Ok(()) => {
-                // Daemon closed the connection cleanly. Mark the widget
-                // offline so waybar doesn't keep showing stale state.
-                emit_offline();
-                emitted_offline = true;
-            }
-            Err(_) => {
-                if !emitted_offline {
-                    emit_offline();
-                    emitted_offline = true;
-                }
-            }
-        }
+        // Either a clean close (Ok) or a connect/read failure (Err) means the
+        // widget should show offline until we reconnect.
+        let _ = stream_once(socket_path).await;
+        emit_offline();
         tokio::time::sleep(RETRY).await;
-        emitted_offline = false;
     }
 }
 

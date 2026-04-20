@@ -9,33 +9,12 @@ pub struct CompositorWindow {
     pub id: String,
     pub pid: u32,
     pub app_id: String,
-    pub title: String,
-    pub workspace: String,
 }
 
 /// Abstraction over compositor IPC
 #[async_trait::async_trait]
 pub trait Compositor: Send + Sync {
     async fn list_windows(&self) -> Result<Vec<CompositorWindow>>;
-    async fn focus_window(&self, window_id: &str) -> Result<()>;
-
-    async fn focus_by_pid(&self, pid: u32) -> Result<()> {
-        let windows = self.list_windows().await?;
-        let window = windows
-            .iter()
-            .find(|w| w.pid == pid)
-            .ok_or_else(|| anyhow::anyhow!("no window with pid {pid}"))?;
-        self.focus_window(&window.id).await
-    }
-
-    async fn focus_by_class(&self, class: &str) -> Result<()> {
-        let windows = self.list_windows().await?;
-        let window = windows
-            .iter()
-            .find(|w| w.app_id == class)
-            .ok_or_else(|| anyhow::anyhow!("no window with class {class}"))?;
-        self.focus_window(&window.id).await
-    }
 
     async fn find_by_class(&self, class: &str) -> Result<Vec<CompositorWindow>> {
         let windows = self.list_windows().await?;

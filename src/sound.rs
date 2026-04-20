@@ -5,7 +5,6 @@ use crate::config::SoundConfig;
 /// Events that can trigger a sound alert.
 pub enum SoundEvent {
     ApprovalNeeded,
-    TaskComplete,
     Error,
 }
 
@@ -29,7 +28,6 @@ impl SoundPlayer {
 
         let sound_ref = match event {
             SoundEvent::ApprovalNeeded => &self.config.approval_needed,
-            SoundEvent::TaskComplete => &self.config.task_complete,
             SoundEvent::Error => &self.config.error,
         };
 
@@ -120,12 +118,10 @@ mod tests {
         let config = SoundConfig {
             enabled: false,
             approval_needed: "builtin:chime".to_string(),
-            task_complete: "builtin:success".to_string(),
             error: "builtin:alert".to_string(),
         };
         let player = SoundPlayer::new(config);
         player.play(SoundEvent::ApprovalNeeded);
-        player.play(SoundEvent::TaskComplete);
         player.play(SoundEvent::Error);
     }
 

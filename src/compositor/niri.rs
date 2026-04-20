@@ -10,8 +10,6 @@ struct NiriWindow {
     id: u64,
     pid: Option<u32>,
     app_id: Option<String>,
-    title: Option<String>,
-    workspace_id: Option<u64>,
 }
 
 #[async_trait::async_trait]
@@ -32,25 +30,7 @@ impl Compositor for NiriCompositor {
                 id: w.id.to_string(),
                 pid: w.pid.unwrap_or(0),
                 app_id: w.app_id.unwrap_or_default(),
-                title: w.title.unwrap_or_default(),
-                workspace: w
-                    .workspace_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_default(),
             })
             .collect())
-    }
-
-    async fn focus_window(&self, window_id: &str) -> Result<()> {
-        let status = Command::new("niri")
-            .args(["msg", "action", "focus-window", "--id", window_id])
-            .status()
-            .await
-            .context("failed to run niri msg action")?;
-
-        if !status.success() {
-            anyhow::bail!("niri msg action focus-window failed");
-        }
-        Ok(())
     }
 }

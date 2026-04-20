@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
-use std::time::Instant;
 
 /// Kind of AI agent being monitored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -285,7 +284,7 @@ impl Session {
             return folder.to_string();
         }
         // Try /proc for scanned sessions
-        if let Some(path) = std::fs::read_link(format!("/proc/{}/cwd", self.pid)).ok() {
+        if let Ok(path) = std::fs::read_link(format!("/proc/{}/cwd", self.pid)) {
             if let Some(folder) = path.file_name().and_then(|n| n.to_str()) {
                 return folder.to_string();
             }
@@ -312,12 +311,6 @@ impl Session {
             .ok()
             .map(|d| d.as_secs());
         true
-    }
-
-    /// Human-readable one-line status.
-    pub fn status_line(&self) -> String {
-        let status_text = self.inline_status();
-        format!("{}: {}", self.agent.display_name(), status_text)
     }
 
     /// Short inline status text for waybar/status display.
@@ -350,16 +343,14 @@ impl Session {
 }
 
 /// Thread-safe registry of active sessions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SessionRegistry {
     sessions: Arc<RwLock<HashMap<String, Session>>>,
 }
 
 impl SessionRegistry {
     pub fn new() -> Self {
-        Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self::default()
     }
 
     /// Register a new session, replacing any previous session with the same id.
@@ -373,19 +364,6 @@ impl SessionRegistry {
         let mut map = self.sessions.write().unwrap();
         if let Some(session) = map.get_mut(id) {
             session.session_name = Some(name);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Update the status of an existing session. Returns false if the session
-    /// does not exist.
-    pub fn update_status(&self, id: &str, status: SessionStatus) -> bool {
-        let mut map = self.sessions.write().unwrap();
-        if let Some(session) = map.get_mut(id) {
-            session.status = status;
-            session.touch();
             true
         } else {
             false
@@ -408,14 +386,6 @@ impl SessionRegistry {
     pub fn all(&self) -> Vec<Session> {
         let map = self.sessions.read().unwrap();
         map.values().cloned().collect()
-    }
-
-    /// Count sessions that are not Stopped.
-    pub fn active_count(&self) -> usize {
-        let map = self.sessions.read().unwrap();
-        map.values()
-            .filter(|s| s.status != SessionStatus::Stopped)
-            .count()
     }
 
     /// Remove sessions whose PID is no longer alive.
@@ -561,23 +531,6 @@ mod tests {
     }
 
     #[test]
-    fn session_status_line() {
-        let mut session = Session::new("abc123".into(), AgentKind::ClaudeCode, 1234);
-        session.status = SessionStatus::Thinking;
-        assert_eq!(session.status_line(), "Claude Code: thinking");
-
-        session.status = SessionStatus::Executing;
-        session.current_tool = Some("Bash".into());
-        assert_eq!(session.status_line(), "Claude Code: Bash");
-
-        session.current_tool = None;
-        assert_eq!(session.status_line(), "Claude Code: exec");
-
-        session.status = SessionStatus::Idle;
-        assert_eq!(session.status_line(), "Claude Code: idle");
-    }
-
-    #[test]
     fn agent_short_name() {
         assert_eq!(AgentKind::ClaudeCode.short_name(), "Claude");
         assert_eq!(AgentKind::Codex.short_name(), "Codex");
@@ -610,38 +563,11 @@ mod tests {
     }
 
     #[test]
-    fn registry_update_status() {
-        let registry = SessionRegistry::new();
-        registry.register(Session::new("s1".into(), AgentKind::ClaudeCode, 1));
-
-        assert!(registry.update_status("s1", SessionStatus::Thinking));
-        let s = registry.get("s1").unwrap();
-        assert_eq!(s.status, SessionStatus::Thinking);
-    }
-
-    #[test]
-    fn registry_update_nonexistent_returns_false() {
-        let registry = SessionRegistry::new();
-        assert!(!registry.update_status("nope", SessionStatus::Idle));
-    }
-
-    #[test]
     fn registry_remove() {
         let registry = SessionRegistry::new();
         registry.register(Session::new("s1".into(), AgentKind::Cursor, 42));
         assert!(registry.remove("s1").is_some());
         assert!(registry.get("s1").is_none());
-    }
-
-    #[test]
-    fn registry_active_count() {
-        let registry = SessionRegistry::new();
-        registry.register(Session::new("s1".into(), AgentKind::ClaudeCode, 1));
-        registry.register(Session::new("s2".into(), AgentKind::Codex, 2));
-        assert_eq!(registry.active_count(), 2);
-
-        registry.update_status("s1", SessionStatus::Stopped);
-        assert_eq!(registry.active_count(), 1);
     }
 
     #[test]

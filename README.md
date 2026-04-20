@@ -79,7 +79,6 @@ compositor = "auto"          # "auto", "hyprland", or "niri"
 [sounds]
 enabled = true
 approval_needed = "builtin:chime"     # or a path to a .wav
-task_complete   = "builtin:success"
 error           = "builtin:alert"
 
 [agents.cursor]

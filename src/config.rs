@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -22,23 +22,12 @@ pub struct GeneralConfig {
 pub struct SoundConfig {
     pub enabled: bool,
     pub approval_needed: String,
-    pub task_complete: String,
     pub error: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     pub window_class: String,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            sounds: SoundConfig::default(),
-            agents: HashMap::new(),
-        }
-    }
 }
 
 impl Default for GeneralConfig {
@@ -55,7 +44,6 @@ impl Default for SoundConfig {
         Self {
             enabled: true,
             approval_needed: "builtin:chime".to_string(),
-            task_complete: "builtin:success".to_string(),
             error: "builtin:alert".to_string(),
         }
     }
@@ -97,12 +85,6 @@ impl Config {
         let config: Config = toml::from_str(&contents)?;
         Ok(config)
     }
-
-    /// Parse configuration from a TOML string.
-    pub fn from_str(s: &str) -> anyhow::Result<Self> {
-        let config: Config = toml::from_str(s)?;
-        Ok(config)
-    }
 }
 
 #[cfg(test)]
@@ -116,7 +98,6 @@ mod tests {
         assert!(config.general.socket_path.is_none());
         assert!(config.sounds.enabled);
         assert_eq!(config.sounds.approval_needed, "builtin:chime");
-        assert_eq!(config.sounds.task_complete, "builtin:success");
         assert_eq!(config.sounds.error, "builtin:alert");
         assert!(config.agents.is_empty());
     }
@@ -131,7 +112,6 @@ socket_path = "/run/user/1000/vw.sock"
 [sounds]
 enabled = false
 approval_needed = "/home/user/chime.wav"
-task_complete = "/home/user/success.wav"
 error = "/home/user/alert.wav"
 
 [agents.claude]
@@ -140,7 +120,7 @@ window_class = "cursor"
 [agents.copilot]
 window_class = "code"
 "#;
-        let config = Config::from_str(toml_str).unwrap();
+        let config = toml::from_str::<Config>(toml_str).unwrap();
         assert_eq!(config.general.compositor, "hyprland");
         assert_eq!(
             config.general.socket_path.as_deref(),
@@ -148,7 +128,6 @@ window_class = "code"
         );
         assert!(!config.sounds.enabled);
         assert_eq!(config.sounds.approval_needed, "/home/user/chime.wav");
-        assert_eq!(config.sounds.task_complete, "/home/user/success.wav");
         assert_eq!(config.sounds.error, "/home/user/alert.wav");
         assert_eq!(config.agents.len(), 2);
         assert_eq!(config.agents["claude"].window_class, "cursor");
@@ -157,7 +136,7 @@ window_class = "code"
 
     #[test]
     fn test_parse_empty_config() {
-        let config = Config::from_str("").unwrap();
+        let config = toml::from_str::<Config>("").unwrap();
         assert_eq!(config.general.compositor, "auto");
         assert!(config.sounds.enabled);
         assert!(config.agents.is_empty());
@@ -169,7 +148,7 @@ window_class = "code"
 [sounds]
 enabled = false
 "#;
-        let config = Config::from_str(toml_str).unwrap();
+        let config = toml::from_str::<Config>(toml_str).unwrap();
         // sounds section partially overridden
         assert!(!config.sounds.enabled);
         assert_eq!(config.sounds.approval_needed, "builtin:chime");

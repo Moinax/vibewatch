@@ -124,11 +124,6 @@ impl IpcServer {
         let (stream, _addr) = self.listener.accept().await?;
         Ok(stream)
     }
-
-    /// Returns the socket path.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 impl Drop for IpcServer {
@@ -254,9 +249,8 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let socket_path = tmp.path().join("vibewatch.sock");
 
-        let server = IpcServer::bind(&socket_path).unwrap();
+        let _server = IpcServer::bind(&socket_path).unwrap();
         assert!(socket_path.exists());
-        assert_eq!(server.path(), socket_path);
 
         // Client can connect
         let _client = UnixStream::connect(&socket_path).await.unwrap();

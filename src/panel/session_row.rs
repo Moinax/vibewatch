@@ -123,11 +123,6 @@ fn format_elapsed(session: &Session) -> String {
     }
 }
 
-/// Test hook: does this session currently expect a widget approval click?
-pub(crate) fn has_pending_approval(session: &Session) -> bool {
-    session.pending_approval.is_some()
-}
-
 /// Button text for a given choice — just returns its label.
 pub(crate) fn button_label(choice: &crate::session::ApprovalChoice) -> &str {
     &choice.label
@@ -332,7 +327,7 @@ fn send_approval_decision(request_id: &str, choice_index: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{button_css_class, button_label, has_pending_approval, state_label, top_line};
+    use super::{button_css_class, button_label, state_label, top_line};
     use crate::session::{AgentKind, Session, SessionStatus};
 
     fn mk(agent: AgentKind) -> Session {
@@ -538,24 +533,6 @@ mod tests {
         s.status = SessionStatus::WaitingApproval;
         s.current_tool = Some("Bash".into());
         assert_eq!(state_label(&s), "approval");
-    }
-
-    #[test]
-    fn has_pending_approval_returns_true_when_set() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.pending_approval = Some(crate::session::PendingApproval {
-            request_id: "r1".into(),
-            tool: "Bash".into(),
-            detail: Some("ls".into()),
-            choices: vec![],
-        });
-        assert!(has_pending_approval(&s));
-    }
-
-    #[test]
-    fn has_pending_approval_returns_false_when_none() {
-        let s = mk(AgentKind::ClaudeCode);
-        assert!(!has_pending_approval(&s));
     }
 
     #[test]

@@ -69,20 +69,14 @@ pub async fn send_permission_request(
                 .and_then(|x| x.as_str())
                 .unwrap_or("deny")
                 .to_string();
-            let suggestion = v.get("suggestion").and_then(|x| {
-                if x.is_null() {
-                    None
-                } else {
-                    serde_json::from_value(x.clone()).ok()
-                }
-            });
-            let updated_permissions = v.get("updatedPermissions").and_then(|x| {
-                if x.is_null() {
-                    None
-                } else {
-                    Some(x.clone())
-                }
-            });
+            let suggestion = v
+                .get("suggestion")
+                .filter(|x| !x.is_null())
+                .and_then(|x| serde_json::from_value(x.clone()).ok());
+            let updated_permissions = v
+                .get("updatedPermissions")
+                .filter(|x| !x.is_null())
+                .cloned();
             Ok(PermissionDecisionResult {
                 label,
                 behavior,
@@ -96,11 +90,12 @@ pub async fn send_permission_request(
     }
 }
 
-/// Claude Code hook JSON envelope (received on stdin)
+/// Claude Code hook JSON envelope (received on stdin). Fields we don't use
+/// (e.g. `hook_event_name`, `permission_mode`) are silently dropped by serde
+/// since we don't enable `deny_unknown_fields`.
 #[derive(Debug, Deserialize)]
 pub struct ClaudeCodeHook {
     pub session_id: String,
-    pub hook_event_name: String,
     #[serde(default)]
     pub tool_name: Option<String>,
     #[serde(default)]
@@ -641,7 +636,7 @@ mod tests {
     #[tokio::test]
     async fn send_permission_request_reads_decision_line() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-        use tokio::net::{UnixListener, UnixStream};
+        use tokio::net::UnixListener;
 
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("v.sock");
