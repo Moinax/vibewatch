@@ -83,12 +83,25 @@ pub struct PermissionSuggestion {
     pub destination: String,
 }
 
+/// One entry of `decision.updatedPermissions` sent back to Claude Code — lets
+/// the widget mirror the TUI's "and auto-accept edits for this session" option
+/// by flipping the session's permission mode when the button is clicked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdatedPermission {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub mode: String,
+    pub destination: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalChoice {
     pub label: String,
     pub behavior: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<PermissionSuggestion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_permissions: Option<Vec<UpdatedPermission>>,
 }
 
 impl ApprovalChoice {
@@ -101,6 +114,7 @@ impl ApprovalChoice {
             label: "Yes".to_string(),
             behavior: "allow".to_string(),
             suggestion: None,
+            updated_permissions: None,
         });
         for sug in suggestions {
             let rules_label = sug
@@ -125,12 +139,33 @@ impl ApprovalChoice {
                 label,
                 behavior: sug.behavior.clone(),
                 suggestion: Some(sug.clone()),
+                updated_permissions: None,
+            });
+        }
+        // ExitPlanMode has no rule-level suggestions; mirror the TUI's middle
+        // option ("Yes, and auto-accept edits") with a synthetic choice that
+        // flips the session into acceptEdits mode. Skipped if a suggestion
+        // already proposes setMode (future-proofing if Claude starts sending
+        // them for ExitPlanMode).
+        if tool_name == "ExitPlanMode"
+            && !suggestions.iter().any(|s| s.kind == "setMode")
+        {
+            out.push(ApprovalChoice {
+                label: "Yes, and auto-accept edits".to_string(),
+                behavior: "allow".to_string(),
+                suggestion: None,
+                updated_permissions: Some(vec![UpdatedPermission {
+                    kind: "setMode".to_string(),
+                    mode: "acceptEdits".to_string(),
+                    destination: "session".to_string(),
+                }]),
             });
         }
         out.push(ApprovalChoice {
             label: "No".to_string(),
             behavior: "deny".to_string(),
             suggestion: None,
+            updated_permissions: None,
         });
         out
     }
@@ -146,6 +181,7 @@ impl ApprovalChoice {
                 label: label.clone(),
                 behavior: "answer".to_string(),
                 suggestion: None,
+                updated_permissions: None,
             })
             .collect()
     }
@@ -780,9 +816,12 @@ mod tests {
             label: "Yes".into(),
             behavior: "allow".into(),
             suggestion: None,
+            updated_permissions: None,
         };
         let json = serde_json::to_string(&c).unwrap();
         assert!(!json.contains("suggestion"), "got {json}");
+        assert!(!json.contains("updatedPermissions"), "got {json}");
+        assert!(!json.contains("updated_permissions"), "got {json}");
         assert!(json.contains(r#""label":"Yes""#));
     }
 
@@ -793,8 +832,57 @@ mod tests {
         assert_eq!(choices[0].label, "Yes");
         assert_eq!(choices[0].behavior, "allow");
         assert!(choices[0].suggestion.is_none());
+        assert!(choices[0].updated_permissions.is_none());
         assert_eq!(choices[1].label, "No");
         assert_eq!(choices[1].behavior, "deny");
+    }
+
+    #[test]
+    fn build_choices_for_exit_plan_mode_adds_auto_accept_middle_button() {
+        let choices = ApprovalChoice::build_from("ExitPlanMode", &[]);
+        assert_eq!(choices.len(), 3, "want Yes / Yes auto-accept / No");
+        assert_eq!(choices[0].label, "Yes");
+        assert_eq!(choices[0].behavior, "allow");
+        assert_eq!(choices[1].label, "Yes, and auto-accept edits");
+        assert_eq!(choices[1].behavior, "allow");
+        let ups = choices[1]
+            .updated_permissions
+            .as_ref()
+            .expect("middle button carries updatedPermissions");
+        assert_eq!(ups.len(), 1);
+        assert_eq!(ups[0].kind, "setMode");
+        assert_eq!(ups[0].mode, "acceptEdits");
+        assert_eq!(ups[0].destination, "session");
+        assert_eq!(choices[2].label, "No");
+        assert_eq!(choices[2].behavior, "deny");
+    }
+
+    #[test]
+    fn build_choices_for_exit_plan_mode_skips_synthetic_when_suggestion_covers_set_mode() {
+        let sug = PermissionSuggestion {
+            kind: "setMode".into(),
+            rules: vec![],
+            behavior: "allow".into(),
+            destination: "session".into(),
+        };
+        let choices = ApprovalChoice::build_from("ExitPlanMode", &[sug]);
+        // Yes + one suggestion button + No — no duplicate synthetic option.
+        assert_eq!(choices.len(), 3);
+        assert_eq!(choices[0].label, "Yes");
+        assert!(choices[1].suggestion.is_some(), "middle is the real suggestion");
+        assert_eq!(choices[2].label, "No");
+    }
+
+    #[test]
+    fn updated_permission_serializes_with_type_key() {
+        let up = UpdatedPermission {
+            kind: "setMode".into(),
+            mode: "acceptEdits".into(),
+            destination: "session".into(),
+        };
+        let json = serde_json::to_string(&up).unwrap();
+        assert!(json.contains(r#""type":"setMode""#), "got {json}");
+        assert!(!json.contains("\"kind\""));
     }
 
     #[test]

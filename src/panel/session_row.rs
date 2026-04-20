@@ -564,6 +564,7 @@ mod tests {
             label: "Yes".into(),
             behavior: "allow".into(),
             suggestion: None,
+            updated_permissions: None,
         };
         assert_eq!(button_label(&c), "Yes");
     }
@@ -579,6 +580,7 @@ mod tests {
                 behavior: "allow".into(),
                 destination: "session".into(),
             }),
+            updated_permissions: None,
         };
         assert_eq!(button_css_class(&c), "approval-scope");
     }
@@ -589,6 +591,7 @@ mod tests {
             label: "Yes".into(),
             behavior: "allow".into(),
             suggestion: None,
+            updated_permissions: None,
         };
         assert_eq!(button_css_class(&c), "approval-accept");
     }
@@ -599,6 +602,7 @@ mod tests {
             label: "No".into(),
             behavior: "deny".into(),
             suggestion: None,
+            updated_permissions: None,
         };
         assert_eq!(button_css_class(&c), "approval-deny");
     }

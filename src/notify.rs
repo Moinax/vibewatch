@@ -17,6 +17,10 @@ pub struct PermissionDecisionResult {
     pub label: Option<String>,
     pub behavior: String,                                           // "allow" | "deny" | "ask" | "answer"
     pub suggestion: Option<crate::session::PermissionSuggestion>,
+    /// Raw `updatedPermissions` array to forward verbatim as part of
+    /// `decision.updatedPermissions`. Currently only set by the synthetic
+    /// "Yes, and auto-accept edits" button on ExitPlanMode.
+    pub updated_permissions: Option<serde_json::Value>,
 }
 
 impl PermissionDecisionResult {
@@ -25,6 +29,7 @@ impl PermissionDecisionResult {
             label: None,
             behavior: "ask".into(),
             suggestion: None,
+            updated_permissions: None,
         }
     }
 }
@@ -71,7 +76,19 @@ pub async fn send_permission_request(
                     serde_json::from_value(x.clone()).ok()
                 }
             });
-            Ok(PermissionDecisionResult { label, behavior, suggestion })
+            let updated_permissions = v.get("updatedPermissions").and_then(|x| {
+                if x.is_null() {
+                    None
+                } else {
+                    Some(x.clone())
+                }
+            });
+            Ok(PermissionDecisionResult {
+                label,
+                behavior,
+                suggestion,
+                updated_permissions,
+            })
         }
         Ok(Ok(_)) => Ok(PermissionDecisionResult::ask()),
         Ok(Err(e)) => Err(anyhow::anyhow!("read error: {e}")),
@@ -194,6 +211,11 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
             if let Some(sug) = result.suggestion {
                 if let serde_json::Value::Object(ref mut map) = decision {
                     map.insert("suggestion".to_string(), serde_json::to_value(sug)?);
+                }
+            }
+            if let Some(ups) = result.updated_permissions {
+                if let serde_json::Value::Object(ref mut map) = decision {
+                    map.insert("updatedPermissions".to_string(), ups);
                 }
             }
             decision

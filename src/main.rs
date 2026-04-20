@@ -394,6 +394,13 @@ async fn handle_connection(
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
+                    // If a prompt was still marked pending, the tool ran —
+                    // the user must have answered in the TUI. Clear it so the
+                    // widget stops showing a stale question.
+                    if session.pending_approval.is_some() {
+                        release_held_approvals(&approval_registry, &session.id).await;
+                        session.pending_approval = None;
+                    }
                     session.last_tool = session.current_tool.take();
                     session.last_tool_detail = session.tool_detail.take();
                     session.last_tool_at = now_epoch();
@@ -424,6 +431,13 @@ async fn handle_connection(
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
+                    // A new user prompt implicitly resolves any lingering
+                    // permission question — whether by answering it in the
+                    // TUI first or by typing something else.
+                    if session.pending_approval.is_some() {
+                        release_held_approvals(&approval_registry, &session.id).await;
+                        session.pending_approval = None;
+                    }
                     session.status = SessionStatus::Thinking;
                     session.last_prompt = prompt;
                     session.last_prompt_at = now_epoch();
@@ -471,6 +485,11 @@ async fn handle_connection(
                     }
                 };
                 let tool_name = tool.clone().unwrap_or_else(|| "tool".into());
+
+                // If a prior prompt was still pending for this session, it's
+                // moot now — release its held hook socket before we overwrite
+                // `pending_approval` with the new request.
+                release_held_approvals(&approval_registry, &session_id).await;
 
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
@@ -541,20 +560,21 @@ async fn handle_connection(
                 let chosen = registry
                     .get(&entry.session_id)
                     .and_then(|s| s.pending_approval.as_ref().and_then(|p| p.choices.get(choice_index).cloned()));
-                let (label, behavior_str, suggestion) = match chosen {
-                    Some(c) => (c.label, c.behavior, c.suggestion),
+                let (label, behavior_str, suggestion, updated_permissions) = match chosen {
+                    Some(c) => (c.label, c.behavior, c.suggestion, c.updated_permissions),
                     None => {
                         eprintln!(
                             "vibewatch: no choice at index {} for request_id={}; denying",
                             choice_index, request_id
                         );
-                        ("".to_string(), "deny".to_string(), None)
+                        ("".to_string(), "deny".to_string(), None, None)
                     }
                 };
                 let response_json = serde_json::json!({
                     "label": label,
                     "behavior": behavior_str,
                     "suggestion": suggestion,
+                    "updatedPermissions": updated_permissions,
                 });
                 let mut line = response_json.to_string();
                 line.push('\n');
@@ -589,6 +609,9 @@ async fn handle_connection(
             InboundEvent::Stop { session_id, pid } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
+                    if session.pending_approval.is_some() {
+                        release_held_approvals(&approval_registry, &session.id).await;
+                    }
                     session.status = SessionStatus::Idle;
                     session.current_tool = None;
                     session.tool_detail = None;
@@ -680,6 +703,33 @@ fn lookup_session(
         registry.get_or_adopt(session_id, pid)
     } else {
         registry.get(session_id)
+    }
+}
+
+/// Release any approval socket held for `session_id`. Call this when a
+/// subsequent session event (PostToolUse, UserPromptSubmit, Stop, a new
+/// PermissionRequest) proves the prior prompt was already answered —
+/// typically because the user responded in the Claude Code TUI instead of the
+/// widget.
+///
+/// Dropping the write_halves closes the held sockets; the hook's blocked
+/// `read_line` returns EOF and falls back to emitting `{behavior:"ask"}`,
+/// which Claude ignores since it already moved past the prompt.
+///
+/// The caller is expected to also null-out `session.pending_approval` on its
+/// local `Session` copy before calling `registry.register(session)`.
+async fn release_held_approvals(
+    approval_registry: &crate::approval::ApprovalRegistry,
+    session_id: &str,
+) {
+    let entries = approval_registry.take_by_session(session_id).await;
+    if !entries.is_empty() {
+        eprintln!(
+            "vibewatch: releasing {} held approval socket(s) for session={} — resolved externally",
+            entries.len(),
+            session_id
+        );
+        drop(entries);
     }
 }
 
