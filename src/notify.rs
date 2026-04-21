@@ -18,8 +18,8 @@ pub struct PermissionDecisionResult {
     pub behavior: String,                                           // "allow" | "deny" | "ask" | "answer"
     pub suggestion: Option<crate::session::PermissionSuggestion>,
     /// Raw `updatedPermissions` array to forward verbatim as part of
-    /// `decision.updatedPermissions`. Currently only set by the synthetic
-    /// "Yes, and auto-accept edits" button on ExitPlanMode.
+    /// `decision.updatedPermissions`. Kept for future choices that need to
+    /// carry a `setMode`/similar permission patch alongside allow/deny.
     pub updated_permissions: Option<serde_json::Value>,
 }
 
@@ -154,6 +154,40 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
     let socket_path = config.socket_path();
 
     if agent == "claude-code" && event_type == "permission-request" {
+        // Some permission requests can't be answered via the panel:
+        //  - ExitPlanMode: real TUI choices ("Yes, and use auto mode", …)
+        //    aren't exposed via hooks, so we'd only ever guess.
+        //  - Multi-question / multiSelect AskUserQuestion: option_labels
+        //    extraction only handles the single-question non-multiSelect
+        //    shape; other shapes would fall back to a misleading Yes/No.
+        // In both cases notify the daemon (panel shows the "awaiting"
+        // warning + click-to-focus card) and return `ask` immediately so
+        // Claude Code renders its native TUI without waiting on us.
+        let tui_only_reason: Option<&'static str> = match &event {
+            InboundEvent::PermissionRequest { tool: Some(t), .. }
+                if t == crate::session::TOOL_EXIT_PLAN_MODE =>
+            {
+                Some("ExitPlanMode handled by Claude Code TUI")
+            }
+            InboundEvent::PermissionRequest { tool: Some(t), option_labels, .. }
+                if t == crate::session::TOOL_ASK_USER_QUESTION && option_labels.is_empty() =>
+            {
+                Some("AskUserQuestion shape unsupported by panel; handled by TUI")
+            }
+            _ => None,
+        };
+        if let Some(reason) = tui_only_reason {
+            let _ = send_event(&socket_path, &event).await;
+            let out = serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PermissionRequest",
+                    "decision": { "behavior": "ask", "reason": reason },
+                }
+            });
+            println!("{}", serde_json::to_string(&out)?);
+            return Ok(());
+        }
+
         // Cache info we need to build the AskUserQuestion decision shape
         // if/when we answer via a real option label rather than allow/deny.
         let (is_ask_user_question, original_tool_input, question_text) =
@@ -242,7 +276,7 @@ fn ask_user_question_context(
     let Ok(hook) = serde_json::from_str::<ClaudeCodeHook>(stdin_buf) else {
         return (false, None, None);
     };
-    if hook.tool_name.as_deref() != Some("AskUserQuestion") {
+    if hook.tool_name.as_deref() != Some(crate::session::TOOL_ASK_USER_QUESTION) {
         return (false, None, None);
     }
     let Some(tool_input) = hook.tool_input else {
@@ -363,7 +397,7 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let request_id = format!("{}-{}-{}", hook.session_id, pid, nanos);
-            let option_labels = if hook.tool_name.as_deref() == Some("AskUserQuestion") {
+            let option_labels = if hook.tool_name.as_deref() == Some(crate::session::TOOL_ASK_USER_QUESTION) {
                 extract_ask_user_question_labels(&hook.tool_input)
             } else {
                 Vec::new()

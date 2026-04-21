@@ -8,8 +8,11 @@ use crate::session::{describe_tool, parent_pid, prettify_tool_name, Session, Ses
 /// Active (executing/thinking/approval): name + badges + description + action line
 /// Idle (compact): name + badges only
 pub fn build_row(session: &Session) -> gtk::ListBoxRow {
+    let status_class = session.status.css_class();
+
     let row = gtk::ListBoxRow::new();
     row.add_css_class("session-row");
+    row.add_css_class(status_class);
     row.set_activatable(false);
 
     let card = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -21,7 +24,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     let indicator = gtk::Label::new(Some("\u{25cf}"));
     indicator.add_css_class("indicator");
-    indicator.add_css_class(session.status.css_class());
+    indicator.add_css_class(status_class);
     indicator.set_valign(gtk::Align::Start);
     indicator.set_margin_top(3);
     card.append(&indicator);
@@ -73,7 +76,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     let state_text = state_label(session);
     let action_label = gtk::Label::new(Some(&state_text));
     action_label.add_css_class("action-line");
-    action_label.add_css_class(session.status.css_class());
+    action_label.add_css_class(status_class);
     action_label.set_halign(gtk::Align::Fill);
     action_label.set_xalign(0.0);
     action_label.set_hexpand(true);
@@ -82,8 +85,13 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     content.append(&action_label);
 
     if let Some(ref pending) = session.pending_approval {
-        let bar = build_choice_bar(pending.request_id.clone(), &pending.choices);
-        content.append(&bar);
+        // Empty `choices` = no actionable buttons (ExitPlanMode). The
+        // indicator + "approval" state still render; the user clicks the
+        // card to focus the terminal and answers in Claude Code's TUI.
+        if !pending.choices.is_empty() {
+            let bar = build_choice_bar(pending.request_id.clone(), &pending.choices);
+            content.append(&bar);
+        }
     }
 
     card.append(&content);
@@ -123,23 +131,6 @@ fn format_elapsed(session: &Session) -> String {
     }
 }
 
-/// Button text for a given choice — just returns its label.
-pub(crate) fn button_label(choice: &crate::session::ApprovalChoice) -> &str {
-    &choice.label
-}
-
-/// CSS class name for a choice. `allow` + `Some(suggestion)` renders as the
-/// softer `approval-scope` (session-rule), plain allow as green `approval-accept`,
-/// deny as red `approval-deny`.
-pub(crate) fn button_css_class(choice: &crate::session::ApprovalChoice) -> &'static str {
-    match (choice.behavior.as_str(), choice.suggestion.is_some()) {
-        ("allow", true) => "approval-scope",
-        ("allow", false) => "approval-accept",
-        ("deny", _) => "approval-deny",
-        _ => "approval-accept",
-    }
-}
-
 /// Build a vertical box containing one full-width button per ApprovalChoice.
 /// Buttons stack so the card never demands more horizontal space than the
 /// panel width, regardless of how long a suggestion label is.
@@ -155,7 +146,7 @@ fn build_choice_bar(
     bar.set_margin_top(4);
 
     for (idx, choice) in choices.iter().enumerate() {
-        let label = gtk::Label::new(Some(button_label(choice)));
+        let label = gtk::Label::new(Some(&choice.label));
         label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         label.set_max_width_chars(1);
         label.set_hexpand(true);
@@ -163,7 +154,7 @@ fn build_choice_bar(
 
         let button = gtk::Button::new();
         button.set_child(Some(&label));
-        button.add_css_class(button_css_class(choice));
+        button.add_css_class(choice.css_class());
         button.set_hexpand(true);
         button.set_halign(gtk::Align::Fill);
 
@@ -327,7 +318,7 @@ fn send_approval_decision(request_id: &str, choice_index: usize) {
 
 #[cfg(test)]
 mod tests {
-    use super::{button_css_class, button_label, state_label, top_line};
+    use super::{state_label, top_line};
     use crate::session::{AgentKind, Session, SessionStatus};
 
     fn mk(agent: AgentKind) -> Session {
@@ -532,55 +523,7 @@ mod tests {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::WaitingApproval;
         s.current_tool = Some("Bash".into());
-        assert_eq!(state_label(&s), "approval");
+        assert_eq!(state_label(&s), "awaiting approval");
     }
 
-    #[test]
-    fn button_label_for_plain_yes_is_yes() {
-        let c = crate::session::ApprovalChoice {
-            label: "Yes".into(),
-            behavior: "allow".into(),
-            suggestion: None,
-            updated_permissions: None,
-        };
-        assert_eq!(button_label(&c), "Yes");
-    }
-
-    #[test]
-    fn button_css_class_for_suggestion_is_approval_scope() {
-        let c = crate::session::ApprovalChoice {
-            label: "Yes, allow Read for /foo (session)".into(),
-            behavior: "allow".into(),
-            suggestion: Some(crate::session::PermissionSuggestion {
-                kind: "addRules".into(),
-                rules: vec![],
-                behavior: "allow".into(),
-                destination: "session".into(),
-            }),
-            updated_permissions: None,
-        };
-        assert_eq!(button_css_class(&c), "approval-scope");
-    }
-
-    #[test]
-    fn button_css_class_plain_allow_is_accept() {
-        let c = crate::session::ApprovalChoice {
-            label: "Yes".into(),
-            behavior: "allow".into(),
-            suggestion: None,
-            updated_permissions: None,
-        };
-        assert_eq!(button_css_class(&c), "approval-accept");
-    }
-
-    #[test]
-    fn button_css_class_deny_is_deny() {
-        let c = crate::session::ApprovalChoice {
-            label: "No".into(),
-            behavior: "deny".into(),
-            suggestion: None,
-            updated_permissions: None,
-        };
-        assert_eq!(button_css_class(&c), "approval-deny");
-    }
 }

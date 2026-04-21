@@ -4,6 +4,11 @@ use std::fmt;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
+/// Claude Code tool names we special-case across the daemon, hook, and panel.
+/// Centralised so a typo in one place doesn't silently break the special path.
+pub const TOOL_EXIT_PLAN_MODE: &str = "ExitPlanMode";
+pub const TOOL_ASK_USER_QUESTION: &str = "AskUserQuestion";
+
 /// Kind of AI agent being monitored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,10 +109,14 @@ pub struct ApprovalChoice {
 }
 
 impl ApprovalChoice {
-    /// Build the ordered list of buttons for a permission dialog.
-    /// Always prepends "Yes" / appends "No"; each suggestion becomes a
-    /// middle button with a human-readable label.
+    /// Build the ordered Yes / suggestions… / No button list. Returns empty
+    /// for tools the panel can't faithfully answer (ExitPlanMode,
+    /// AskUserQuestion) — those render as warning-only and the user
+    /// answers in Claude Code's TUI.
     pub fn build_from(tool_name: &str, suggestions: &[PermissionSuggestion]) -> Vec<ApprovalChoice> {
+        if tool_name == TOOL_EXIT_PLAN_MODE || tool_name == TOOL_ASK_USER_QUESTION {
+            return Vec::new();
+        }
         let mut out = Vec::with_capacity(2 + suggestions.len());
         out.push(ApprovalChoice {
             label: "Yes".to_string(),
@@ -141,25 +150,6 @@ impl ApprovalChoice {
                 updated_permissions: None,
             });
         }
-        // ExitPlanMode has no rule-level suggestions; mirror the TUI's middle
-        // option ("Yes, and auto-accept edits") with a synthetic choice that
-        // flips the session into acceptEdits mode. Skipped if a suggestion
-        // already proposes setMode (future-proofing if Claude starts sending
-        // them for ExitPlanMode).
-        if tool_name == "ExitPlanMode"
-            && !suggestions.iter().any(|s| s.kind == "setMode")
-        {
-            out.push(ApprovalChoice {
-                label: "Yes, and auto-accept edits".to_string(),
-                behavior: "allow".to_string(),
-                suggestion: None,
-                updated_permissions: Some(vec![UpdatedPermission {
-                    kind: "setMode".to_string(),
-                    mode: "acceptEdits".to_string(),
-                    destination: "session".to_string(),
-                }]),
-            });
-        }
         out.push(ApprovalChoice {
             label: "No".to_string(),
             behavior: "deny".to_string(),
@@ -183,6 +173,20 @@ impl ApprovalChoice {
                 updated_permissions: None,
             })
             .collect()
+    }
+
+    /// Panel button CSS class derived from `behavior` + whether a suggestion
+    /// is attached. Drives the Catppuccin color story:
+    /// allow + suggestion → lavender (session-scope rule), plain allow →
+    /// green (accept), deny → red, answer → teal (AskUserQuestion option).
+    pub fn css_class(&self) -> &'static str {
+        match (self.behavior.as_str(), self.suggestion.is_some()) {
+            ("allow", true) => "approval-scope",
+            ("allow", false) => "approval-accept",
+            ("deny", _) => "approval-deny",
+            ("answer", _) => "approval-answer",
+            _ => "approval-accept",
+        }
     }
 }
 
@@ -321,7 +325,15 @@ impl Session {
                 .as_deref()
                 .map(prettify_tool_name)
                 .unwrap_or_else(|| "exec".to_string()),
-            SessionStatus::WaitingApproval => "approval".to_string(),
+            SessionStatus::WaitingApproval => {
+                // AskUserQuestion waits for an answer (the user picks an
+                // option), not an approval gate like Bash or ExitPlanMode.
+                if self.current_tool.as_deref() == Some(TOOL_ASK_USER_QUESTION) {
+                    "awaiting answer".to_string()
+                } else {
+                    "awaiting approval".to_string()
+                }
+            }
             SessionStatus::Thinking => "thinking".to_string(),
             SessionStatus::Running => "idle".to_string(),
             SessionStatus::Idle => "idle".to_string(),
@@ -764,27 +776,16 @@ mod tests {
     }
 
     #[test]
-    fn build_choices_for_exit_plan_mode_adds_auto_accept_middle_button() {
+    fn build_choices_for_exit_plan_mode_returns_empty_so_panel_shows_warning_only() {
+        // Claude Code's TUI renders ExitPlanMode options we can't see via
+        // hooks; the panel shows the approval warning + clickable card and
+        // the user answers in the TUI.
         let choices = ApprovalChoice::build_from("ExitPlanMode", &[]);
-        assert_eq!(choices.len(), 3, "want Yes / Yes auto-accept / No");
-        assert_eq!(choices[0].label, "Yes");
-        assert_eq!(choices[0].behavior, "allow");
-        assert_eq!(choices[1].label, "Yes, and auto-accept edits");
-        assert_eq!(choices[1].behavior, "allow");
-        let ups = choices[1]
-            .updated_permissions
-            .as_ref()
-            .expect("middle button carries updatedPermissions");
-        assert_eq!(ups.len(), 1);
-        assert_eq!(ups[0].kind, "setMode");
-        assert_eq!(ups[0].mode, "acceptEdits");
-        assert_eq!(ups[0].destination, "session");
-        assert_eq!(choices[2].label, "No");
-        assert_eq!(choices[2].behavior, "deny");
+        assert!(choices.is_empty());
     }
 
     #[test]
-    fn build_choices_for_exit_plan_mode_skips_synthetic_when_suggestion_covers_set_mode() {
+    fn build_choices_for_exit_plan_mode_ignores_suggestions() {
         let sug = PermissionSuggestion {
             kind: "setMode".into(),
             rules: vec![],
@@ -792,11 +793,42 @@ mod tests {
             destination: "session".into(),
         };
         let choices = ApprovalChoice::build_from("ExitPlanMode", &[sug]);
-        // Yes + one suggestion button + No — no duplicate synthetic option.
-        assert_eq!(choices.len(), 3);
-        assert_eq!(choices[0].label, "Yes");
-        assert!(choices[1].suggestion.is_some(), "middle is the real suggestion");
-        assert_eq!(choices[2].label, "No");
+        assert!(choices.is_empty());
+    }
+
+    fn choice(label: &str, behavior: &str, suggestion: Option<PermissionSuggestion>) -> ApprovalChoice {
+        ApprovalChoice {
+            label: label.into(),
+            behavior: behavior.into(),
+            suggestion,
+            updated_permissions: None,
+        }
+    }
+
+    #[test]
+    fn css_class_for_suggestion_is_approval_scope() {
+        let sug = PermissionSuggestion {
+            kind: "addRules".into(),
+            rules: vec![],
+            behavior: "allow".into(),
+            destination: "session".into(),
+        };
+        assert_eq!(choice("Yes, allow Read", "allow", Some(sug)).css_class(), "approval-scope");
+    }
+
+    #[test]
+    fn css_class_plain_allow_is_accept() {
+        assert_eq!(choice("Yes", "allow", None).css_class(), "approval-accept");
+    }
+
+    #[test]
+    fn css_class_deny_is_deny() {
+        assert_eq!(choice("No", "deny", None).css_class(), "approval-deny");
+    }
+
+    #[test]
+    fn css_class_answer_is_approval_answer() {
+        assert_eq!(choice("Option A", "answer", None).css_class(), "approval-answer");
     }
 
     #[test]

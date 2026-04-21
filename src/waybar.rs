@@ -3,26 +3,30 @@ use std::sync::OnceLock;
 use crate::ipc::StatusResponse;
 use crate::session::{Session, SessionStatus};
 
-/// Per-status colors used by the panel (assets/palette-*.css).
+/// Per-status colors the waybar uses for the inline Pango-colored state word
+/// (mirrors tokens from assets/palette-*.css).
 struct Palette {
     green: &'static str,
     sapphire: &'static str,
-    peach: &'static str,
     dim: &'static str,
+    /// Teal accent on the attention-state pill — complementary-ish contrast
+    /// with the magenta `.attention` background (set by the user's waybar
+    /// CSS), and distinct from the sapphire used for `thinking`.
+    attention_text: &'static str,
 }
 
 const MOCHA: Palette = Palette {
     green: "#a6e3a1",
     sapphire: "#74c7ec",
-    peach: "#fab387",
     dim: "#6c7086",
+    attention_text: "#94e2d5",
 };
 
 const LATTE: Palette = Palette {
     green: "#40a02b",
     sapphire: "#209fb5",
-    peach: "#fe640b",
     dim: "#8c8fa1",
+    attention_text: "#179299",
 };
 
 /// Nerd Font glyph \u{f544} (= `nf-md-robot_happy`). Rendered by waybar's
@@ -58,7 +62,7 @@ fn color_for_status(status: SessionStatus, palette: &Palette) -> &'static str {
     match status {
         SessionStatus::Executing | SessionStatus::Running => palette.green,
         SessionStatus::Thinking => palette.sapphire,
-        SessionStatus::WaitingApproval => palette.peach,
+        SessionStatus::WaitingApproval => palette.attention_text,
         SessionStatus::Idle | SessionStatus::Stopped => palette.dim,
     }
 }
@@ -105,19 +109,12 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
         "idle".to_string()
     };
 
-    // Attention state skips the Pango color — its peach background (set in
-    // the user's CSS) already carries the semantic.
     let decorate = |status: SessionStatus, raw: &str| -> String {
-        let escaped = pango_escape(raw);
-        if status == SessionStatus::WaitingApproval {
-            escaped
-        } else {
-            format!(
-                "<span foreground=\"{}\">{}</span>",
-                color_for_status(status, palette),
-                escaped
-            )
-        }
+        format!(
+            "<span foreground=\"{}\">{}</span>",
+            color_for_status(status, palette),
+            pango_escape(raw),
+        )
     };
 
     let text = if count == 0 {
@@ -244,7 +241,10 @@ mod tests {
         )];
         let status = dark(&sessions);
         assert_eq!(status.class, "attention");
-        assert_eq!(status.text, "\u{f544} dotfiles approval");
+        assert_eq!(
+            status.text,
+            "\u{f544} dotfiles <span foreground=\"#94e2d5\">awaiting approval</span>"
+        );
     }
 
     #[test]

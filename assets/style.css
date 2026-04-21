@@ -46,6 +46,16 @@ window.csd,
     background-color: alpha(@cat_hover_bg, 0.20);
 }
 
+/* Awaiting approval: tint the whole card so the row reads as "attention
+   needed" at a glance, independent of the state-line color. */
+.session-row.waiting-approval {
+    background-color: alpha(@cat_teal, 0.09);
+}
+
+.session-row.waiting-approval:hover {
+    background-color: alpha(@cat_teal, 0.14);
+}
+
 /* Subtle separator between cards */
 .session-row:not(:last-child) .card-box {
     border-bottom: 1px solid alpha(@cat_divider, 0.12);
@@ -71,9 +81,9 @@ window.csd,
 }
 
 .indicator.waiting-approval {
-    color: @cat_peach;
-    text-shadow: 0 0 6px alpha(@cat_peach, 0.7),
-                 0 0 12px alpha(@cat_peach, 0.3);
+    color: @cat_teal;
+    text-shadow: 0 0 6px alpha(@cat_teal, 0.7),
+                 0 0 12px alpha(@cat_teal, 0.3);
 }
 
 .indicator.thinking {
@@ -147,7 +157,9 @@ window.csd,
 }
 
 .action-line.waiting-approval {
-    color: @cat_peach;
+    color: @cat_teal;
+    font-weight: 700;
+    text-shadow: 0 0 4px alpha(@cat_teal, 0.35);
 }
 
 .action-line.running {
@@ -181,8 +193,8 @@ window.csd,
 }
 
 .status-badge.waiting-approval {
-    color: @cat_peach;
-    background-color: alpha(@cat_peach, 0.12);
+    color: @cat_teal;
+    background-color: alpha(@cat_teal, 0.12);
 }
 
 .status-badge.idle,
@@ -209,6 +221,7 @@ window.csd,
 }
 
 .approval-accept,
+.approval-answer,
 .approval-deny,
 .approval-scope {
     font-size: 11px;
@@ -253,4 +266,15 @@ window.csd,
 .approval-deny:hover {
     background-color: alpha(@cat_red, 0.18);
     border-color: alpha(@cat_red, 0.45);
+}
+
+.approval-answer {
+    color: @cat_teal;
+    border-color: alpha(@cat_teal, 0.25);
+    background-color: alpha(@cat_teal, 0.08);
+}
+
+.approval-answer:hover {
+    background-color: alpha(@cat_teal, 0.18);
+    border-color: alpha(@cat_teal, 0.45);
 }

@@ -375,7 +375,16 @@ async fn handle_connection(
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
-                    session.status = SessionStatus::Executing;
+                    // AskUserQuestion blocks on the user from the moment it
+                    // runs — not every shape fires a follow-up permission-request
+                    // hook (multi-question / multiSelect don't, empirically),
+                    // so flip straight to WaitingApproval here so the waybar
+                    // flips to attention even when no permission-request arrives.
+                    session.status = if tool == crate::session::TOOL_ASK_USER_QUESTION {
+                        SessionStatus::WaitingApproval
+                    } else {
+                        SessionStatus::Executing
+                    };
                     session.current_tool = Some(tool.clone());
                     session.tool_detail = detail;
                     session.touch();
@@ -480,6 +489,16 @@ async fn handle_connection(
                 };
                 let tool_name = tool.clone().unwrap_or_else(|| "tool".into());
 
+                let choices = if option_labels.is_empty() {
+                    crate::session::ApprovalChoice::build_from(
+                        &tool_name,
+                        &permission_suggestions,
+                    )
+                } else {
+                    crate::session::ApprovalChoice::from_labels(&option_labels)
+                };
+                let no_choices = choices.is_empty();
+
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
                     // Any prior prompt is moot now — release its held socket
@@ -490,17 +509,6 @@ async fn handle_connection(
                     session.status = SessionStatus::WaitingApproval;
                     session.current_tool = Some(tool_name.clone());
                     session.tool_detail = detail.clone();
-                    // AskUserQuestion with a single non-multiSelect question
-                    // carries option_labels — render them as the buttons.
-                    // Everything else falls back to Yes / suggestions… / No.
-                    let choices = if option_labels.is_empty() {
-                        crate::session::ApprovalChoice::build_from(
-                            &tool_name,
-                            &permission_suggestions,
-                        )
-                    } else {
-                        crate::session::ApprovalChoice::from_labels(&option_labels)
-                    };
                     session.pending_approval = Some(crate::session::PendingApproval {
                         request_id: request_id.clone(),
                         tool: tool_name,
@@ -517,6 +525,13 @@ async fn handle_connection(
                 sound_player.play(SoundEvent::ApprovalNeeded);
                 if let Some(ref show) = show_sender {
                     show();
+                }
+
+                // No choices ⇒ the hook already short-circuited with `ask`
+                // and closed the socket; nothing to answer back.
+                if no_choices {
+                    drop(write_half);
+                    return;
                 }
 
                 // Move write_half into the registry and exit the handler.

@@ -53,7 +53,10 @@ pub fn build_window(app: &adw::Application, registry: SessionRegistry) -> adw::A
     window.set_anchor(gtk4_layer_shell::Edge::Top, true);
     window.set_margin(gtk4_layer_shell::Edge::Top, 14);
     window.set_exclusive_zone(0);
-    window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::OnDemand);
+    // `None` so the layer surface never steals keyboard focus from the
+    // focused terminal. The panel is mouse-only (GestureClick on rows,
+    // connect_clicked on buttons) — no widgets consume keyboard input.
+    window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
     window.set_namespace(Some("vibewatch"));
 
     // Load CSS — palette provider is swapped on OS dark/light theme change.
