@@ -9,6 +9,49 @@ use std::sync::{Arc, RwLock};
 pub const TOOL_EXIT_PLAN_MODE: &str = "ExitPlanMode";
 pub const TOOL_ASK_USER_QUESTION: &str = "AskUserQuestion";
 
+/// Everything we need to derive from a running agent's `/proc/<pid>/cmdline`
+/// in a single read — whether it's a programmatic (non-interactive)
+/// invocation, and the `--resume` / `--continue` / `-c` session name if any.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PidCmdlineInfo {
+    /// True for third-party tools (T3 Chat, editors, automation) that drive
+    /// `claude` as a stream-JSON subprocess — not tied to a terminal the
+    /// user is interacting with, so the panel shouldn't track them.
+    pub programmatic: bool,
+    pub session_name: Option<String>,
+}
+
+pub fn inspect_pid_cmdline(pid: u32) -> PidCmdlineInfo {
+    let Ok(raw) = std::fs::read_to_string(format!("/proc/{}/cmdline", pid)) else {
+        return PidCmdlineInfo::default();
+    };
+    let args: Vec<&str> = raw.split('\0').collect();
+    PidCmdlineInfo {
+        programmatic: is_programmatic_args(&args),
+        session_name: session_name_from_args(&args),
+    }
+}
+
+fn is_programmatic_args(args: &[&str]) -> bool {
+    if args.iter().any(|a| *a == "--no-session-persistence") {
+        return true;
+    }
+    args.windows(2)
+        .any(|w| w[0] == "--output-format" && w[1] == "stream-json")
+}
+
+fn session_name_from_args(args: &[&str]) -> Option<String> {
+    args.windows(2).find_map(|w| {
+        if matches!(w[0], "--resume" | "--continue" | "-c") {
+            let name = w[1].trim();
+            if !name.is_empty() && !name.starts_with('-') {
+                return Some(name.to_string());
+            }
+        }
+        None
+    })
+}
+
 /// Kind of AI agent being monitored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -533,6 +576,47 @@ pub fn prettify_tool_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn programmatic_args_detect_no_session_persistence() {
+        assert!(is_programmatic_args(&["claude", "--no-session-persistence"]));
+    }
+
+    #[test]
+    fn programmatic_args_detect_stream_json_output() {
+        assert!(is_programmatic_args(&["claude", "--output-format", "stream-json"]));
+    }
+
+    #[test]
+    fn programmatic_args_ignore_interactive_text_output() {
+        assert!(!is_programmatic_args(&["claude", "--output-format", "text"]));
+    }
+
+    #[test]
+    fn programmatic_args_ignore_plain_interactive() {
+        assert!(!is_programmatic_args(&["claude", "--resume", "work"]));
+    }
+
+    #[test]
+    fn session_name_from_args_reads_resume() {
+        assert_eq!(
+            session_name_from_args(&["claude", "--resume", "my-session"]),
+            Some("my-session".into()),
+        );
+    }
+
+    #[test]
+    fn session_name_from_args_skips_when_flag_value_is_another_flag() {
+        assert_eq!(
+            session_name_from_args(&["claude", "--continue", "--verbose"]),
+            None,
+        );
+    }
+
+    #[test]
+    fn session_name_from_args_returns_none_without_resume() {
+        assert_eq!(session_name_from_args(&["claude", "--verbose"]), None);
+    }
 
     #[test]
     fn agent_display_name() {

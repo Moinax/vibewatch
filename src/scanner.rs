@@ -3,7 +3,7 @@ use std::fs;
 
 use crate::compositor::Compositor;
 use crate::config::Config;
-use crate::session::{detect_terminal, AgentKind, Session, SessionRegistry};
+use crate::session::{detect_terminal, inspect_pid_cmdline, AgentKind, Session, SessionRegistry};
 
 const CLAUDE_CODE_NAMES: &[&str] = &["claude"];
 const CODEX_NAMES: &[&str] = &["codex"];
@@ -57,27 +57,6 @@ pub fn scan_agent_processes() -> Vec<(AgentKind, u32)> {
     results
 }
 
-/// Extract session name from a claude process cmdline.
-/// Looks for `--resume <name>` or `--continue <name>` or `-c <name>` patterns.
-fn read_session_name_from_cmdline(pid: u32) -> Option<String> {
-    let cmdline = fs::read_to_string(format!("/proc/{}/cmdline", pid)).ok()?;
-    let args: Vec<&str> = cmdline.split('\0').collect();
-
-    // Look for --resume, --continue, -c followed by a session name
-    for i in 0..args.len().saturating_sub(1) {
-        match args[i] {
-            "--resume" | "--continue" | "-c" => {
-                let name = args[i + 1].trim();
-                if !name.is_empty() && !name.starts_with('-') {
-                    return Some(name.to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 /// Background scanner loop. Runs every 3 seconds, discovering CLI agent
 /// processes via /proc and GUI agent windows via the compositor.
 ///
@@ -100,14 +79,18 @@ pub async fn run_scanner(
         let known_pids: HashSet<u32> = all_sessions.iter().map(|s| s.pid).collect();
 
         for (kind, pid) in &found_processes {
-            // Skip if any session (hook-registered or scanner) already tracks this PID
-            if !known_pids.contains(pid) {
-                let id = format!("scan-{}-{}", agent_str(kind), pid);
-                let mut session = Session::new(id, *kind, *pid);
-                session.session_name = read_session_name_from_cmdline(*pid);
-                session.terminal = Some(detect_terminal(*pid));
-                registry.register(session);
+            if known_pids.contains(pid) {
+                continue;
             }
+            let info = inspect_pid_cmdline(*pid);
+            if info.programmatic {
+                continue;
+            }
+            let id = format!("scan-{}-{}", agent_str(kind), pid);
+            let mut session = Session::new(id, *kind, *pid);
+            session.session_name = info.session_name;
+            session.terminal = Some(detect_terminal(*pid));
+            registry.register(session);
         }
 
         // --- Window-based agent scanning ---

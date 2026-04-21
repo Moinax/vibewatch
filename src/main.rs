@@ -359,6 +359,9 @@ async fn handle_connection(
                 cwd,
                 session_name,
             } => {
+                if session::inspect_pid_cmdline(pid).programmatic {
+                    continue;
+                }
                 let kind = parse_agent_kind(&agent);
                 let mut session = Session::new(session_id, kind, pid);
                 session.cwd = cwd;
