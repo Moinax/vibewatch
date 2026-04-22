@@ -6,10 +6,10 @@ use super::{Compositor, CompositorWindow};
 pub struct NiriCompositor;
 
 #[derive(Debug, serde::Deserialize)]
-struct NiriWindow {
-    id: u64,
-    pid: Option<u32>,
-    app_id: Option<String>,
+pub(crate) struct NiriWindow {
+    pub(crate) id: u64,
+    pub(crate) pid: Option<u32>,
+    pub(crate) app_id: Option<String>,
 }
 
 #[async_trait::async_trait]

@@ -1,7 +1,10 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 
+use crate::compositor::niri::NiriWindow;
 use crate::session::{describe_tool, parent_pid, prettify_tool_name, Session, SessionStatus};
+
+const PID_WALK_MAX_DEPTH: usize = 10;
 
 /// Build a ListBoxRow widget for a single session.
 ///
@@ -255,33 +258,84 @@ fn state_label(session: &Session) -> String {
 }
 
 fn focus_session(window_id: Option<&str>, pid: u32) {
-    if let Some(wid) = window_id {
-        let _ = std::process::Command::new("hyprctl")
-            .args(["dispatch", "focuswindow", &format!("address:{wid}")])
-            .status();
-        return;
+    match crate::compositor::detect_compositor().as_deref() {
+        Some("niri") => focus_niri(window_id, pid),
+        Some("hyprland") => focus_hyprland(window_id, pid),
+        _ => {}
     }
+}
 
-    if pid > 0 {
-        let mut current_pid = pid;
-        for _ in 0..10 {
-            if let Ok(output) = std::process::Command::new("hyprctl")
-                .args(["dispatch", "focuswindow", &format!("pid:{current_pid}")])
-                .output()
-            {
-                if String::from_utf8_lossy(&output.stdout).trim() == "ok" {
-                    return;
-                }
-            }
-            match parent_pid(current_pid) {
-                Some(ppid) => current_pid = ppid,
-                None => break,
+fn focus_hyprland(window_id: Option<&str>, pid: u32) {
+    if let Some(wid) = window_id {
+        if let Ok(output) = std::process::Command::new("hyprctl")
+            .args(["dispatch", "focuswindow", &format!("address:{wid}")])
+            .output()
+        {
+            if String::from_utf8_lossy(&output.stdout).trim() == "ok" {
+                return;
             }
         }
+    }
+
+    if pid == 0 {
+        return;
+    }
+    let mut current_pid = pid;
+    for _ in 0..PID_WALK_MAX_DEPTH {
+        if let Ok(output) = std::process::Command::new("hyprctl")
+            .args(["dispatch", "focuswindow", &format!("pid:{current_pid}")])
+            .output()
+        {
+            if String::from_utf8_lossy(&output.stdout).trim() == "ok" {
+                return;
+            }
+        }
+        match parent_pid(current_pid) {
+            Some(ppid) => current_pid = ppid,
+            None => break,
+        }
+    }
+}
+
+fn focus_niri(window_id: Option<&str>, pid: u32) {
+    if let Some(wid) = window_id {
+        let ok = std::process::Command::new("niri")
+            .args(["msg", "action", "focus-window", "--id", wid])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            return;
+        }
+    }
+
+    if pid == 0 {
+        return;
+    }
+    if let Some(id) = resolve_niri_window_id_by_pid(pid) {
         let _ = std::process::Command::new("niri")
-            .args(["msg", "action", "focus-window", "--pid", &pid.to_string()])
+            .args(["msg", "action", "focus-window", "--id", &id.to_string()])
             .status();
     }
+}
+
+fn resolve_niri_window_id_by_pid(pid: u32) -> Option<u64> {
+    let output = std::process::Command::new("niri")
+        .args(["msg", "-j", "windows"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let windows: Vec<NiriWindow> = serde_json::from_slice(&output.stdout).ok()?;
+    let mut current = pid;
+    for _ in 0..PID_WALK_MAX_DEPTH {
+        if let Some(w) = windows.iter().find(|w| w.pid == Some(current)) {
+            return Some(w.id);
+        }
+        current = parent_pid(current)?;
+    }
+    None
 }
 
 /// Send an `ApprovalDecision` event to the running daemon on its IPC socket.
