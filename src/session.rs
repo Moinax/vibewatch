@@ -28,6 +28,14 @@ pub fn expected_comms_for(kind: AgentKind) -> &'static [&'static str] {
     }
 }
 
+/// Pure helper: does a `comm` string identify the given `AgentKind`?
+/// Normalises by trimming whitespace (including the trailing `\n` that
+/// `/proc/<pid>/comm` always carries) and lowercasing.
+pub fn is_agent_pid_alive_with_comm(comm: &str, kind: AgentKind) -> bool {
+    let comm = comm.trim().to_lowercase();
+    expected_comms_for(kind).iter().any(|expected| comm == *expected)
+}
+
 /// Everything we need to derive from a running agent's `/proc/<pid>/cmdline`
 /// in a single read — whether it's a programmatic (non-interactive)
 /// invocation, and the `--resume` / `--continue` / `-c` session name if any.
@@ -995,5 +1003,38 @@ mod tests {
     fn expected_comms_for_window_agents_is_empty() {
         assert!(expected_comms_for(AgentKind::Cursor).is_empty());
         assert!(expected_comms_for(AgentKind::WebStorm).is_empty());
+    }
+
+    #[test]
+    fn is_agent_pid_alive_with_comm_matches() {
+        assert!(is_agent_pid_alive_with_comm("claude", AgentKind::ClaudeCode));
+        assert!(is_agent_pid_alive_with_comm("codex", AgentKind::Codex));
+    }
+
+    #[test]
+    fn is_agent_pid_alive_with_comm_is_case_insensitive() {
+        assert!(is_agent_pid_alive_with_comm("Claude", AgentKind::ClaudeCode));
+        assert!(is_agent_pid_alive_with_comm("CODEX", AgentKind::Codex));
+    }
+
+    #[test]
+    fn is_agent_pid_alive_with_comm_trims_whitespace() {
+        // /proc/<pid>/comm always has a trailing newline.
+        assert!(is_agent_pid_alive_with_comm("claude\n", AgentKind::ClaudeCode));
+        assert!(is_agent_pid_alive_with_comm("  claude  ", AgentKind::ClaudeCode));
+    }
+
+    #[test]
+    fn is_agent_pid_alive_with_comm_rejects_mismatch() {
+        assert!(!is_agent_pid_alive_with_comm("zsh", AgentKind::ClaudeCode));
+        assert!(!is_agent_pid_alive_with_comm("git", AgentKind::Codex));
+        assert!(!is_agent_pid_alive_with_comm("", AgentKind::ClaudeCode));
+    }
+
+    #[test]
+    fn is_agent_pid_alive_with_comm_rejects_window_agents() {
+        // Cursor/WebStorm have no comm list, so no comm can ever match.
+        assert!(!is_agent_pid_alive_with_comm("cursor", AgentKind::Cursor));
+        assert!(!is_agent_pid_alive_with_comm("idea", AgentKind::WebStorm));
     }
 }
