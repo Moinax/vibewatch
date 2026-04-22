@@ -17,6 +17,17 @@ pub const CLAUDE_CODE_COMMS: &[&str] = &["claude"];
 /// `/proc/<pid>/comm` values we accept as "this PID is still Codex".
 pub const CODEX_COMMS: &[&str] = &["codex"];
 
+/// Map an `AgentKind` to the `/proc/<pid>/comm` values that identify it.
+/// Returns an empty slice for window-backed agents (Cursor, WebStorm) —
+/// their liveness is tracked by the compositor scan, not by `/proc`.
+pub fn expected_comms_for(kind: AgentKind) -> &'static [&'static str] {
+    match kind {
+        AgentKind::ClaudeCode => CLAUDE_CODE_COMMS,
+        AgentKind::Codex => CODEX_COMMS,
+        AgentKind::Cursor | AgentKind::WebStorm => &[],
+    }
+}
+
 /// Everything we need to derive from a running agent's `/proc/<pid>/cmdline`
 /// in a single read — whether it's a programmatic (non-interactive)
 /// invocation, and the `--resume` / `--continue` / `-c` session name if any.
@@ -972,5 +983,17 @@ mod tests {
         assert!(choices[1].label.contains("/a/**"));
         assert!(choices[1].label.contains("/b/**"));
         assert!(choices[1].label.contains("+"));
+    }
+
+    #[test]
+    fn expected_comms_for_cli_agents() {
+        assert_eq!(expected_comms_for(AgentKind::ClaudeCode), &["claude"]);
+        assert_eq!(expected_comms_for(AgentKind::Codex), &["codex"]);
+    }
+
+    #[test]
+    fn expected_comms_for_window_agents_is_empty() {
+        assert!(expected_comms_for(AgentKind::Cursor).is_empty());
+        assert!(expected_comms_for(AgentKind::WebStorm).is_empty());
     }
 }
