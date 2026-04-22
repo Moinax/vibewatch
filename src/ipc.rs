@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 /// Inbound event from hooks — tagged enum
@@ -157,28 +157,40 @@ pub async fn write_json<T: Serialize>(
     Ok(())
 }
 
-/// Connect to the socket, send an event, and read back an optional response line.
+/// Fire-and-forget: the daemon doesn't reply to these events, so shutting
+/// down the write half signals EOF to its reader and lets us exit without
+/// blocking. Permission flows use `notify::send_permission_request`, which
+/// keeps the stream open to await a decision line.
 pub async fn send_event(
+    socket_path: &Path,
+    event: &InboundEvent,
+) -> anyhow::Result<()> {
+    let mut stream = UnixStream::connect(socket_path).await?;
+    write_json(&mut stream, event).await?;
+    stream.shutdown().await.ok();
+    Ok(())
+}
+
+/// Request/response: send one event, read one response line, done. Used for
+/// `GetStatus`, where the daemon writes a single JSON payload and closes the
+/// connection.
+pub async fn request_response(
     socket_path: &Path,
     event: &InboundEvent,
 ) -> anyhow::Result<Option<String>> {
     let mut stream = UnixStream::connect(socket_path).await?;
     write_json(&mut stream, event).await?;
 
-    // Try to read a response line
-    let mut reader = BufReader::new(stream);
-    let mut response = String::new();
-    let n = reader.read_line(&mut response).await?;
-    if n == 0 {
-        Ok(None)
-    } else {
-        Ok(Some(response.trim().to_string()))
-    }
+    let mut reader = tokio::io::BufReader::new(stream);
+    let mut line = String::new();
+    let n = reader.read_line(&mut line).await?;
+    Ok(if n == 0 { None } else { Some(line.trim().to_string()) })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::BufReader;
 
     #[test]
     fn test_parse_session_start() {

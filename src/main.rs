@@ -73,14 +73,10 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Daemon => run_daemon(),
         Commands::Notify { event, agent } => {
-            tokio::runtime::Runtime::new()?.block_on(notify::handle_notify(&event, &agent))
+            cli_runtime()?.block_on(notify::handle_notify(&event, &agent))
         }
-        Commands::Status { watch } => {
-            tokio::runtime::Runtime::new()?.block_on(run_status(watch))
-        }
-        Commands::TogglePanel => {
-            tokio::runtime::Runtime::new()?.block_on(run_toggle_panel())
-        }
+        Commands::Status { watch } => cli_runtime()?.block_on(run_status(watch)),
+        Commands::TogglePanel => cli_runtime()?.block_on(run_toggle_panel()),
         Commands::Install { no_service, no_hooks, dry_run, uninstall } => {
             install::run(install::Options {
                 no_service,
@@ -109,7 +105,25 @@ fn run_daemon() -> anyhow::Result<()> {
     } else {
         eprintln!("vibewatch: no WAYLAND_DISPLAY, running in headless mode (no panel)");
     }
-    tokio::runtime::Runtime::new()?.block_on(run_daemon_headless(config, registry))
+    daemon_runtime()?.block_on(run_daemon_headless(config, registry))
+}
+
+/// Cap tokio workers: the default = one per CPU, which is wasteful for a
+/// daemon whose workload is sporadic IPC plus a couple of tickers.
+fn daemon_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+}
+
+/// Short-lived CLI commands (`notify`, `status`, `toggle-panel`) do one
+/// socket I/O and exit; a multi-thread runtime would spawn one idle worker
+/// per CPU for nothing.
+fn cli_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
 }
 
 /// Headless daemon: pure tokio loop, no GTK. Used when WAYLAND_DISPLAY is unset.
@@ -230,7 +244,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
         let config = config.clone();
         let registry = registry.clone();
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            let rt = daemon_runtime().expect("failed to create tokio runtime");
             rt.block_on(async move {
                 let socket_path = config.socket_path();
                 let sound_player = Arc::new(SoundPlayer::new(config.sounds.clone()));
@@ -796,13 +810,13 @@ async fn run_status(watch: bool) -> anyhow::Result<()> {
         return run_status_watch(&socket_path).await;
     }
 
-    match ipc::send_event(&socket_path, &InboundEvent::GetStatus).await {
-        Ok(Some(response)) => {
-            println!("{}", response);
-        }
-        Ok(None) | Err(_) => {
-            waybar::print_waybar_status(&[]);
-        }
+    // Bounded wait: if the daemon hangs, waybar would hang too and accumulate
+    // stalled `status` subprocesses, undoing the fire-and-forget fix.
+    let timeout = std::time::Duration::from_secs(2);
+    let request = ipc::request_response(&socket_path, &InboundEvent::GetStatus);
+    match tokio::time::timeout(timeout, request).await {
+        Ok(Ok(Some(response))) => println!("{}", response),
+        _ => waybar::print_waybar_status(&[]),
     }
 
     Ok(())
