@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::path::Path;
 use std::sync::{Arc, RwLock};
 
 /// Claude Code tool names we special-case across the daemon, hook, and panel.
@@ -470,10 +469,19 @@ impl SessionRegistry {
         map.values().cloned().collect()
     }
 
-    /// Remove sessions whose PID is no longer alive.
+    /// Remove sessions whose PID no longer hosts a process of the expected
+    /// agent kind. Window-backed sessions (`window-*` ids) are exempted —
+    /// their liveness is tracked by the compositor scan in `scanner.rs`,
+    /// and their `pid` belongs to a GUI app whose comm isn't in our
+    /// agent-comm list.
     pub fn cleanup_dead(&self) {
         let mut map = self.sessions.write().unwrap();
-        map.retain(|_, session| is_pid_alive(session.pid));
+        map.retain(|id, session| {
+            if id.starts_with("window-") {
+                return true;
+            }
+            is_agent_pid_alive(session.pid, session.agent)
+        });
     }
 
     /// Set the window id for a session. Returns false if the session does not exist.
@@ -508,9 +516,17 @@ impl SessionRegistry {
     }
 }
 
-/// Check whether a process with the given PID is alive by probing /proc.
-pub fn is_pid_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{}", pid)).exists()
+/// Check whether a PID is still occupied by a process of the given `AgentKind`,
+/// using `/proc/<pid>/comm`. Returns false when `/proc/<pid>/comm` can't be
+/// read (the process has exited, the PID slot is empty, or we lack
+/// permission) and when the comm name doesn't match the expected comms for
+/// that kind — which is how we distinguish a live Claude session from a
+/// PID that has been recycled by an unrelated process.
+pub fn is_agent_pid_alive(pid: u32, kind: AgentKind) -> bool {
+    let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) else {
+        return false;
+    };
+    is_agent_pid_alive_with_comm(&comm, kind)
 }
 
 /// Read the session name from a Claude Code transcript (last custom-title entry).
@@ -724,14 +740,6 @@ mod tests {
         s.status = SessionStatus::Executing;
         s.current_tool = Some("mcp__claude_ai_Linear__list_issues".into());
         assert_eq!(s.inline_status(), "Linear.list_issues");
-    }
-
-    #[test]
-    fn is_pid_alive_test() {
-        // PID 1 (init/systemd) should always be alive on Linux
-        assert!(is_pid_alive(1));
-        // A very high PID is almost certainly not alive
-        assert!(!is_pid_alive(4_000_000));
     }
 
     #[test]
@@ -1036,5 +1044,66 @@ mod tests {
         // Cursor/WebStorm have no comm list, so no comm can ever match.
         assert!(!is_agent_pid_alive_with_comm("cursor", AgentKind::Cursor));
         assert!(!is_agent_pid_alive_with_comm("idea", AgentKind::WebStorm));
+    }
+
+    #[test]
+    fn is_agent_pid_alive_rejects_non_agent_pid() {
+        // PID 1 is init/systemd on Linux — alive, but comm is not "claude".
+        assert!(!is_agent_pid_alive(1, AgentKind::ClaudeCode));
+        assert!(!is_agent_pid_alive(1, AgentKind::Codex));
+    }
+
+    #[test]
+    fn is_agent_pid_alive_rejects_dead_pid() {
+        // A very high PID is almost certainly not a live process.
+        assert!(!is_agent_pid_alive(4_000_000, AgentKind::ClaudeCode));
+    }
+
+    #[test]
+    fn is_agent_pid_alive_rejects_window_agents_unconditionally() {
+        // Cursor/WebStorm have no /proc-based liveness. PID 1 is alive but
+        // should still report false because expected_comms_for returns [].
+        assert!(!is_agent_pid_alive(1, AgentKind::Cursor));
+        assert!(!is_agent_pid_alive(1, AgentKind::WebStorm));
+    }
+
+    #[test]
+    fn cleanup_dead_drops_hook_session_with_non_agent_pid() {
+        // PID 1 (init) is alive but its comm is not "claude" — simulates a
+        // ghost session after PID reuse.
+        let registry = SessionRegistry::new();
+        registry.register(Session::new(
+            "11111111-2222-3333-4444-555555555555".into(),
+            AgentKind::ClaudeCode,
+            1,
+        ));
+        registry.cleanup_dead();
+        assert!(registry.all().is_empty(), "ghost session should be evicted");
+    }
+
+    #[test]
+    fn cleanup_dead_drops_scan_session_with_dead_pid() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new(
+            "scan-claude-4000000".into(),
+            AgentKind::ClaudeCode,
+            4_000_000,
+        ));
+        registry.cleanup_dead();
+        assert!(registry.all().is_empty());
+    }
+
+    #[test]
+    fn cleanup_dead_retains_window_session_regardless_of_pid() {
+        // Window sessions are reaped by the compositor scan; cleanup_dead
+        // must not touch them even when the PID is clearly dead.
+        let registry = SessionRegistry::new();
+        registry.register(Session::new(
+            "window-cursor-xyz".into(),
+            AgentKind::Cursor,
+            4_000_000,
+        ));
+        registry.cleanup_dead();
+        assert_eq!(registry.all().len(), 1);
     }
 }
