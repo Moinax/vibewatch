@@ -27,11 +27,16 @@ pub fn expected_comms_for(kind: AgentKind) -> &'static [&'static str] {
     }
 }
 
+/// Normalise a raw `/proc/<pid>/comm` read for comparison against our
+/// comm constants: strip the trailing `\n` plus any surrounding whitespace,
+/// and lowercase so matching is case-insensitive.
+pub fn normalize_comm(comm: &str) -> String {
+    comm.trim().to_lowercase()
+}
+
 /// Pure helper: does a `comm` string identify the given `AgentKind`?
-/// Normalises by trimming whitespace (including the trailing `\n` that
-/// `/proc/<pid>/comm` always carries) and lowercasing.
 pub fn is_agent_pid_alive_with_comm(comm: &str, kind: AgentKind) -> bool {
-    let comm = comm.trim().to_lowercase();
+    let comm = normalize_comm(comm);
     expected_comms_for(kind).iter().any(|expected| comm == *expected)
 }
 
@@ -105,6 +110,14 @@ impl AgentKind {
             AgentKind::Cursor => "Cursor",
             AgentKind::WebStorm => "WS",
         }
+    }
+
+    /// True when liveness is tracked by the compositor scan rather than by
+    /// `/proc/<pid>/comm`. Window-backed agents' PIDs belong to GUI apps
+    /// whose comm isn't in our agent-comm list, so `cleanup_dead` must
+    /// exempt them and let the compositor scan in `scanner.rs` reap them.
+    pub fn is_window_backed(&self) -> bool {
+        matches!(self, AgentKind::Cursor | AgentKind::WebStorm)
     }
 }
 
@@ -470,17 +483,12 @@ impl SessionRegistry {
     }
 
     /// Remove sessions whose PID no longer hosts a process of the expected
-    /// agent kind. Window-backed sessions (`window-*` ids) are exempted —
-    /// their liveness is tracked by the compositor scan in `scanner.rs`,
-    /// and their `pid` belongs to a GUI app whose comm isn't in our
-    /// agent-comm list.
+    /// agent kind. Window-backed agents are exempted — the compositor scan
+    /// in `scanner.rs` is authoritative for their liveness.
     pub fn cleanup_dead(&self) {
         let mut map = self.sessions.write().unwrap();
-        map.retain(|id, session| {
-            if id.starts_with("window-") {
-                return true;
-            }
-            is_agent_pid_alive(session.pid, session.agent)
+        map.retain(|_, session| {
+            session.agent.is_window_backed() || is_agent_pid_alive(session.pid, session.agent)
         });
     }
 

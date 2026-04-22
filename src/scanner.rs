@@ -4,7 +4,7 @@ use std::fs;
 use crate::compositor::Compositor;
 use crate::config::Config;
 use crate::session::{
-    detect_terminal, inspect_pid_cmdline, AgentKind, Session, SessionRegistry,
+    detect_terminal, inspect_pid_cmdline, normalize_comm, AgentKind, Session, SessionRegistry,
     CLAUDE_CODE_COMMS, CODEX_COMMS,
 };
 
@@ -38,18 +38,14 @@ pub fn scan_agent_processes() -> Vec<(AgentKind, u32)> {
             Err(_) => continue,
         };
 
-        // Read the comm file for the short process name
-        let comm_path = format!("/proc/{}/comm", pid);
-        let comm = match fs::read_to_string(&comm_path) {
-            Ok(c) => c.trim().to_string(),
+        let comm = match fs::read_to_string(format!("/proc/{}/comm", pid)) {
+            Ok(c) => normalize_comm(&c),
             Err(_) => continue,
         };
 
-        let comm_lower = comm.to_lowercase();
-
-        if CLAUDE_CODE_COMMS.iter().any(|n| comm_lower == *n) {
+        if CLAUDE_CODE_COMMS.iter().any(|n| comm == *n) {
             results.push((AgentKind::ClaudeCode, pid));
-        } else if CODEX_COMMS.iter().any(|n| comm_lower == *n) {
+        } else if CODEX_COMMS.iter().any(|n| comm == *n) {
             results.push((AgentKind::Codex, pid));
         }
     }
