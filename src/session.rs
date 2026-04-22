@@ -9,6 +9,14 @@ use std::sync::{Arc, RwLock};
 pub const TOOL_EXIT_PLAN_MODE: &str = "ExitPlanMode";
 pub const TOOL_ASK_USER_QUESTION: &str = "AskUserQuestion";
 
+/// `/proc/<pid>/comm` values we accept as "this PID is still Claude Code".
+/// Used by the scanner for discovery and by the registry for liveness checks,
+/// so a rename here updates both paths in lockstep.
+pub const CLAUDE_CODE_COMMS: &[&str] = &["claude"];
+
+/// `/proc/<pid>/comm` values we accept as "this PID is still Codex".
+pub const CODEX_COMMS: &[&str] = &["codex"];
+
 /// Everything we need to derive from a running agent's `/proc/<pid>/cmdline`
 /// in a single read — whether it's a programmatic (non-interactive)
 /// invocation, and the `--resume` / `--continue` / `-c` session name if any.

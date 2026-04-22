@@ -3,10 +3,10 @@ use std::fs;
 
 use crate::compositor::Compositor;
 use crate::config::Config;
-use crate::session::{detect_terminal, inspect_pid_cmdline, AgentKind, Session, SessionRegistry};
-
-const CLAUDE_CODE_NAMES: &[&str] = &["claude"];
-const CODEX_NAMES: &[&str] = &["codex"];
+use crate::session::{
+    detect_terminal, inspect_pid_cmdline, AgentKind, Session, SessionRegistry,
+    CLAUDE_CODE_COMMS, CODEX_COMMS,
+};
 
 /// Map an AgentKind to its short string identifier.
 fn agent_str(kind: &AgentKind) -> &'static str {
@@ -47,9 +47,9 @@ pub fn scan_agent_processes() -> Vec<(AgentKind, u32)> {
 
         let comm_lower = comm.to_lowercase();
 
-        if CLAUDE_CODE_NAMES.iter().any(|n| comm_lower == *n) {
+        if CLAUDE_CODE_COMMS.iter().any(|n| comm_lower == *n) {
             results.push((AgentKind::ClaudeCode, pid));
-        } else if CODEX_NAMES.iter().any(|n| comm_lower == *n) {
+        } else if CODEX_COMMS.iter().any(|n| comm_lower == *n) {
             results.push((AgentKind::Codex, pid));
         }
     }
