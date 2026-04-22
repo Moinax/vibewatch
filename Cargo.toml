@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "AI agent monitor for Wayland compositors"
 license = "MIT"
-repository = "https://github.com/moinax/vibewatch"
+repository = "https://github.com/Moinax/vibewatch"
 
 [dependencies]
 anyhow = "1"

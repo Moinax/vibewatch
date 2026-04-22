@@ -24,7 +24,11 @@ use session::{AgentKind, Session, SessionRegistry, SessionStatus};
 use sound::{SoundEvent, SoundPlayer};
 
 #[derive(Parser)]
-#[command(name = "vibewatch", about = "AI agent monitor for Wayland compositors")]
+#[command(
+    name = "vibewatch",
+    about = "AI agent monitor for Wayland compositors",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("VIBEWATCH_GIT_SHA"), ")")
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
