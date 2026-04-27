@@ -67,6 +67,24 @@ fn color_for_status(status: SessionStatus, palette: &Palette) -> &'static str {
     }
 }
 
+/// Cap the session name shown in the waybar. Long names (e.g. deep cwd paths)
+/// would push the bar wider/taller and cause the whole bar to relayout each
+/// time the active session switched, producing a visible blink.
+const MAX_NAME_CHARS: usize = 24;
+
+/// Truncate at a char boundary and append a one-char ellipsis when it grew
+/// past the limit. Counted in chars (not bytes) so multibyte names aren't
+/// chopped mid-codepoint.
+fn truncate_name(s: &str) -> String {
+    let count = s.chars().count();
+    if count <= MAX_NAME_CHARS {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(MAX_NAME_CHARS - 1).collect();
+    out.push('\u{2026}');
+    out
+}
+
 /// Escape Pango-reserved characters in untrusted strings so waybar doesn't
 /// blank the widget when a tool name or detail contains `& < > " '`.
 fn pango_escape(s: &str) -> String {
@@ -133,7 +151,7 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
         let name = if all_idle {
             "VibeWatch".to_string()
         } else {
-            pango_escape(&s.display_name())
+            pango_escape(&truncate_name(&s.display_name()))
         };
         if count == 1 {
             format!("{} {} {}", LOGO_GLYPH, name, status_span)
@@ -287,6 +305,39 @@ mod tests {
             status.text,
             "2 \u{f544} <span foreground=\"#6c7086\">\u{25cf}</span> VibeWatch <span foreground=\"#6c7086\">idle</span>"
         );
+    }
+
+    #[test]
+    fn test_long_session_name_is_truncated_with_ellipsis() {
+        let long = "a".repeat(40);
+        let session = make_named(&long, AgentKind::ClaudeCode, SessionStatus::Thinking);
+        let status = dark(&[session]);
+        let expected_name = format!("{}\u{2026}", "a".repeat(MAX_NAME_CHARS - 1));
+        assert!(
+            status.text.contains(&expected_name),
+            "expected truncated name in {:?}",
+            status.text
+        );
+        assert!(!status.text.contains(&"a".repeat(MAX_NAME_CHARS + 1)));
+    }
+
+    #[test]
+    fn test_short_session_name_is_not_truncated() {
+        let session = make_named("dotfiles", AgentKind::ClaudeCode, SessionStatus::Thinking);
+        let status = dark(&[session]);
+        assert!(status.text.contains("dotfiles"));
+        assert!(!status.text.contains('\u{2026}'));
+    }
+
+    #[test]
+    fn test_truncate_respects_char_boundaries() {
+        // 30 multibyte chars; each is 3 bytes in UTF-8. Naive byte slicing
+        // would panic; char-based truncation must produce a valid string of
+        // MAX_NAME_CHARS chars total (including the ellipsis).
+        let multibyte: String = std::iter::repeat('é').take(30).collect();
+        let truncated = truncate_name(&multibyte);
+        assert_eq!(truncated.chars().count(), MAX_NAME_CHARS);
+        assert!(truncated.ends_with('\u{2026}'));
     }
 
     #[test]
