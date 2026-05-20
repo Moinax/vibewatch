@@ -267,13 +267,8 @@ fn focus_session(window_id: Option<&str>, pid: u32) {
 
 fn focus_hyprland(window_id: Option<&str>, pid: u32) {
     if let Some(wid) = window_id {
-        if let Ok(output) = std::process::Command::new("hyprctl")
-            .args(["dispatch", "focuswindow", &format!("address:{wid}")])
-            .output()
-        {
-            if String::from_utf8_lossy(&output.stdout).trim() == "ok" {
-                return;
-            }
+        if hypr_focus(&format!("address:{wid}")) {
+            return;
         }
     }
 
@@ -282,19 +277,28 @@ fn focus_hyprland(window_id: Option<&str>, pid: u32) {
     }
     let mut current_pid = pid;
     for _ in 0..PID_WALK_MAX_DEPTH {
-        if let Ok(output) = std::process::Command::new("hyprctl")
-            .args(["dispatch", "focuswindow", &format!("pid:{current_pid}")])
-            .output()
-        {
-            if String::from_utf8_lossy(&output.stdout).trim() == "ok" {
-                return;
-            }
+        if hypr_focus(&format!("pid:{current_pid}")) {
+            return;
         }
         match parent_pid(current_pid) {
             Some(ppid) => current_pid = ppid,
             None => break,
         }
     }
+}
+
+/// Focus a Hyprland window by `selector` (`address:0x…` or `pid:N`).
+///
+/// Hyprland 0.55+ evaluates `hyprctl dispatch` arguments as Lua, so the
+/// legacy `focuswindow <selector>` string is now a parse error and silently
+/// fails to focus anything. The call must go through the Lua dispatcher
+/// `hl.dsp.focus({ window = "…" })`. Returns true when Hyprland reports `ok`.
+fn hypr_focus(selector: &str) -> bool {
+    std::process::Command::new("hyprctl")
+        .args(["dispatch", &format!("hl.dsp.focus({{ window = {selector:?} }})")])
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim() == "ok")
+        .unwrap_or(false)
 }
 
 fn focus_niri(window_id: Option<&str>, pid: u32) {
