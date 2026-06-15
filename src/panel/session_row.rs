@@ -2,9 +2,7 @@ use gtk4 as gtk;
 use gtk::prelude::*;
 
 use crate::compositor::niri::NiriWindow;
-use crate::session::{describe_tool, parent_pid, prettify_tool_name, Session, SessionStatus};
-
-const PID_WALK_MAX_DEPTH: usize = 10;
+use crate::session::{describe_tool, prettify_tool_name, Session, SessionStatus};
 
 /// Build a ListBoxRow widget for a single session.
 ///
@@ -275,14 +273,9 @@ fn focus_hyprland(window_id: Option<&str>, pid: u32) {
     if pid == 0 {
         return;
     }
-    let mut current_pid = pid;
-    for _ in 0..PID_WALK_MAX_DEPTH {
-        if hypr_focus(&format!("pid:{current_pid}")) {
+    for cand in crate::session::window_candidate_pids(pid) {
+        if hypr_focus(&format!("pid:{cand}")) {
             return;
-        }
-        match parent_pid(current_pid) {
-            Some(ppid) => current_pid = ppid,
-            None => break,
         }
     }
 }
@@ -332,14 +325,9 @@ fn resolve_niri_window_id_by_pid(pid: u32) -> Option<u64> {
         return None;
     }
     let windows: Vec<NiriWindow> = serde_json::from_slice(&output.stdout).ok()?;
-    let mut current = pid;
-    for _ in 0..PID_WALK_MAX_DEPTH {
-        if let Some(w) = windows.iter().find(|w| w.pid == Some(current)) {
-            return Some(w.id);
-        }
-        current = parent_pid(current)?;
-    }
-    None
+    crate::session::window_candidate_pids(pid)
+        .into_iter()
+        .find_map(|cand| windows.iter().find(|w| w.pid == Some(cand)).map(|w| w.id))
 }
 
 /// Send an `ApprovalDecision` event to the running daemon on its IPC socket.

@@ -24,9 +24,15 @@ pub trait Compositor: Send + Sync {
             .collect())
     }
 
-    async fn find_by_pid(&self, pid: u32) -> Result<Option<CompositorWindow>> {
+    /// Find the first window matching any of `pids`, in the order given.
+    /// Used with `session::window_candidate_pids` so a Zellij agent resolves to
+    /// the terminal hosting its client (the agent's own PID is a child of the
+    /// Zellij server, which owns no window).
+    async fn find_by_pids(&self, pids: &[u32]) -> Result<Option<CompositorWindow>> {
         let windows = self.list_windows().await?;
-        Ok(windows.into_iter().find(|w| w.pid == pid))
+        Ok(pids
+            .iter()
+            .find_map(|pid| windows.iter().find(|w| w.pid == *pid).cloned()))
     }
 }
 

@@ -567,6 +567,86 @@ pub fn parent_pid(pid: u32) -> Option<u32> {
     (ppid > 1).then_some(ppid)
 }
 
+/// How far up a process tree we walk before giving up on finding a window.
+const PID_WALK_MAX_DEPTH: usize = 10;
+
+/// A PID followed by its ancestors (bounded depth), stopping at init.
+fn ancestry(pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut cur = pid;
+    for _ in 0..PID_WALK_MAX_DEPTH {
+        out.push(cur);
+        match parent_pid(cur) {
+            Some(ppid) => cur = ppid,
+            None => break,
+        }
+    }
+    out
+}
+
+/// Read a process's `ZELLIJ_SESSION_NAME` from `/proc/<pid>/environ`.
+/// Every process inside a Zellij session inherits this. Agents run under the
+/// *persistent Zellij server* (not the terminal window), so their own process
+/// ancestry never reaches the window — this is how we recover which session a
+/// PID belongs to so we can find the matching client window. None outside Zellij.
+pub fn zellij_session_of(pid: u32) -> Option<String> {
+    let raw = std::fs::read(format!("/proc/{}/environ", pid)).ok()?;
+    raw.split(|b| *b == 0).find_map(|kv| {
+        std::str::from_utf8(kv)
+            .ok()?
+            .strip_prefix("ZELLIJ_SESSION_NAME=")
+            .map(str::to_string)
+    })
+    .filter(|s| !s.is_empty())
+}
+
+/// Find the Zellij *client* process for `session` — the one running inside a
+/// terminal window, as opposed to the shared `--server` process whose ancestry
+/// dead-ends at init. The client carries the session name as a bare argv token,
+/// covering both launch forms: `zellij --session NAME …` and `zellij attach NAME`.
+pub fn zellij_client_pid(session: &str) -> Option<u32> {
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        match std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
+            Ok(comm) if comm.trim() == "zellij" => {}
+            _ => continue,
+        }
+        let Ok(raw) = std::fs::read(format!("/proc/{}/cmdline", pid)) else {
+            continue;
+        };
+        let args: Vec<&str> = raw
+            .split(|b| *b == 0)
+            .filter_map(|a| std::str::from_utf8(a).ok())
+            .filter(|a| !a.is_empty())
+            .collect();
+        // Skip the shared server; match a client that names this session.
+        if args.iter().any(|a| *a == "--server") {
+            continue;
+        }
+        if args.iter().any(|a| *a == session) {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+/// Ordered candidate PIDs to match against compositor windows when locating the
+/// terminal that hosts `agent_pid`. The agent's own ancestry comes first (covers
+/// terminals running the agent as a direct child, e.g. kitty splits); if the
+/// agent lives in a Zellij session, the matching client's ancestry is appended —
+/// that's the branch that actually reaches the terminal window.
+pub fn window_candidate_pids(agent_pid: u32) -> Vec<u32> {
+    let mut pids = ancestry(agent_pid);
+    if let Some(session) = zellij_session_of(agent_pid) {
+        if let Some(client) = zellij_client_pid(&session) {
+            pids.extend(ancestry(client));
+        }
+    }
+    pids
+}
+
 /// Detect which terminal hosts a process by walking up the process tree.
 pub fn detect_terminal(pid: u32) -> String {
     let mut current = pid;
@@ -1099,6 +1179,29 @@ mod tests {
         ));
         registry.cleanup_dead();
         assert!(registry.all().is_empty());
+    }
+
+    #[test]
+    fn window_candidate_pids_starts_with_the_agent_pid() {
+        // Our own PID is real, so its ancestry is non-empty and leads with it.
+        let me = std::process::id();
+        let pids = window_candidate_pids(me);
+        assert_eq!(pids.first(), Some(&me));
+    }
+
+    #[test]
+    fn zellij_session_of_is_none_for_init() {
+        // PID 1 (init) is not inside any Zellij session.
+        assert_eq!(zellij_session_of(1), None);
+    }
+
+    #[test]
+    fn zellij_client_pid_is_none_for_bogus_session() {
+        // A session name that cannot exist must not match the server or anything.
+        assert_eq!(
+            zellij_client_pid("vibewatch-no-such-session-zzz-9999"),
+            None
+        );
     }
 
     #[test]
