@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
@@ -492,6 +492,41 @@ impl SessionRegistry {
         });
     }
 
+    /// Enforce the invariant the rest of the daemon assumes: a single live CLI
+    /// process (one PID) maps to at most one session. A long-lived
+    /// `claude`/`codex` process rotates through several session ids over its
+    /// lifetime (`/clear`, `--resume`, compaction), and a scanner-discovered
+    /// `scan-<pid>` placeholder can linger alongside the hook UUID session for
+    /// the same PID. `cleanup_dead` can't reap any of them — the PID is still
+    /// alive with the agent's comm — so they pile up as ghost rows in the panel.
+    /// Keep the most relevant session per PID and drop the rest.
+    ///
+    /// Window-backed agents are exempt: several editor windows legitimately
+    /// share one GUI process PID, so their identity is the window id, not the
+    /// PID.
+    pub fn dedupe_cli_pids(&self) {
+        let mut map = self.sessions.write().unwrap();
+        // For each PID, track the best (tier, recency, id) seen so far. Higher
+        // wins; the id tiebreaker keeps the choice stable across scans so the
+        // panel doesn't flicker between equally-scored ghosts.
+        let mut best: HashMap<u32, (u8, u64, String)> = HashMap::new();
+        for (id, session) in map.iter() {
+            if session.agent.is_window_backed() {
+                continue;
+            }
+            let (tier, recency) = cli_keep_score(session);
+            let candidate = (tier, recency, id.clone());
+            match best.get(&session.pid) {
+                Some(current) if *current >= candidate => {}
+                _ => {
+                    best.insert(session.pid, candidate);
+                }
+            }
+        }
+        let keep: HashSet<String> = best.into_values().map(|(_, _, id)| id).collect();
+        map.retain(|id, session| session.agent.is_window_backed() || keep.contains(id));
+    }
+
     /// Set the window id for a session. Returns false if the session does not exist.
     pub fn set_window_id(&self, id: &str, window_id: String) -> bool {
         let mut map = self.sessions.write().unwrap();
@@ -522,6 +557,25 @@ impl SessionRegistry {
         map.insert(new_id.to_string(), session.clone());
         Some(session)
     }
+}
+
+/// Rank a CLI session for `dedupe_cli_pids`: higher is kept. A real hook
+/// session (UUID id) outranks a `scan-<pid>` placeholder because it carries the
+/// richer hook-driven state; within the same tier the most recently active
+/// session wins, since that's the one the user is actually driving.
+fn cli_keep_score(session: &Session) -> (u8, u64) {
+    let tier = if session.id.starts_with("scan-") { 0 } else { 1 };
+    let recency = [
+        session.last_prompt_at,
+        session.last_agent_text_at,
+        session.last_tool_at,
+        session.started_at_epoch,
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .unwrap_or(0);
+    (tier, recency)
 }
 
 /// Check whether a PID is still occupied by a process of the given `AgentKind`,
@@ -1202,6 +1256,75 @@ mod tests {
             zellij_client_pid("vibewatch-no-such-session-zzz-9999"),
             None
         );
+    }
+
+    #[test]
+    fn dedupe_cli_pids_keeps_one_session_per_pid() {
+        // Same live PID rotated through three session ids (/clear, resume,
+        // compaction). Only the most recent should survive.
+        let registry = SessionRegistry::new();
+        let mut a = Session::new("uuid-old".into(), AgentKind::ClaudeCode, 4242);
+        a.started_at_epoch = Some(100);
+        a.last_prompt_at = Some(100);
+        let mut b = Session::new("uuid-mid".into(), AgentKind::ClaudeCode, 4242);
+        b.started_at_epoch = Some(200);
+        b.last_prompt_at = Some(200);
+        let mut c = Session::new("uuid-new".into(), AgentKind::ClaudeCode, 4242);
+        c.started_at_epoch = Some(300);
+        c.last_prompt_at = Some(300);
+        registry.register(a);
+        registry.register(b);
+        registry.register(c);
+
+        registry.dedupe_cli_pids();
+
+        let all = registry.all();
+        assert_eq!(all.len(), 1, "one session should remain for the PID");
+        assert_eq!(all[0].id, "uuid-new", "most recently active wins");
+    }
+
+    #[test]
+    fn dedupe_cli_pids_prefers_hook_session_over_scan_placeholder() {
+        // A scan- placeholder lingering next to the real hook session for the
+        // same PID — keep the hook session even when the scan one looks newer.
+        let registry = SessionRegistry::new();
+        let mut scan = Session::new("scan-claude-555".into(), AgentKind::ClaudeCode, 555);
+        scan.started_at_epoch = Some(9999);
+        let mut hook = Session::new("real-uuid".into(), AgentKind::ClaudeCode, 555);
+        hook.started_at_epoch = Some(1);
+        registry.register(scan);
+        registry.register(hook);
+
+        registry.dedupe_cli_pids();
+
+        let all = registry.all();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, "real-uuid", "hook session outranks scan placeholder");
+    }
+
+    #[test]
+    fn dedupe_cli_pids_leaves_distinct_pids_untouched() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("a".into(), AgentKind::ClaudeCode, 1));
+        registry.register(Session::new("b".into(), AgentKind::ClaudeCode, 2));
+        registry.register(Session::new("c".into(), AgentKind::Codex, 3));
+
+        registry.dedupe_cli_pids();
+
+        assert_eq!(registry.all().len(), 3);
+    }
+
+    #[test]
+    fn dedupe_cli_pids_exempts_window_agents_sharing_a_pid() {
+        // Multiple editor windows legitimately share one GUI process PID; their
+        // identity is the window id, so dedup must not collapse them.
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("window-cursor-1".into(), AgentKind::Cursor, 700));
+        registry.register(Session::new("window-cursor-2".into(), AgentKind::Cursor, 700));
+
+        registry.dedupe_cli_pids();
+
+        assert_eq!(registry.all().len(), 2);
     }
 
     #[test]

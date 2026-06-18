@@ -68,6 +68,11 @@ pub async fn run_scanner(
     loop {
         // Remove sessions whose PID is no longer alive
         registry.cleanup_dead();
+        // Collapse ghost rows: a long-lived agent process rotates through
+        // multiple session ids (/clear, resume, compaction), leaving stale
+        // same-PID sessions that cleanup_dead can't reap (the PID is still
+        // alive). Keep one session per live CLI PID.
+        registry.dedupe_cli_pids();
 
         // --- CLI agent scanning ---
         let found_processes = scan_agent_processes();
