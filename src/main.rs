@@ -219,7 +219,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
         .build();
 
     app.connect_activate(move |app| {
-        let window = panel::create_panel(app, registry.clone());
+        let window = panel::create_panel(app, registry.clone(), config.panel.clone());
 
         // SendWeakRef is Send+Sync; actual widget access happens only inside
         // glib::MainContext::invoke(), which runs on the GTK main thread.
@@ -229,7 +229,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
             let win_weak = win_weak.clone();
             glib::MainContext::default().invoke(move || {
                 if let Some(win) = win_weak.upgrade() {
-                    win.set_visible(!win.is_visible());
+                    panel::toggle(&win);
                 }
             });
         });
@@ -239,8 +239,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
             let show_weak = show_weak.clone();
             glib::MainContext::default().invoke(move || {
                 if let Some(win) = show_weak.upgrade() {
-                    win.set_visible(true);
-                    win.present();
+                    panel::show(&win);
                 }
             });
         });

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 pub struct Config {
     pub general: GeneralConfig,
     pub sounds: SoundConfig,
+    pub panel: PanelConfig,
     pub agents: HashMap<String, AgentConfig>,
 }
 
@@ -23,6 +24,21 @@ pub struct SoundConfig {
     pub enabled: bool,
     pub approval_needed: String,
     pub error: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct PanelConfig {
+    /// Slide the panel in/out with a drawer animation on toggle.
+    /// When false, the panel snaps instantly (animation_ms is ignored).
+    pub animate: bool,
+    /// Drawer slide duration in milliseconds.
+    pub animation_ms: u32,
+    /// Auto-hide the panel once nothing needs attention and the pointer is
+    /// not over it. Sessions waiting for approval keep the panel open.
+    pub auto_close: bool,
+    /// Idle delay before auto-closing, in milliseconds.
+    pub auto_close_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +61,17 @@ impl Default for SoundConfig {
             enabled: true,
             approval_needed: "builtin:chime".to_string(),
             error: "builtin:alert".to_string(),
+        }
+    }
+}
+
+impl Default for PanelConfig {
+    fn default() -> Self {
+        Self {
+            animate: true,
+            animation_ms: 220,
+            auto_close: true,
+            auto_close_ms: 5000,
         }
     }
 }
@@ -99,7 +126,27 @@ mod tests {
         assert!(config.sounds.enabled);
         assert_eq!(config.sounds.approval_needed, "builtin:chime");
         assert_eq!(config.sounds.error, "builtin:alert");
+        assert!(config.panel.animate);
+        assert_eq!(config.panel.animation_ms, 220);
+        assert!(config.panel.auto_close);
+        assert_eq!(config.panel.auto_close_ms, 5000);
         assert!(config.agents.is_empty());
+    }
+
+    #[test]
+    fn test_parse_panel_config() {
+        let toml_str = r#"
+[panel]
+animate = false
+animation_ms = 120
+auto_close = false
+auto_close_ms = 8000
+"#;
+        let config = toml::from_str::<Config>(toml_str).unwrap();
+        assert!(!config.panel.animate);
+        assert_eq!(config.panel.animation_ms, 120);
+        assert!(!config.panel.auto_close);
+        assert_eq!(config.panel.auto_close_ms, 8000);
     }
 
     #[test]

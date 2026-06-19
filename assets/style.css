@@ -80,10 +80,22 @@ window.csd,
                  0 0 12px alpha(@cat_green, 0.3);
 }
 
+/* The attention dot breathes so a blocked agent pulls the eye even in a
+   crowded list. GTK animates `opacity` on the label fine. */
+@keyframes vw-attention-pulse {
+    0%   { opacity: 1; }
+    50%  { opacity: 0.4; }
+    100% { opacity: 1; }
+}
+
 .indicator.waiting-approval {
     color: @cat_teal;
     text-shadow: 0 0 6px alpha(@cat_teal, 0.7),
                  0 0 12px alpha(@cat_teal, 0.3);
+    animation-name: vw-attention-pulse;
+    animation-duration: 1.4s;
+    animation-timing-function: ease-in-out;
+    animation-iteration-count: infinite;
 }
 
 .indicator.thinking {
