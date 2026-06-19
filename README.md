@@ -2,7 +2,7 @@
 
 **A status bar and glanceable overlay for your AI coding agents — on Wayland.**
 
-vibewatch is an open-source alternative to [Vibe Island](https://vibeisland.dev/) built for Linux, Hyprland, and Niri. It listens to your agents' hooks in real time and gives you a single place to see what every Claude Code or Codex session is doing — and, when one stops to ask for permission, lets you **approve or deny right from the overlay** instead of hunting for the right terminal tab.
+vibewatch is an open-source alternative to [Vibe Island](https://vibeisland.app/) built for Linux, Hyprland, and Niri. It listens to your agents' hooks in real time and gives you a single place to see what every Claude Code or Codex session is doing — and, when one stops to ask for permission, lets you **approve or deny right from the overlay** instead of hunting for the right terminal tab.
 
 ```
 ┌──────────────────────────────────────────────┐
