@@ -8,6 +8,7 @@ mod scanner;
 mod session;
 mod transcript;
 mod sound;
+mod mute;
 mod waybar;
 
 #[cfg(feature = "panel")]
@@ -418,7 +419,7 @@ async fn handle_connection(
             InboundEvent::PostToolUse {
                 session_id,
                 tool: _,
-                success,
+                success: _,
                 pid,
             } => {
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
@@ -446,9 +447,9 @@ async fn handle_connection(
                 } else {
                     log_drop("PostToolUse", &session_id, pid);
                 }
-                if !success {
-                    sound_player.play(SoundEvent::Error);
-                }
+                // No sound on tool completion/errors — they fire constantly
+                // during normal work. Alerts are limited to approval requests
+                // and going idle (see PermissionRequest and Stop handlers).
             }
             InboundEvent::UserPromptSubmit {
                 session_id,
@@ -660,6 +661,8 @@ async fn handle_connection(
                 } else {
                     log_drop("Stop", &session_id, pid);
                 }
+                // The agent finished responding and went idle.
+                sound_player.play(SoundEvent::Idle);
                 let registry = registry.clone();
                 let sid = session_id.clone();
                 let late_notify = status_notify.clone();

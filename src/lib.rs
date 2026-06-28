@@ -8,4 +8,5 @@ pub mod approval;
 pub mod scanner;
 pub mod waybar;
 pub mod sound;
+pub mod mute;
 pub mod compositor;

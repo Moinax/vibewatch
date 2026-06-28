@@ -25,6 +25,31 @@ window.csd,
     padding: 4px 0;
 }
 
+/* ── Header (title + sound mute toggle) ───────────────────────── */
+.panel-header {
+    padding: 6px 12px 2px 12px;
+}
+
+.panel-title {
+    font-weight: 700;
+    color: @cat_text;
+}
+
+.mute-toggle {
+    min-height: 0;
+    min-width: 0;
+    padding: 2px 6px;
+    color: @cat_text_muted;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+.mute-toggle:hover {
+    background: @cat_hover_bg;
+    color: @cat_text;
+}
+
 .scroll-container {
     max-height: 800px;
 }

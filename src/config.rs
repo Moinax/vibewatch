@@ -22,7 +22,11 @@ pub struct GeneralConfig {
 #[serde(default)]
 pub struct SoundConfig {
     pub enabled: bool,
+    /// Played when the agent asks for approval/permission (a question).
     pub approval_needed: String,
+    /// Played when the agent finishes responding and goes idle.
+    pub idle: String,
+    /// Reserved for error alerts; not auto-triggered by the daemon.
     pub error: String,
 }
 
@@ -60,6 +64,7 @@ impl Default for SoundConfig {
         Self {
             enabled: true,
             approval_needed: "builtin:chime".to_string(),
+            idle: "builtin:success".to_string(),
             error: "builtin:alert".to_string(),
         }
     }
@@ -125,6 +130,7 @@ mod tests {
         assert!(config.general.socket_path.is_none());
         assert!(config.sounds.enabled);
         assert_eq!(config.sounds.approval_needed, "builtin:chime");
+        assert_eq!(config.sounds.idle, "builtin:success");
         assert_eq!(config.sounds.error, "builtin:alert");
         assert!(config.panel.animate);
         assert_eq!(config.panel.animation_ms, 220);

@@ -43,6 +43,20 @@ fn sessions_fingerprint(sessions: &[Session]) -> u64 {
     h.finish()
 }
 
+/// Set the mute button's icon and tooltip to match the current state.
+fn apply_mute_icon(btn: &gtk::Button, muted: bool) {
+    btn.set_icon_name(if muted {
+        "audio-volume-muted-symbolic"
+    } else {
+        "audio-volume-high-symbolic"
+    });
+    btn.set_tooltip_text(Some(if muted {
+        "Sound muted — click to unmute"
+    } else {
+        "Sound on — click to mute"
+    }));
+}
+
 pub fn build_window(
     app: &adw::Application,
     registry: SessionRegistry,
@@ -105,6 +119,31 @@ pub fn build_window(
     main_box.set_size_request(360, -1);
     main_box.set_hexpand(false);
     main_box.set_halign(gtk::Align::Center);
+
+    // Header row: app title on the left, sound mute toggle on the right.
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    header.add_css_class("panel-header");
+
+    let title = gtk::Label::new(Some("vibewatch"));
+    title.add_css_class("panel-title");
+    title.set_hexpand(true);
+    title.set_halign(gtk::Align::Start);
+    header.append(&title);
+
+    // Mutes/unmutes sound alerts; state is persisted by `crate::mute` so it
+    // survives restarts and is read by the daemon's SoundPlayer per event.
+    let mute_btn = gtk::Button::new();
+    mute_btn.add_css_class("mute-toggle");
+    mute_btn.add_css_class("flat");
+    apply_mute_icon(&mute_btn, crate::mute::is_muted());
+    let mute_btn_for_click = mute_btn.clone();
+    mute_btn.connect_clicked(move |_| {
+        let muted = crate::mute::toggle().unwrap_or(false);
+        apply_mute_icon(&mute_btn_for_click, muted);
+    });
+    header.append(&mute_btn);
+
+    main_box.append(&header);
 
     // Session list
     let session_list = gtk::ListBox::new();

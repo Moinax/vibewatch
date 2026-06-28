@@ -1,23 +1,32 @@
 # Sound Assets
 
-This directory contains the built-in sound files for vibewatch alerts.
+Built-in sound files for vibewatch alerts. These are **embedded into the
+binary** at compile time (`include_bytes!` in `src/sound.rs`), so they always
+resolve regardless of how vibewatch is installed — there is no runtime
+filesystem lookup.
 
-## Expected WAV Files
+## Files
 
-Place the following WAV files in this directory:
-
-- **chime.wav** - Played when an AI agent needs user approval (e.g., a tool-use prompt)
-- **success.wav** - Played when an AI agent task completes successfully
-- **alert.wav** - Played when an AI agent encounters an error
+- **chime.wav** — `builtin:chime`, played when the agent needs approval (a question)
+- **success.wav** — `builtin:success`, played when the agent finishes and goes idle
+- **alert.wav** — `builtin:alert`, a reserved error alert (not auto-triggered)
 
 ## Format
 
-Files should be standard WAV format (PCM, 16-bit, 44100 Hz recommended).
-Short sounds (0.5-2 seconds) work best for notifications.
+Standard WAV (PCM, 16-bit, 44100 Hz mono). Short sounds (0.5–1 s) work best.
 
-## Resolution Order
+## Referencing
 
-The sound player looks for built-in sounds in this order:
+In `config.toml`, a sound is either a `builtin:NAME` reference (resolved to the
+embedded bytes above) or an absolute path to a WAV on disk:
 
-1. `/usr/share/vibewatch/sounds/{name}.wav` (system install)
-2. `{CARGO_MANIFEST_DIR}/assets/sounds/{name}.wav` (development)
+```toml
+[sounds]
+approval_needed = "builtin:chime"
+idle = "builtin:success"
+# or a custom file:
+# idle = "/home/user/sounds/done.wav"
+```
+
+To change the default sounds, replace the WAV files in this directory and
+rebuild.
