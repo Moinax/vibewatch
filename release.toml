@@ -1,0 +1,9 @@
+# cargo-release configuration (https://github.com/crate-ci/cargo-release).
+# Drives `cargo release <patch|minor|major>` — see scripts/release.sh / RELEASING.md.
+tag-name = "v{{version}}"
+tag-message = "v{{version}}"
+pre-release-commit-message = "chore(release): v{{version}}"
+# Not published to crates.io — vibewatch is installed from git.
+publish = false
+# Bump, commit, tag, and push in one go.
+push = true
