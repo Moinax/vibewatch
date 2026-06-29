@@ -144,6 +144,16 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
         }
     }
 
+    // A sub-agent (Task/Agent tool) finishing fires the same `Stop` hook as the
+    // main agent — distinguished only by an `agent_id` in the payload. Treat
+    // only the main agent's stop as a real idle event; otherwise every
+    // sub-agent completion replays the idle sound and briefly flaps the session
+    // to Idle mid-turn. Sub-agent tool/permission hooks still flow normally.
+    if event_type == "stop" && payload_is_subagent(&stdin_buf) {
+        eprintln!("vibewatch-hook: ignoring sub-agent stop (agent_id present)");
+        return Ok(());
+    }
+
     let event = match agent {
         "claude-code" => parse_claude_code(&stdin_buf, event_type)?,
         "codex" => parse_codex(&stdin_buf, event_type)?,
@@ -324,6 +334,17 @@ fn extract_ask_user_question_labels(tool_input: &Option<serde_json::Value>) -> V
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// True when a hook payload originates from a sub-agent rather than the main
+/// agent. Claude Code stamps sub-agent hook invocations with a non-null
+/// `agent_id`; the main agent has none. Returns false for any payload that
+/// isn't valid JSON (fail open — keep the main agent's idle behavior).
+fn payload_is_subagent(stdin: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(stdin) else {
+        return false;
+    };
+    v.get("agent_id").is_some_and(|id| !id.is_null())
 }
 
 /// Get the parent PID (the claude process that spawned this hook).
@@ -665,6 +686,22 @@ mod tests {
             }
             _ => panic!("expected PermissionRequest"),
         }
+    }
+
+    #[test]
+    fn payload_is_subagent_detects_agent_id() {
+        // Main-agent stop: no agent_id → real idle.
+        assert!(!payload_is_subagent(
+            r#"{"session_id":"s1","hook_event_name":"Stop","transcript_path":"/t.jsonl"}"#
+        ));
+        // Sub-agent stop: agent_id present → suppress.
+        assert!(payload_is_subagent(
+            r#"{"session_id":"s1","hook_event_name":"Stop","agent_id":"sub-123","agent_type":"Explore"}"#
+        ));
+        // Explicit null agent_id is still the main agent.
+        assert!(!payload_is_subagent(r#"{"session_id":"s1","agent_id":null}"#));
+        // Garbage in → treat as main agent (fail open: keep the sound).
+        assert!(!payload_is_subagent("not json"));
     }
 
     #[tokio::test]
