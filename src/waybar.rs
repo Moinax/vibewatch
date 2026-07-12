@@ -29,10 +29,13 @@ const LATTE: Palette = Palette {
     attention_text: "#179299",
 };
 
-/// Nerd Font glyph \u{f544} (= `nf-md-robot_happy`). Rendered by waybar's
-/// font stack; falls back to the replacement char if the user has no Nerd
-/// Font installed.
-const LOGO_GLYPH: &str = "\u{f544}";
+/// Nerd Font glyph \u{f06a9} (= `nf-md-robot`, Material Design range): a clean
+/// boxless robot head. NOT \u{f544} (`nf-fa-robot` in Nerd Fonts v2, removed by
+/// the v3.0 remap → renders as tofu on v3 fonts), and NOT \u{f0a06}
+/// (`nf-md-robot_happy`, a boxed variant that reads as a small white square on
+/// the bar). Rendered by waybar's font stack; falls back to the replacement
+/// char with no Nerd Font installed.
+const LOGO_GLYPH: &str = "\u{f06a9}";
 /// Same filled circle the panel uses as its row indicator (`\u{25cf}`).
 /// Colored via Pango to match `.indicator.<status>` in palette-*.css.
 const INDICATOR_DOT: &str = "\u{25cf}";
@@ -201,7 +204,7 @@ mod tests {
     #[test]
     fn test_empty_status() {
         let status = dark(&[]);
-        assert_eq!(status.text, "\u{f544}");
+        assert_eq!(status.text, "\u{f06a9}");
         assert_eq!(status.class, "idle");
     }
 
@@ -215,7 +218,7 @@ mod tests {
         let status = dark(&sessions);
         assert_eq!(
             status.text,
-            "\u{f544} dotfiles <span foreground=\"#74c7ec\">thinking</span>"
+            "\u{f06a9} dotfiles <span foreground=\"#74c7ec\">thinking</span>"
         );
         assert_eq!(status.class, "active");
     }
@@ -230,7 +233,7 @@ mod tests {
         let status = light(&sessions);
         assert_eq!(
             status.text,
-            "\u{f544} dotfiles <span foreground=\"#209fb5\">thinking</span>"
+            "\u{f06a9} dotfiles <span foreground=\"#209fb5\">thinking</span>"
         );
     }
 
@@ -245,7 +248,7 @@ mod tests {
         let status = dark(&sessions);
         assert_eq!(
             status.text,
-            "2 \u{f544} <span foreground=\"#a6e3a1\">\u{25cf}</span> vibewatch <span foreground=\"#a6e3a1\">exec</span>"
+            "2 \u{f06a9} <span foreground=\"#a6e3a1\">\u{25cf}</span> vibewatch <span foreground=\"#a6e3a1\">exec</span>"
         );
         assert_eq!(status.class, "active");
     }
@@ -261,7 +264,7 @@ mod tests {
         assert_eq!(status.class, "attention");
         assert_eq!(
             status.text,
-            "\u{f544} dotfiles <span foreground=\"#94e2d5\">awaiting approval</span>"
+            "\u{f06a9} dotfiles <span foreground=\"#94e2d5\">awaiting approval</span>"
         );
     }
 
@@ -274,7 +277,7 @@ mod tests {
         let status = dark(&sessions);
         assert_eq!(
             status.text,
-            "\u{f544} dotfiles <span foreground=\"#74c7ec\">thinking</span>"
+            "\u{f06a9} dotfiles <span foreground=\"#74c7ec\">thinking</span>"
         );
     }
 
@@ -289,7 +292,7 @@ mod tests {
         assert_eq!(status.class, "idle");
         assert_eq!(
             status.text,
-            "\u{f544} VibeWatch <span foreground=\"#6c7086\">idle</span>"
+            "\u{f06a9} VibeWatch <span foreground=\"#6c7086\">idle</span>"
         );
     }
 
@@ -303,7 +306,7 @@ mod tests {
         assert_eq!(status.class, "idle");
         assert_eq!(
             status.text,
-            "2 \u{f544} <span foreground=\"#6c7086\">\u{25cf}</span> VibeWatch <span foreground=\"#6c7086\">idle</span>"
+            "2 \u{f06a9} <span foreground=\"#6c7086\">\u{25cf}</span> VibeWatch <span foreground=\"#6c7086\">idle</span>"
         );
     }
 
@@ -347,7 +350,7 @@ mod tests {
         let status = dark(&[session]);
         assert_eq!(
             status.text,
-            "\u{f544} dotfiles <span foreground=\"#a6e3a1\">A&amp;B&lt;x&gt;</span>"
+            "\u{f06a9} dotfiles <span foreground=\"#a6e3a1\">A&amp;B&lt;x&gt;</span>"
         );
     }
 
@@ -359,7 +362,7 @@ mod tests {
         let status = dark(&[session]);
         assert_eq!(
             status.text,
-            "\u{f544} dotfiles <span foreground=\"#a6e3a1\">Bash</span>"
+            "\u{f06a9} dotfiles <span foreground=\"#a6e3a1\">Bash</span>"
         );
     }
 }
