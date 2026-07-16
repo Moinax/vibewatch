@@ -256,11 +256,28 @@ fn state_label(session: &Session) -> String {
 }
 
 fn focus_session(window_id: Option<&str>, pid: u32) {
+    if pid != 0 {
+        focus_herdr_pane(pid);
+    }
     match crate::compositor::detect_compositor().as_deref() {
         Some("niri") => focus_niri(window_id, pid),
         Some("hyprland") => focus_hyprland(window_id, pid),
         _ => {}
     }
+}
+
+/// If the agent runs inside a herdr pane, select it inside its herdr session
+/// (workspace + tab + pane) before the compositor focus below raises the
+/// matching client window. `HERDR_SOCKET_PATH` routes the CLI to the right
+/// session's API socket — each named session has its own.
+fn focus_herdr_pane(pid: u32) {
+    let Some(pane) = crate::session::herdr_pane_of(pid) else {
+        return;
+    };
+    let _ = std::process::Command::new("herdr")
+        .env("HERDR_SOCKET_PATH", &pane.socket_path)
+        .args(["agent", "focus", &pane.pane_id])
+        .output();
 }
 
 fn focus_hyprland(window_id: Option<&str>, pid: u32) {

@@ -136,9 +136,9 @@ pub async fn run_scanner(
         }
 
         // --- Update window_ids for CLI agent sessions via PID matching ---
-        // Use candidate PIDs (agent ancestry + Zellij client ancestry) so
-        // agents running inside a Zellij session — children of the shared
-        // server, not the terminal window — still resolve to their window.
+        // Use candidate PIDs (agent ancestry + Zellij/herdr client ancestry)
+        // so agents running inside a Zellij or herdr session — children of the
+        // shared server, not the terminal window — still resolve to their window.
         for session in registry.all() {
             if session.id.starts_with("scan-") && session.window_id.is_none() {
                 let candidates = crate::session::window_candidate_pids(session.pid);

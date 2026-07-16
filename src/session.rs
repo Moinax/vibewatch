@@ -686,15 +686,110 @@ pub fn zellij_client_pid(session: &str) -> Option<u32> {
     None
 }
 
+/// A herdr pane identity read from a process's environment. Herdr injects
+/// these into every pane it spawns; `socket_path` is the API socket of the
+/// herdr session the pane belongs to, `pane_id` a `agent focus`-able target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HerdrPane {
+    pub pane_id: String,
+    pub socket_path: String,
+}
+
+/// Read a process's herdr pane identity from `/proc/<pid>/environ`.
+/// Like Zellij, agents run under the persistent herdr *server*, so their
+/// ancestry never reaches the terminal window — the env vars are how we
+/// recover which herdr session/pane a PID belongs to. None outside herdr.
+pub fn herdr_pane_of(pid: u32) -> Option<HerdrPane> {
+    let raw = std::fs::read(format!("/proc/{}/environ", pid)).ok()?;
+    herdr_pane_from_environ(&raw)
+}
+
+fn herdr_pane_from_environ(raw: &[u8]) -> Option<HerdrPane> {
+    let mut pane_id = None;
+    let mut socket_path = None;
+    for kv in raw.split(|b| *b == 0) {
+        let Ok(kv) = std::str::from_utf8(kv) else { continue };
+        if let Some(v) = kv.strip_prefix("HERDR_PANE_ID=") {
+            pane_id = Some(v.to_string());
+        } else if let Some(v) = kv.strip_prefix("HERDR_SOCKET_PATH=") {
+            socket_path = Some(v.to_string());
+        }
+    }
+    Some(HerdrPane {
+        pane_id: pane_id.filter(|s| !s.is_empty())?,
+        socket_path: socket_path.filter(|s| !s.is_empty())?,
+    })
+}
+
+/// Herdr session name derived from an API socket path. Named sessions live
+/// at `…/sessions/<name>/herdr.sock`; anything else is the default session.
+pub fn herdr_session_name(socket_path: &str) -> String {
+    let dir = std::path::Path::new(socket_path).parent();
+    if let (Some(dir), Some(grand)) = (dir, dir.and_then(|d| d.parent())) {
+        if grand.file_name().is_some_and(|n| n == "sessions") {
+            if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
+                return name.to_string();
+            }
+        }
+    }
+    "default".to_string()
+}
+
+/// Does a herdr process's argv identify it as the *client* attached to
+/// `session`? Only the exact launch forms count — anything else (the
+/// `… server` process, transient `herdr <subcommand>` CLI calls, remote
+/// attaches) must not match, or the scanner could resolve an agent to a
+/// window hosting a short-lived CLI invocation instead of the real client.
+fn herdr_client_args_match(args: &[&str], session: &str) -> bool {
+    match args {
+        [_] => session == "default",
+        [_, "--session", name] => *name == session,
+        [_, "session", "attach", name] => *name == session,
+        _ => false,
+    }
+}
+
+/// Find the herdr *client* process for `session` — the one running inside a
+/// terminal window, as opposed to the shared server whose ancestry dead-ends
+/// at init. Its ancestry is the branch that reaches the terminal window.
+pub fn herdr_client_pid(session: &str) -> Option<u32> {
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        match std::fs::read_to_string(format!("/proc/{}/comm", pid)) {
+            Ok(comm) if comm.trim() == "herdr" => {}
+            _ => continue,
+        }
+        let Ok(raw) = std::fs::read(format!("/proc/{}/cmdline", pid)) else {
+            continue;
+        };
+        let args: Vec<&str> = raw
+            .split(|b| *b == 0)
+            .filter_map(|a| std::str::from_utf8(a).ok())
+            .filter(|a| !a.is_empty())
+            .collect();
+        if herdr_client_args_match(&args, session) {
+            return Some(pid);
+        }
+    }
+    None
+}
+
 /// Ordered candidate PIDs to match against compositor windows when locating the
 /// terminal that hosts `agent_pid`. The agent's own ancestry comes first (covers
 /// terminals running the agent as a direct child, e.g. kitty splits); if the
-/// agent lives in a Zellij session, the matching client's ancestry is appended —
-/// that's the branch that actually reaches the terminal window.
+/// agent lives in a Zellij or herdr session, the matching client's ancestry is
+/// appended — that's the branch that actually reaches the terminal window.
 pub fn window_candidate_pids(agent_pid: u32) -> Vec<u32> {
     let mut pids = ancestry(agent_pid);
     if let Some(session) = zellij_session_of(agent_pid) {
         if let Some(client) = zellij_client_pid(&session) {
+            pids.extend(ancestry(client));
+        }
+    }
+    if let Some(pane) = herdr_pane_of(agent_pid) {
+        if let Some(client) = herdr_client_pid(&herdr_session_name(&pane.socket_path)) {
             pids.extend(ancestry(client));
         }
     }
@@ -707,6 +802,9 @@ pub fn detect_terminal(pid: u32) -> String {
     for _ in 0..10 {
         if let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", current)) {
             match comm.trim() {
+                // The herdr server sits between an agent and init, so the
+                // walk can never reach the real terminal; name the muxer.
+                "herdr" => return "Herdr".to_string(),
                 "kitty" => return "Kitty".to_string(),
                 "alacritty" => return "Alacritty".to_string(),
                 "foot" => return "Foot".to_string(),
@@ -1254,6 +1352,104 @@ mod tests {
         // A session name that cannot exist must not match the server or anything.
         assert_eq!(
             zellij_client_pid("vibewatch-no-such-session-zzz-9999"),
+            None
+        );
+    }
+
+    #[test]
+    fn herdr_pane_from_environ_reads_pane_and_socket() {
+        let raw = b"HOME=/home/u\0HERDR_PANE_ID=w8:p1\0HERDR_TAB_ID=w8:t1\0HERDR_SOCKET_PATH=/home/u/.config/herdr/herdr.sock\0";
+        let pane = herdr_pane_from_environ(raw).unwrap();
+        assert_eq!(pane.pane_id, "w8:p1");
+        assert_eq!(pane.socket_path, "/home/u/.config/herdr/herdr.sock");
+    }
+
+    #[test]
+    fn herdr_pane_from_environ_is_none_without_herdr_vars() {
+        assert_eq!(herdr_pane_from_environ(b"HOME=/home/u\0SHELL=zsh\0"), None);
+    }
+
+    #[test]
+    fn herdr_pane_from_environ_requires_both_vars() {
+        assert_eq!(herdr_pane_from_environ(b"HERDR_PANE_ID=w1:p1\0"), None);
+        assert_eq!(
+            herdr_pane_from_environ(b"HERDR_SOCKET_PATH=/tmp/h.sock\0"),
+            None
+        );
+        assert_eq!(
+            herdr_pane_from_environ(b"HERDR_PANE_ID=\0HERDR_SOCKET_PATH=/tmp/h.sock\0"),
+            None
+        );
+    }
+
+    #[test]
+    fn herdr_pane_of_is_none_for_init() {
+        assert_eq!(herdr_pane_of(1), None);
+    }
+
+    #[test]
+    fn herdr_session_name_default_for_top_level_socket() {
+        assert_eq!(
+            herdr_session_name("/home/u/.config/herdr/herdr.sock"),
+            "default"
+        );
+    }
+
+    #[test]
+    fn herdr_session_name_reads_named_session_dir() {
+        assert_eq!(
+            herdr_session_name("/home/u/.config/herdr/sessions/mbrella/herdr.sock"),
+            "mbrella"
+        );
+    }
+
+    #[test]
+    fn herdr_client_args_match_plain_client_is_default() {
+        assert!(herdr_client_args_match(&["herdr"], "default"));
+        assert!(!herdr_client_args_match(&["herdr"], "mbrella"));
+    }
+
+    #[test]
+    fn herdr_client_args_match_named_session_forms() {
+        assert!(herdr_client_args_match(
+            &["herdr", "--session", "mbrella"],
+            "mbrella"
+        ));
+        assert!(herdr_client_args_match(
+            &["herdr", "session", "attach", "mbrella"],
+            "mbrella"
+        ));
+        assert!(!herdr_client_args_match(
+            &["herdr", "--session", "o27"],
+            "mbrella"
+        ));
+    }
+
+    #[test]
+    fn herdr_client_args_match_rejects_servers_and_cli_calls() {
+        assert!(!herdr_client_args_match(&["herdr", "server"], "default"));
+        assert!(!herdr_client_args_match(
+            &["herdr", "--session", "mbrella", "server"],
+            "mbrella"
+        ));
+        assert!(!herdr_client_args_match(
+            &["herdr", "workspace", "list"],
+            "default"
+        ));
+        assert!(!herdr_client_args_match(
+            &["herdr", "agent", "focus", "w8:p1"],
+            "default"
+        ));
+        assert!(!herdr_client_args_match(
+            &["herdr", "--remote", "host"],
+            "default"
+        ));
+    }
+
+    #[test]
+    fn herdr_client_pid_is_none_for_bogus_session() {
+        assert_eq!(
+            herdr_client_pid("vibewatch-no-such-session-zzz-9999"),
             None
         );
     }
