@@ -50,10 +50,6 @@ window.csd,
     color: @cat_text;
 }
 
-.scroll-container {
-    max-height: 800px;
-}
-
 .session-list {
     background: transparent;
 }
