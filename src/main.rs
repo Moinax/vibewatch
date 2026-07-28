@@ -215,6 +215,8 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
     use adw::prelude::*;
     use gtk4::glib;
 
+    panel::prefer_software_renderer();
+
     let app = adw::Application::builder()
         .application_id("app.vibewatch.daemon")
         .build();
