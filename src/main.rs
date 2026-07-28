@@ -221,7 +221,19 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
         .application_id("app.vibewatch.daemon")
         .build();
 
+    // A second `vibewatch daemon` does not start up on its own: GApplication
+    // hands its launch to the instance already holding the application id,
+    // which fires `activate` again. Build everything exactly once — a second
+    // pass would stack another panel on the layer surface, take the IPC socket
+    // away from the first one (`IpcServer::bind` unlinks a live socket) and run
+    // a second scanner inside the same process.
+    let started = std::cell::Cell::new(false);
     app.connect_activate(move |app| {
+        if started.replace(true) {
+            eprintln!("vibewatch: daemon already running, ignoring activation");
+            return;
+        }
+
         let window = panel::create_panel(app, registry.clone(), config.panel.clone());
 
         // SendWeakRef is Send+Sync; actual widget access happens only inside
