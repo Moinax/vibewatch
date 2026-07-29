@@ -160,9 +160,88 @@ pub async fn run_scanner(
             }
         }
 
+        // Codex has no Claude-style lifecycle hooks. Its CLI writes a rollout
+        // JSONL containing task/tool transitions, so attach the newest rollout
+        // for this process's cwd and reduce it into the same Session model.
+        for mut session in registry
+            .all()
+            .into_iter()
+            .filter(|s| s.agent == AgentKind::Codex)
+        {
+            if session.transcript_path.is_none() {
+                let cwd = session
+                    .cwd
+                    .clone()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| std::fs::read_link(format!("/proc/{}/cwd", session.pid)).ok());
+                if let (Some(home), Some(cwd)) = (dirs::home_dir(), cwd) {
+                    session.transcript_path = crate::codex_rollout::find_latest_for_cwd(
+                        &home.join(".codex/sessions"),
+                        &cwd,
+                        process_started_at(session.pid)
+                            .unwrap_or(std::time::UNIX_EPOCH)
+                            .checked_sub(std::time::Duration::from_secs(5))
+                            .unwrap_or(std::time::UNIX_EPOCH),
+                    );
+                }
+            }
+            let Some(path) = session.transcript_path.clone() else {
+                continue;
+            };
+            let Some(snapshot) = crate::codex_rollout::parse_file(&path) else {
+                continue;
+            };
+            session.cwd = snapshot.cwd;
+            session.status = snapshot.status;
+            session.current_tool = snapshot.current_tool;
+            session.tool_detail = snapshot.tool_detail;
+            if snapshot.last_tool.is_some() {
+                session.last_tool = snapshot.last_tool;
+                session.last_tool_at = std::fs::metadata(&path)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs());
+            }
+            if snapshot.last_prompt.is_some() {
+                session.last_prompt = snapshot.last_prompt;
+                session.last_prompt_at = session.last_tool_at;
+            }
+            if let Some(text) = crate::transcript::read_last_assistant_line(
+                AgentKind::Codex,
+                &snapshot.session_id,
+                &mut session.transcript_path,
+            ) {
+                session.set_last_agent_text_if_changed(text);
+            }
+            registry.register(session);
+        }
+
         status_notify.notify_waiters();
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
+}
+
+/// Linux process start time as wall-clock time. `/proc/<pid>/stat` stores
+/// clock ticks since boot (USER_HZ is 100 on Linux), while `/proc/stat`
+/// exposes the boot epoch. This prevents a newly launched Codex process from
+/// being paired with an old rollout from another session in the same cwd.
+fn process_started_at(pid: u32) -> Option<std::time::SystemTime> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &stat[stat.rfind(')')? + 2..];
+    // Field 22 overall; `rest` begins at field 3, so starttime is index 19.
+    let ticks: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
+    let proc_stat = std::fs::read_to_string("/proc/stat").ok()?;
+    let boot_epoch: u64 = proc_stat
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))?
+        .parse()
+        .ok()?;
+    Some(
+        std::time::UNIX_EPOCH
+            + std::time::Duration::from_secs(boot_epoch)
+            + std::time::Duration::from_millis(ticks.saturating_mul(10)),
+    )
 }
 
 #[cfg(test)]

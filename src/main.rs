@@ -1,4 +1,5 @@
 mod compositor;
+mod codex_rollout;
 mod config;
 mod ipc;
 mod install;

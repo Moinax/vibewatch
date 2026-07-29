@@ -1,4 +1,5 @@
 pub mod config;
+pub mod codex_rollout;
 pub mod install;
 pub mod session;
 pub mod transcript;
