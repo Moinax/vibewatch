@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Codex. Named after the agent, not the vendor, so the class, the file and
+       the `AgentKind` variant all carry one name. An approximation of OpenAI's
+       hexagonal knot: the real thing has six interlaced lobes that collapse
+       into a smudge at 17px, so this keeps the hexagon and a three-fold inner
+       join, which reads. Swap in the official asset any time. -->
+  <g fill="none" stroke="#10a37f" stroke-width="2.1" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M16 3.5 L27 9.8 L27 22.2 L16 28.5 L5 22.2 L5 9.8 Z"/>
+    <path d="M16 16 L16 28.5 M16 16 L27 9.8 M16 16 L5 9.8"/>
+  </g>
+</svg>

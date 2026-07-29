@@ -100,6 +100,14 @@ pub enum InboundEvent {
 pub struct StatusResponse {
     pub text: String,
     pub class: String,
+    /// The `logo-*` class naming whose mark the widget should wear -- the agent
+    /// in the lead, or vibewatch itself when nothing is working. Emitted
+    /// alongside `class`, never instead of it.
+    ///
+    /// Defaulted so a `status --watch` talking to a daemon from before logos
+    /// existed still deserializes, instead of erroring out into a blank widget.
+    #[serde(default)]
+    pub logo: String,
 }
 
 /// Unix socket IPC server.
@@ -266,10 +274,20 @@ mod tests {
         let response = StatusResponse {
             text: "1 active".into(),
             class: "active".into(),
+            logo: "logo-claude".into(),
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"text\":\"1 active\""));
         assert!(json.contains("\"class\":\"active\""));
+        assert!(json.contains("\"logo\":\"logo-claude\""));
+    }
+
+    #[test]
+    fn status_response_without_a_logo_still_deserializes() {
+        // The shape a daemon from before logos existed puts on the wire.
+        let old = r#"{"text":"1 active","class":"active"}"#;
+        let parsed: StatusResponse = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.logo, "");
     }
 
     #[tokio::test]

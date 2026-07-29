@@ -122,6 +122,24 @@ impl AgentKind {
         }
     }
 
+    /// The waybar CSS class that selects this agent's logo, `logo-*`. The
+    /// widget is a single label, so the mark cannot be a character in the text
+    /// -- no Nerd Font carries a Claude or an OpenAI glyph, and every hexagon
+    /// in the usual font stack collapses to a dot at 14px. Instead the daemon
+    /// names the agent in the class list and the user's stylesheet paints the
+    /// matching SVG as a `background-image`.
+    ///
+    /// Prefixed so it cannot collide with the state classes (`idle`, `active`,
+    /// `attention`) that share the same list.
+    pub fn logo_class(&self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "logo-claude",
+            AgentKind::Codex => "logo-codex",
+            AgentKind::Cursor => "logo-cursor",
+            AgentKind::WebStorm => "logo-webstorm",
+        }
+    }
+
     /// True when liveness is tracked by the compositor scan rather than by
     /// `/proc/<pid>/comm`. Window-backed agents' PIDs belong to GUI apps
     /// whose comm isn't in our agent-comm list, so `cleanup_dead` must

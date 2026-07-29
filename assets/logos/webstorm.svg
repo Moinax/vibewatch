@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- WebStorm. A generic editor badge, deliberately: JetBrains' mark is a
+       lettered square that is unreadable at 17px and not mine to redraw. The
+       window frame plus three code lines says "an IDE is holding this session",
+       which is all the widget needs to say; the blue keeps it apart from the
+       other four. -->
+  <g fill="none" stroke="#1fb6e8" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3.4" y="5.4" width="25.2" height="21.2" rx="4"/>
+    <path d="M9 14 H16 M9 19 H21 M9 24.5 H13" stroke-width="2"/>
+  </g>
+</svg>

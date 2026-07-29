@@ -13,6 +13,10 @@ struct Palette {
     /// with the magenta `.attention` background (set by the user's waybar
     /// CSS), and distinct from the sapphire used for `thinking`.
     attention_text: &'static str,
+    /// The just-finished hue, the same peach the panel tints a finished card
+    /// with (`palette-*.css`). A finish is otherwise indistinguishable from
+    /// idle in the bar, which is how the chime you were away for left no trace.
+    peach: &'static str,
 }
 
 const MOCHA: Palette = Palette {
@@ -20,6 +24,7 @@ const MOCHA: Palette = Palette {
     sapphire: "#74c7ec",
     dim: "#6c7086",
     attention_text: "#94e2d5",
+    peach: "#fab387",
 };
 
 const LATTE: Palette = Palette {
@@ -27,18 +32,22 @@ const LATTE: Palette = Palette {
     sapphire: "#209fb5",
     dim: "#8c8fa1",
     attention_text: "#179299",
+    peach: "#fe640b",
 };
 
-/// Nerd Font glyph \u{f06a9} (= `nf-md-robot`, Material Design range): a clean
-/// boxless robot head. NOT \u{f544} (`nf-fa-robot` in Nerd Fonts v2, removed by
-/// the v3.0 remap → renders as tofu on v3 fonts), and NOT \u{f0a06}
-/// (`nf-md-robot_happy`, a boxed variant that reads as a small white square on
-/// the bar). Rendered by waybar's font stack; falls back to the replacement
-/// char with no Nerd Font installed.
-const LOGO_GLYPH: &str = "\u{f06a9}";
-/// Same filled circle the panel uses as its row indicator (`\u{25cf}`).
-/// Colored via Pango to match `.indicator.<status>` in palette-*.css.
-const INDICATOR_DOT: &str = "\u{25cf}";
+/// The brand class, worn whenever no agent is in the lead — nothing running, or
+/// a fleet that is entirely asleep. Its mark is vibewatch's own, so the widget
+/// still says what it is at rest rather than going anonymous.
+const LOGO_BRAND: &str = "logo-vibewatch";
+/// Shown next to the brand mark at rest, in place of a session name that would
+/// carry no signal (none of them are doing anything).
+const BRAND_NAME: &str = "VibeWatch";
+/// Divides *who* from *what*: the session name from the state word. A box-drawing
+/// light vertical (`\u{2502}`), dimmed — the two halves used to run together as
+/// one unpunctuated phrase.
+const NAME_SEP: &str = "\u{2502}";
+/// Marks the finished turn, alongside the peach (`\u{2714}`, heavy check).
+const FINISH_MARK: &str = "\u{2714}";
 
 /// Cached once per process — theme toggles require a daemon restart, which
 /// is acceptable given this runs on a waybar-driven 2s poll cadence.
@@ -109,6 +118,24 @@ pub fn build_status(sessions: &[Session]) -> StatusResponse {
     build_status_with_palette(sessions, active_palette())
 }
 
+/// Wrap `raw` in a Pango color span. `raw` is escaped; `color` is ours.
+fn tint(color: &str, raw: &str) -> String {
+    format!("<span foreground=\"{}\">{}</span>", color, pango_escape(raw))
+}
+
+/// The state word and its color for the session in the lead. A just-finished
+/// turn is `Idle` as far as `status` is concerned, so it has to be asked about
+/// separately or the finish reads as "nothing happening".
+fn headline_status(session: &Session, palette: &Palette) -> String {
+    if session.just_finished() {
+        return tint(palette.peach, &format!("{} done", FINISH_MARK));
+    }
+    tint(
+        color_for_status(session.status, palette),
+        &session.inline_status(),
+    )
+}
+
 fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusResponse {
     let active: Vec<&Session> = sessions
         .iter()
@@ -130,53 +157,75 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
         "idle".to_string()
     };
 
-    let decorate = |status: SessionStatus, raw: &str| -> String {
-        format!(
-            "<span foreground=\"{}\">{}</span>",
-            color_for_status(status, palette),
-            pango_escape(raw),
-        )
-    };
-
-    let text = if count == 0 {
-        LOGO_GLYPH.to_string()
-    } else {
-        let s = if count == 1 {
-            active[0]
+    // Nothing to report: no sessions at all, or a fleet where every one of them
+    // is asleep and none has an unacknowledged finish. Either way no single
+    // session's name carries signal, so the widget wears the brand instead.
+    let at_rest = active.iter().all(|s| {
+        matches!(s.status, SessionStatus::Idle | SessionStatus::Running) && !s.just_finished()
+    });
+    if at_rest {
+        // One span, not three of the same colour: the whole phrase is dim.
+        let text = if count == 0 {
+            tint(palette.dim, BRAND_NAME)
         } else {
-            active.iter().max_by_key(|s| s.interest_priority()).unwrap()
+            tint(
+                palette.dim,
+                &format!("{} \u{00b7} {} idle", BRAND_NAME, count),
+            )
         };
-        let status_span = decorate(s.status, &s.inline_status());
-        // All-idle: the specific session's display name carries no signal
-        // (none of them are doing anything). Swap it for the app brand so
-        // the widget identifies itself at rest.
-        let all_idle = active.iter().all(|s| s.status == SessionStatus::Idle);
-        let name = if all_idle {
-            "VibeWatch".to_string()
-        } else {
-            pango_escape(&truncate_name(&s.display_name()))
+        return StatusResponse {
+            text,
+            class,
+            logo: LOGO_BRAND.to_string(),
         };
-        if count == 1 {
-            format!("{} {} {}", LOGO_GLYPH, name, status_span)
-        } else {
-            let dot = decorate(s.status, INDICATOR_DOT);
-            format!("{} {} {} {} {}", count, LOGO_GLYPH, dot, name, status_span)
-        }
-    };
+    }
 
-    StatusResponse { text, class }
+    // Whose name to show. `activity_band` is the panel's own ranking — blocked
+    // on the user, then just finished, then working — so the bar and the list
+    // agree on what matters most instead of each having its own opinion.
+    // `interest_priority` only breaks ties inside a band (executing over
+    // thinking).
+    let lead = active
+        .iter()
+        .min_by_key(|s| (s.activity_band(), std::cmp::Reverse(s.interest_priority())))
+        .expect("a non-empty fleet that is not at rest has a leader");
+
+    let mut text = format!(
+        "{} {} {}",
+        pango_escape(&truncate_name(&lead.display_name())),
+        tint(palette.dim, NAME_SEP),
+        headline_status(lead, palette),
+    );
+    // The others, as a badge rather than a bare leading count: the old `4` sat
+    // in front promising four agents while showing one, reading as part of the
+    // name.
+    if count > 1 {
+        text.push_str("  ");
+        text.push_str(&tint(palette.dim, &format!("+{}", count - 1)));
+    }
+
+    StatusResponse {
+        text,
+        class,
+        logo: lead.agent.logo_class().to_string(),
+    }
 }
 
-/// Print Waybar JSON to stdout. `class` is emitted as a single-element array
-/// so waybar replaces the widget's class list each poll instead of
-/// accumulating stale classes.
-pub fn print_waybar_status(sessions: &[Session]) {
-    let status = build_status(sessions);
-    let waybar_json = serde_json::json!({
+/// Shape a `StatusResponse` as the JSON payload waybar consumes. The classes go
+/// out as a whole array so waybar replaces the widget's class list each update
+/// instead of accumulating stale ones — which is also why the logo has to ride
+/// along in the same array rather than being set once and left alone.
+pub fn payload(status: &StatusResponse) -> String {
+    serde_json::json!({
         "text": status.text,
-        "class": [status.class],
-    });
-    println!("{}", waybar_json);
+        "class": [status.class.as_str(), status.logo.as_str()],
+    })
+    .to_string()
+}
+
+/// Print Waybar JSON to stdout.
+pub fn print_waybar_status(sessions: &[Session]) {
+    println!("{}", payload(&build_status(sessions)));
 }
 
 #[cfg(test)]
@@ -201,11 +250,15 @@ mod tests {
         build_status_with_palette(sessions, &LATTE)
     }
 
+    /// The dimmed separator, spelled once so a layout change is a one-line fix.
+    const SEP_DARK: &str = "<span foreground=\"#6c7086\">\u{2502}</span>";
+
     #[test]
-    fn test_empty_status() {
+    fn nothing_running_wears_the_brand() {
         let status = dark(&[]);
-        assert_eq!(status.text, "\u{f06a9}");
+        assert_eq!(status.text, "<span foreground=\"#6c7086\">VibeWatch</span>");
         assert_eq!(status.class, "idle");
+        assert_eq!(status.logo, "logo-vibewatch");
     }
 
     #[test]
@@ -218,9 +271,13 @@ mod tests {
         let status = dark(&sessions);
         assert_eq!(
             status.text,
-            "\u{f06a9} dotfiles <span foreground=\"#74c7ec\">thinking</span>"
+            format!(
+                "dotfiles {} <span foreground=\"#74c7ec\">thinking</span>",
+                SEP_DARK
+            )
         );
         assert_eq!(status.class, "active");
+        assert_eq!(status.logo, "logo-claude");
     }
 
     #[test]
@@ -233,14 +290,15 @@ mod tests {
         let status = light(&sessions);
         assert_eq!(
             status.text,
-            "\u{f06a9} dotfiles <span foreground=\"#209fb5\">thinking</span>"
+            "dotfiles <span foreground=\"#8c8fa1\">\u{2502}</span> \
+             <span foreground=\"#209fb5\">thinking</span>"
         );
     }
 
     #[test]
     fn test_executing_wins_over_thinking_in_multi() {
-        // Executing beats Thinking via interest_priority, so the executing
-        // session's name is the one shown (and the dot is green).
+        // Same band, so interest_priority breaks the tie: the executing
+        // session leads, and the others become a trailing badge.
         let sessions = vec![
             make_named("dotfiles", AgentKind::ClaudeCode, SessionStatus::Thinking),
             make_named("vibewatch", AgentKind::Codex, SessionStatus::Executing),
@@ -248,9 +306,53 @@ mod tests {
         let status = dark(&sessions);
         assert_eq!(
             status.text,
-            "2 \u{f06a9} <span foreground=\"#a6e3a1\">\u{25cf}</span> vibewatch <span foreground=\"#a6e3a1\">exec</span>"
+            format!(
+                "vibewatch {} <span foreground=\"#a6e3a1\">exec</span>  \
+                 <span foreground=\"#6c7086\">+1</span>",
+                SEP_DARK
+            )
         );
         assert_eq!(status.class, "active");
+        // The lead's agent, not the first session's.
+        assert_eq!(status.logo, "logo-codex");
+    }
+
+    #[test]
+    fn a_finished_turn_leads_over_one_still_working() {
+        // The chime just fired for `vibewatch`; that is the row the eye wants,
+        // even though an executing session outranks an idle one on status
+        // alone. `activity_band` is what puts it first.
+        let mut finished = make_named("vibewatch", AgentKind::ClaudeCode, SessionStatus::Idle);
+        finished.mark_finished();
+        let sessions = vec![
+            make_named("dotfiles", AgentKind::Codex, SessionStatus::Executing),
+            finished,
+        ];
+        let status = dark(&sessions);
+        assert_eq!(
+            status.text,
+            format!(
+                "vibewatch {} <span foreground=\"#fab387\">\u{2714} done</span>  \
+                 <span foreground=\"#6c7086\">+1</span>",
+                SEP_DARK
+            )
+        );
+        assert_eq!(status.logo, "logo-claude");
+    }
+
+    #[test]
+    fn a_finished_turn_is_not_at_rest() {
+        // One idle session with an unacknowledged finish must not collapse to
+        // the brand: that is exactly the finish the bar used to swallow.
+        let mut finished = make_named("vibewatch", AgentKind::ClaudeCode, SessionStatus::Idle);
+        finished.mark_finished();
+        let status = dark(&[finished]);
+        assert!(
+            status.text.starts_with("vibewatch "),
+            "expected the session named, got {:?}",
+            status.text
+        );
+        assert!(status.text.contains("\u{2714} done"));
     }
 
     #[test]
@@ -264,7 +366,10 @@ mod tests {
         assert_eq!(status.class, "attention");
         assert_eq!(
             status.text,
-            "\u{f06a9} dotfiles <span foreground=\"#94e2d5\">awaiting approval</span>"
+            format!(
+                "dotfiles {} <span foreground=\"#94e2d5\">awaiting approval</span>",
+                SEP_DARK
+            )
         );
     }
 
@@ -275,9 +380,13 @@ mod tests {
             make_named("vibewatch", AgentKind::Codex, SessionStatus::Stopped),
         ];
         let status = dark(&sessions);
+        // One live session, so no `+n` badge.
         assert_eq!(
             status.text,
-            "\u{f06a9} dotfiles <span foreground=\"#74c7ec\">thinking</span>"
+            format!(
+                "dotfiles {} <span foreground=\"#74c7ec\">thinking</span>",
+                SEP_DARK
+            )
         );
     }
 
@@ -292,8 +401,9 @@ mod tests {
         assert_eq!(status.class, "idle");
         assert_eq!(
             status.text,
-            "\u{f06a9} VibeWatch <span foreground=\"#6c7086\">idle</span>"
+            "<span foreground=\"#6c7086\">VibeWatch \u{00b7} 1 idle</span>"
         );
+        assert_eq!(status.logo, "logo-vibewatch");
     }
 
     #[test]
@@ -306,7 +416,54 @@ mod tests {
         assert_eq!(status.class, "idle");
         assert_eq!(
             status.text,
-            "2 \u{f06a9} <span foreground=\"#6c7086\">\u{25cf}</span> VibeWatch <span foreground=\"#6c7086\">idle</span>"
+            "<span foreground=\"#6c7086\">VibeWatch \u{00b7} 2 idle</span>"
+        );
+        assert_eq!(status.logo, "logo-vibewatch");
+    }
+
+    #[test]
+    fn a_scanned_but_silent_session_still_counts_as_at_rest() {
+        // `Running` is the scanner's "alive, no hook data yet" state, and it
+        // reads as idle everywhere else in the UI.
+        let sessions = vec![make_named(
+            "jacket",
+            AgentKind::Codex,
+            SessionStatus::Running,
+        )];
+        let status = dark(&sessions);
+        assert_eq!(
+            status.text,
+            "<span foreground=\"#6c7086\">VibeWatch \u{00b7} 1 idle</span>"
+        );
+    }
+
+    #[test]
+    fn payload_carries_the_state_and_the_logo_in_one_class_list() {
+        let sessions = vec![make_named(
+            "dotfiles",
+            AgentKind::ClaudeCode,
+            SessionStatus::Executing,
+        )];
+        let json = payload(&dark(&sessions));
+        assert!(
+            json.contains("\"class\":[\"active\",\"logo-claude\"]"),
+            "both classes must ride in the same array: {json}"
+        );
+    }
+
+    #[test]
+    fn every_agent_kind_has_a_distinct_mark() {
+        let kinds = [
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::WebStorm,
+        ];
+        let classes: std::collections::HashSet<_> = kinds.iter().map(|k| k.logo_class()).collect();
+        assert_eq!(classes.len(), kinds.len(), "two agents share a logo class");
+        assert!(
+            !classes.contains(&LOGO_BRAND),
+            "no agent may claim the brand mark"
         );
     }
 
@@ -350,7 +507,10 @@ mod tests {
         let status = dark(&[session]);
         assert_eq!(
             status.text,
-            "\u{f06a9} dotfiles <span foreground=\"#a6e3a1\">A&amp;B&lt;x&gt;</span>"
+            format!(
+                "dotfiles {} <span foreground=\"#a6e3a1\">A&amp;B&lt;x&gt;</span>",
+                SEP_DARK
+            )
         );
     }
 
@@ -362,7 +522,7 @@ mod tests {
         let status = dark(&[session]);
         assert_eq!(
             status.text,
-            "\u{f06a9} dotfiles <span foreground=\"#a6e3a1\">Bash</span>"
+            format!("dotfiles {} <span foreground=\"#a6e3a1\">Bash</span>", SEP_DARK)
         );
     }
 }

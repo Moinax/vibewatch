@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Cursor. Not their mark: theirs is a monochrome cube that reads as a grey
+       blob next to the hexagon, so this is the thing the editor is named after
+       instead, a pointer. Neutral slate, because their brand is black on white
+       and neither of those survives both chip grounds. -->
+  <path fill="#9aa0b8"
+        d="M7.5 2.5 L7.5 25.5 L13.8 20.2 L17.8 29 L21.8 27.1 L17.9 18.6 L25.5 18.1 Z"/>
+</svg>

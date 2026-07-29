@@ -1,0 +1,50 @@
+/* vibewatch — agent marks for the waybar widget.
+ *
+ * `vibewatch install` drops this file and the SVGs it names into
+ * ~/.config/vibewatch/. Add one line to your waybar stylesheet:
+ *
+ *   @import url("../vibewatch/logos.css");
+ *
+ * and the widget wears the mark of whichever agent is in the lead, or
+ * vibewatch's own when the fleet is asleep. The daemon picks it by putting a
+ * `logo-*` class in the widget's class list; nothing else is needed.
+ *
+ * Waybar 0.15 loads style-dark.css and style-light.css directly, so the import
+ * goes in both. The marks are single-colour and chosen to hold up on a light
+ * and a dark chip alike, so one set serves both themes.
+ *
+ * The URLs are relative to *this* file, not to the stylesheet importing it —
+ * which is why the images live one directory over from waybar's own config and
+ * no absolute home path has to be baked in anywhere.
+ *
+ * Nothing here sets a background colour: the bar is translucent, and a widget
+ * carrying its own opaque fill would render as a slab over the wallpaper. */
+
+#custom-vibewatch.logo-vibewatch,
+#custom-vibewatch.logo-claude,
+#custom-vibewatch.logo-codex,
+#custom-vibewatch.logo-cursor,
+#custom-vibewatch.logo-webstorm {
+  background-repeat: no-repeat;
+  background-position: 8px center;
+  background-size: 17px 17px;
+  /* Clears the mark. The id+class selector outranks the `.module` padding a
+   * stylesheet normally sets, whatever the source order. */
+  padding-left: 30px;
+}
+
+#custom-vibewatch.logo-vibewatch {
+  background-image: url("logos/vibewatch.svg");
+}
+#custom-vibewatch.logo-claude {
+  background-image: url("logos/claude.svg");
+}
+#custom-vibewatch.logo-codex {
+  background-image: url("logos/codex.svg");
+}
+#custom-vibewatch.logo-cursor {
+  background-image: url("logos/cursor.svg");
+}
+#custom-vibewatch.logo-webstorm {
+  background-image: url("logos/webstorm.svg");
+}

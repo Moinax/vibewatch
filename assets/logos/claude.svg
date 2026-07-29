@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Claude Code. An approximation of Anthropic's sunburst in their own
+       terracotta: ten tapered rays around a common centre. A single fixed
+       colour on purpose, because GTK paints a `background-image` as-is and
+       cannot recolour it per state; the state colour lives in the widget's
+       text instead. Drop the official asset over this file to replace it,
+       nothing in the code refers to its shape.
+       No double hyphen anywhere in these comments: librsvg parses strict XML
+       and rejects the whole file over one, leaving the widget mark-less. -->
+  <g fill="#d97757" transform="translate(16,16)">
+    <g id="ray"><path d="M0 -13 L1.7 -3.2 L0 -1.6 L-1.7 -3.2 Z"/></g>
+    <use href="#ray" transform="rotate(36)"/>
+    <use href="#ray" transform="rotate(72)"/>
+    <use href="#ray" transform="rotate(108)"/>
+    <use href="#ray" transform="rotate(144)"/>
+    <use href="#ray" transform="rotate(180)"/>
+    <use href="#ray" transform="rotate(216)"/>
+    <use href="#ray" transform="rotate(252)"/>
+    <use href="#ray" transform="rotate(288)"/>
+    <use href="#ray" transform="rotate(324)"/>
+  </g>
+</svg>

@@ -1004,7 +1004,7 @@ async fn handle_connection(
             InboundEvent::GetStatus => {
                 let sessions = registry.all();
                 let status = waybar::build_status(&sessions);
-                let mut json = waybar_payload(&status);
+                let mut json = waybar::payload(&status);
                 json.push('\n');
                 let _ = write_half.write_all(json.as_bytes()).await;
                 let _ = write_half.flush().await;
@@ -1018,7 +1018,7 @@ async fn handle_connection(
                 loop {
                     let sessions = registry.all();
                     let status = waybar::build_status(&sessions);
-                    let mut json = waybar_payload(&status);
+                    let mut json = waybar::payload(&status);
                     if json != last_payload {
                         last_payload = json.clone();
                         json.push('\n');
@@ -1105,18 +1105,6 @@ fn log_drop(event: &str, session_id: &str, pid: Option<u32>) {
         event, session_id, pid
     );
 }
-
-/// Serialize a `StatusResponse` as the JSON payload waybar consumes. `class`
-/// is a single-element array so waybar replaces the widget's class list each
-/// update instead of accumulating stale classes.
-fn waybar_payload(status: &ipc::StatusResponse) -> String {
-    serde_json::json!({
-        "text": status.text,
-        "class": [status.class],
-    })
-    .to_string()
-}
-
 
 fn parse_agent_kind(s: &str) -> AgentKind {
     match s {

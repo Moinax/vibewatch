@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- vibewatch's own mark: one zigzag that reads both as a W and as a
+       waveform of rising amplitude, ending in the dot the panel lights up when
+       a turn finishes. Drawn as a single stroke so it survives 17px, where an
+       outlined eye or a lens turned to mush. -->
+  <g fill="none" stroke="#7c5cff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3.4 14.5 L8.6 22.5 L14.2 12 L19.8 25 L25.2 9"/>
+  </g>
+  <circle cx="27.8" cy="7.6" r="3.4" fill="#7c5cff"/>
+</svg>

@@ -97,6 +97,7 @@ pub fn run(opts: Options) -> Result<()> {
         if !opts.no_service {
             apply_service_uninstall(opts.dry_run)?;
         }
+        apply_logos_uninstall(opts.dry_run)?;
         apply_waybar_uninstall(opts.dry_run)?;
         eprintln!("vibewatch install: uninstall complete");
     } else {
@@ -107,6 +108,7 @@ pub fn run(opts: Options) -> Result<()> {
             apply_hooks_merge(&path, opts.dry_run)?;
         }
         apply_waybar_install(opts.dry_run)?;
+        apply_logos_install(opts.dry_run)?;
         if !opts.dry_run {
             print_manual_steps();
         }
@@ -365,6 +367,108 @@ pub fn apply_waybar_install(dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// The agent marks the widget wears, keyed by the `logo-*` class that selects
+/// them (see `AgentKind::logo_class`). They have to exist as files rather than
+/// travel inside the binary: GTK resolves a `background-image` URL off the
+/// disk, and the stylesheet that names them is the user's, not ours.
+pub(crate) const LOGOS: [(&str, &str); 5] = [
+    ("vibewatch.svg", include_str!("../assets/logos/vibewatch.svg")),
+    ("claude.svg", include_str!("../assets/logos/claude.svg")),
+    ("codex.svg", include_str!("../assets/logos/codex.svg")),
+    ("cursor.svg", include_str!("../assets/logos/cursor.svg")),
+    ("webstorm.svg", include_str!("../assets/logos/webstorm.svg")),
+];
+
+/// The stylesheet that maps those classes onto those files. Installed beside
+/// them so its relative `url("logos/…")` resolves — GTK rebases URLs in an
+/// imported sheet onto that sheet's own directory, so the user's waybar CSS
+/// needs nothing but a one-line `@import` and never learns where the marks live.
+const LOGO_CSS: &str = include_str!("../contrib/waybar-logos.css");
+
+fn vibewatch_config_dir() -> PathBuf {
+    waybar_snippet_path()
+        .parent()
+        .expect("the snippet path always has a parent")
+        .to_path_buf()
+}
+
+fn logo_css_path() -> PathBuf {
+    vibewatch_config_dir().join("logos.css")
+}
+
+fn logos_dir() -> PathBuf {
+    vibewatch_config_dir().join("logos")
+}
+
+/// Drop the marks next to the waybar snippet, in `~/.config/vibewatch/logos`.
+/// That location is load-bearing: it sits one directory over from
+/// `~/.config/waybar/style*.css`, so the stylesheet can reach them with a
+/// relative `url("../vibewatch/logos/claude.svg")` and needs no absolute home
+/// path baked into it.
+pub fn apply_logos_install(dry_run: bool) -> Result<()> {
+    let dir = logos_dir();
+    let css = logo_css_path();
+    let stale: Vec<&(&str, &str)> = LOGOS
+        .iter()
+        .filter(|(name, body)| {
+            fs::read_to_string(dir.join(name)).unwrap_or_default() != *body
+        })
+        .collect();
+    let css_stale = fs::read_to_string(&css).unwrap_or_default() != LOGO_CSS;
+    if stale.is_empty() && !css_stale {
+        return Ok(());
+    }
+    if dry_run {
+        eprintln!(
+            "vibewatch install: [dry-run] would write {} mark(s) into {} (stylesheet: {})",
+            stale.len(),
+            dir.display(),
+            if css_stale { "updated" } else { "current" },
+        );
+        return Ok(());
+    }
+    fs::create_dir_all(&dir)?;
+    for (name, body) in &stale {
+        fs::write(dir.join(name), body)?;
+    }
+    if css_stale {
+        fs::write(&css, LOGO_CSS)?;
+        eprintln!("vibewatch install: wrote {}", css.display());
+    }
+    if !stale.is_empty() {
+        eprintln!(
+            "vibewatch install: wrote {} mark(s) into {}",
+            stale.len(),
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
+pub fn apply_logos_uninstall(dry_run: bool) -> Result<()> {
+    let dir = logos_dir();
+    let css = logo_css_path();
+    if !dir.exists() && !css.exists() {
+        return Ok(());
+    }
+    if dry_run {
+        eprintln!(
+            "vibewatch install: [dry-run] would remove {} and {}",
+            css.display(),
+            dir.display()
+        );
+        return Ok(());
+    }
+    for (name, _) in &LOGOS {
+        let _ = fs::remove_file(dir.join(name));
+    }
+    // Only if we left it empty — anything the user put there is theirs.
+    let _ = fs::remove_dir(&dir);
+    let _ = fs::remove_file(&css);
+    eprintln!("vibewatch install: removed {} and {}", css.display(), dir.display());
+    Ok(())
+}
+
 pub fn apply_waybar_uninstall(dry_run: bool) -> Result<()> {
     let path = waybar_snippet_path();
     if !path.exists() {
@@ -402,6 +506,12 @@ pub fn print_manual_steps() {
     eprintln!("   Snippet: {}", waybar_snippet_path().display());
     eprintln!("   Include it in your Waybar config and add \"custom/vibewatch\"");
     eprintln!("   to your modules-* array.");
+    eprintln!();
+    eprintln!("   For the agent marks, add this to the top of your Waybar");
+    eprintln!("   stylesheet (both style-dark.css and style-light.css if you");
+    eprintln!("   have the pair — Waybar 0.15 loads them directly):");
+    eprintln!("     @import url(\"../vibewatch/logos.css\");");
+    eprintln!("   Without it the widget still works, just without a logo.");
     eprintln!();
     eprintln!("3. (Optional) Hyprland click-focus tip — stop cursor from warping:");
     eprintln!("     cursor {{ no_warps     = true }}");
