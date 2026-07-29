@@ -67,6 +67,15 @@ pub enum InboundEvent {
         #[serde(default)]
         pid: Option<u32>,
     },
+    /// One sub-agent of `session_id` finished. Not the main agent going idle:
+    /// it only says one fewer piece of background work is outstanding, which is
+    /// what tells a turn that is genuinely *over* from one that is waiting on
+    /// agents it launched.
+    SubAgentStop {
+        session_id: String,
+        #[serde(default)]
+        pid: Option<u32>,
+    },
     GetStatus,
     /// Subscribe to status updates. The connection stays open; the daemon
     /// writes one JSON line per state change (prefixed with an immediate
@@ -76,6 +85,13 @@ pub enum InboundEvent {
     ApprovalDecision {
         request_id: String,
         choice_index: usize,
+    },
+    /// The user clicked a session card in the panel — they are on their way
+    /// to that pane, so the row stops asking for attention: the "just
+    /// finished" mark is cleared. A pending approval is left alone, since
+    /// only answering it (here or in the agent's own TUI) resolves that.
+    AcknowledgeSession {
+        session_id: String,
     },
 }
 

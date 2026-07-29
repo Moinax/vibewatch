@@ -18,6 +18,19 @@ fn agent_str(kind: &AgentKind) -> &'static str {
     }
 }
 
+/// Codex has no Stop hook, so its equivalent finish edge is inferred from the
+/// durable rollout state. Requiring a working predecessor prevents a newly
+/// discovered, already-idle process from producing a startup chime.
+fn is_codex_finish_transition(
+    previous: crate::session::SessionStatus,
+    next: crate::session::SessionStatus,
+) -> bool {
+    matches!(
+        previous,
+        crate::session::SessionStatus::Thinking | crate::session::SessionStatus::Executing
+    ) && next == crate::session::SessionStatus::Idle
+}
+
 /// Scan /proc for running CLI agent processes.
 /// Returns a list of (AgentKind, pid) tuples for recognised agents.
 pub fn scan_agent_processes() -> Vec<(AgentKind, u32)> {
@@ -64,6 +77,7 @@ pub async fn run_scanner(
     compositor: Box<dyn Compositor>,
     config: Config,
     status_notify: std::sync::Arc<tokio::sync::Notify>,
+    codex_finished: std::sync::Arc<dyn Fn(String, u64) + Send + Sync>,
 ) {
     loop {
         // Remove sessions whose PID is no longer alive
@@ -191,6 +205,7 @@ pub async fn run_scanner(
             let Some(snapshot) = crate::codex_rollout::parse_file(&path) else {
                 continue;
             };
+            let finished_turn = is_codex_finish_transition(session.status, snapshot.status);
             session.cwd = snapshot.cwd;
             session.status = snapshot.status;
             session.current_tool = snapshot.current_tool;
@@ -214,7 +229,17 @@ pub async fn run_scanner(
             ) {
                 session.set_last_agent_text_if_changed(text);
             }
+            let finished = if finished_turn {
+                session.mark_finished();
+                session.touch();
+                Some((session.id.clone(), session.finish_seq))
+            } else {
+                None
+            };
             registry.register(session);
+            if let Some((session_id, finish_seq)) = finished {
+                codex_finished(session_id, finish_seq);
+            }
         }
 
         status_notify.notify_waiters();
@@ -253,5 +278,29 @@ mod tests {
         let results = scan_agent_processes();
         // The result may be empty in test environments; we just verify it doesn't crash
         let _ = results;
+    }
+
+    #[test]
+    fn codex_working_to_idle_is_a_finish() {
+        assert!(is_codex_finish_transition(
+            crate::session::SessionStatus::Thinking,
+            crate::session::SessionStatus::Idle,
+        ));
+        assert!(is_codex_finish_transition(
+            crate::session::SessionStatus::Executing,
+            crate::session::SessionStatus::Idle,
+        ));
+    }
+
+    #[test]
+    fn codex_initial_or_repeated_idle_does_not_chime() {
+        assert!(!is_codex_finish_transition(
+            crate::session::SessionStatus::Running,
+            crate::session::SessionStatus::Idle,
+        ));
+        assert!(!is_codex_finish_transition(
+            crate::session::SessionStatus::Idle,
+            crate::session::SessionStatus::Idle,
+        ));
     }
 }

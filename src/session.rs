@@ -7,6 +7,16 @@ use std::sync::{Arc, RwLock};
 /// Centralised so a typo in one place doesn't silently break the special path.
 pub const TOOL_EXIT_PLAN_MODE: &str = "ExitPlanMode";
 pub const TOOL_ASK_USER_QUESTION: &str = "AskUserQuestion";
+/// Spawning a sub-agent, whose completion arrives later as its own `Stop`. Both
+/// names are matched: `Task` is the wire name, `Agent` the current tool name, and
+/// a rename must not silently stop the counting and bring spurious chimes back.
+pub const TOOL_AGENT: &str = "Agent";
+pub const TOOL_TASK: &str = "Task";
+
+/// True for a tool that spawns a sub-agent.
+pub fn spawns_subagent(tool: &str) -> bool {
+    tool == TOOL_AGENT || tool == TOOL_TASK
+}
 
 /// `/proc/<pid>/comm` values we accept as "this PID is still Claude Code".
 /// Used by the scanner for discovery and by the registry for liveness checks,
@@ -324,6 +334,35 @@ pub struct Session {
     /// the widget. `None` at all other times.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_approval: Option<PendingApproval>,
+    /// Unix epoch seconds of the last `Stop` — the moment the agent finished
+    /// its turn — for as long as the user hasn't acknowledged it. Drives
+    /// [`Session::just_finished`]; cleared by [`Session::acknowledge`] when
+    /// the card is clicked.
+    #[serde(default)]
+    pub finished_at: Option<u64>,
+    /// Bumped on every [`Session::mark_finished`]. The idle chime is announced
+    /// on a delay, and this is how that delayed task tells "still the turn I was
+    /// scheduled for" from "this session has finished again since". `finished_at`
+    /// cannot answer that: it is in whole seconds, so two turns inside the
+    /// debounce window carry the same stamp. Daemon bookkeeping, never the wire.
+    #[serde(skip)]
+    pub finish_seq: u64,
+    /// Sub-agents this session has launched that have not reported back. While
+    /// this is non-zero the turn is not over however quiet it looks: the main
+    /// agent really did stop, but only to wait on background work that will
+    /// re-invoke it. Reset on every user prompt, so a sub-agent that dies
+    /// without a `Stop` cannot wedge the count for the life of the session.
+    /// Daemon bookkeeping, never the wire.
+    #[serde(skip)]
+    pub pending_agents: u32,
+}
+
+/// Unix epoch seconds; 0 if the system clock predates the epoch.
+pub fn now_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl Session {
@@ -343,16 +382,76 @@ impl Session {
             cwd: None,
             terminal: None,
             pid,
-            started_at_epoch: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .ok()
-                .map(|d| d.as_secs()),
+            started_at_epoch: Some(now_epoch()),
             last_agent_text: None,
             last_agent_text_at: None,
             last_prompt_at: None,
             transcript_path: None,
             pending_approval: None,
+            finished_at: None,
+            finish_seq: 0,
+            pending_agents: 0,
         }
+    }
+
+    /// Stamp the moment the agent finished its turn. Called on `Stop`, right
+    /// before the status flips to `Idle`.
+    pub fn mark_finished(&mut self) {
+        self.finished_at = Some(now_epoch());
+        self.finish_seq = self.finish_seq.wrapping_add(1);
+    }
+
+    /// The agent launched a sub-agent, so its next stop is a wait, not a finish.
+    pub fn launch_subagent(&mut self) {
+        self.pending_agents += 1;
+    }
+
+    /// One sub-agent reported in. True when it was the last one outstanding,
+    /// which is the moment a held turn becomes announceable again.
+    ///
+    /// Saturating, and false when the count was already zero: the launch may
+    /// predate this daemon, or [`Session::reset_subagents`] may have cleared the
+    /// count while the sub-agent was still running. Without that guard a late
+    /// report would schedule a second announcement for a turn already announced.
+    pub fn subagent_finished(&mut self) -> bool {
+        if self.pending_agents == 0 {
+            return false;
+        }
+        self.pending_agents -= 1;
+        self.pending_agents == 0
+    }
+
+    /// Forget any outstanding sub-agents, returning how many were dropped.
+    ///
+    /// The count's safety net, called on each user prompt: a sub-agent that dies
+    /// without reporting — a terminal API error, a killed pane — would otherwise
+    /// leave the session waiting, and silent, for the rest of its life.
+    pub fn reset_subagents(&mut self) -> u32 {
+        std::mem::take(&mut self.pending_agents)
+    }
+
+    /// True when this session is a candidate to have its finish announced: it
+    /// stopped, it has not picked the work back up, and nothing it launched is
+    /// still running. Deliberately says nothing about *when* it stopped — that is
+    /// the debounce's job, and [`Session::finish_seq`] identifies the turn.
+    pub fn announceable(&self) -> bool {
+        self.status == SessionStatus::Idle && self.finished_at.is_some() && self.pending_agents == 0
+    }
+
+    /// The user clicked this session's card: they are heading for the pane,
+    /// so the row goes back to a plain idle one. Only the finished mark is
+    /// dropped — a pending approval still needs a real answer.
+    pub fn acknowledge(&mut self) {
+        self.finished_at = None;
+    }
+
+    /// True from the moment the agent finishes its turn until the user
+    /// clicks the card — or until the agent picks the work back up, since
+    /// the state is gated on it still being idle. The panel lights these
+    /// rows, ranks them near the top, and stays open while any exists, so
+    /// the agent that chimed can't scroll past unnoticed.
+    pub fn just_finished(&self) -> bool {
+        self.status == SessionStatus::Idle && self.finished_at.is_some()
     }
 
     /// Human-readable name: session name > project folder > agent name.
@@ -392,10 +491,7 @@ impl Session {
             return false;
         }
         self.last_agent_text = Some(text);
-        self.last_agent_text_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_secs());
+        self.last_agent_text_at = Some(now_epoch());
         true
     }
 
@@ -436,15 +532,18 @@ impl Session {
     }
 
     /// Which band the session falls into when the panel groups its list:
-    /// 0 = blocked on the user, 1 = working, 2 = idle, 3 = gone.
-    /// `Running` is the scanner's "alive, but no hook data yet" state — it
-    /// reads as `idle` everywhere else in the UI, so it bands with `Idle`.
+    /// 0 = blocked on the user, 1 = just finished, 2 = working, 3 = idle,
+    /// 4 = gone. `Running` is the scanner's "alive, but no hook data yet"
+    /// state — it reads as `idle` everywhere else in the UI, so it bands with
+    /// `Idle`. Band 1 is transient: a freshly finished agent sits there until
+    /// the click acknowledging it drops it back into the idle band.
     pub fn activity_band(&self) -> u8 {
         match self.status {
             SessionStatus::WaitingApproval => 0,
-            SessionStatus::Executing | SessionStatus::Thinking => 1,
-            SessionStatus::Idle | SessionStatus::Running => 2,
-            SessionStatus::Stopped => 3,
+            _ if self.just_finished() => 1,
+            SessionStatus::Executing | SessionStatus::Thinking => 2,
+            SessionStatus::Idle | SessionStatus::Running => 3,
+            SessionStatus::Stopped => 4,
         }
     }
 
@@ -466,21 +565,24 @@ impl Session {
 }
 
 /// Order sessions the way the panel lists them: agents blocked on the user
-/// first, then the ones working, then idle, then stopped.
+/// first, then the ones that just finished, then the ones working, then idle,
+/// then stopped.
 ///
-/// The two live bands sort by *start* time, not by last activity: a working
-/// agent's activity timestamp moves every second, so ordering on it would
-/// reshuffle the top of the list continuously — and rows are click targets
-/// that focus a pane, so a row moving under the cursor is a misclick. Start
-/// time never changes, which keeps a busy fleet still. Idle and stopped
-/// agents go most-recently-active first, the only thing that separates them.
+/// The blocked and working bands sort by *start* time, not by last activity:
+/// a working agent's activity timestamp moves every second, so ordering on it
+/// would reshuffle the top of the list continuously — and rows are click
+/// targets that focus a pane, so a row moving under the cursor is a misclick.
+/// Start time never changes, which keeps a busy fleet still. Just-finished
+/// agents go freshest-first — that band exists precisely to surface the one
+/// that chimed last. Idle and stopped agents go most-recently-active first,
+/// the only thing that separates them.
 pub fn sort_by_activity(sessions: &mut [Session]) {
     fn key(s: &Session) -> (u8, std::cmp::Reverse<u64>) {
         let band = s.activity_band();
-        let recency = if band <= 1 {
-            s.started_at_epoch.unwrap_or(0)
-        } else {
-            s.last_activity_at()
+        let recency = match band {
+            0 | 2 => s.started_at_epoch.unwrap_or(0),
+            1 => s.finished_at.unwrap_or(0),
+            _ => s.last_activity_at(),
         };
         (band, std::cmp::Reverse(recency))
     }
@@ -1013,6 +1115,171 @@ mod tests {
         sort_by_activity(&mut sessions);
         let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["approval", "thinking", "idle", "stopped"]);
+    }
+
+    /// An idle session whose `Stop` landed at epoch `at`, still unacknowledged.
+    fn finished(id: &str, at: u64) -> Session {
+        let mut s = ordered(id, SessionStatus::Idle, 10, 10);
+        s.finished_at = Some(at);
+        s
+    }
+
+    #[test]
+    fn just_finished_holds_until_the_card_is_clicked() {
+        let mut s = finished("done", 100);
+        assert!(s.just_finished(), "stays lit however long it waits");
+        s.acknowledge();
+        assert!(!s.just_finished(), "the click clears it");
+        // Never stamped at all — a scanner-discovered idle session.
+        assert!(!ordered("never-ran", SessionStatus::Idle, 10, 10).just_finished());
+    }
+
+    #[test]
+    fn mark_finished_bumps_the_sequence_every_turn() {
+        // What the debounced idle announcement is guarded on: a second turn
+        // ending inside the delay window has to be distinguishable from the
+        // first, which `finished_at` alone cannot do — it is in whole seconds,
+        // so both turns can carry the very same stamp.
+        let mut s = Session::new("seq".into(), AgentKind::ClaudeCode, 1);
+        assert_eq!(s.finish_seq, 0, "nothing has finished yet");
+        s.mark_finished();
+        let first = s.finish_seq;
+        assert_eq!(first, 1);
+        s.status = SessionStatus::Thinking;
+        s.mark_finished();
+        assert_ne!(
+            s.finish_seq, first,
+            "a later turn must invalidate the earlier pending announcement"
+        );
+        assert_eq!(s.finished_at, Some(now_epoch()), "still stamps the finish");
+    }
+
+    #[test]
+    fn spawns_subagent_matches_both_names_only() {
+        assert!(spawns_subagent(TOOL_AGENT));
+        assert!(spawns_subagent(TOOL_TASK));
+        // An ordinary tool must not inflate the count: one bogus increment holds
+        // the session's announcements until the next user prompt resets it.
+        for tool in ["Bash", "Read", "WebFetch", "agent", ""] {
+            assert!(!spawns_subagent(tool), "{tool} should not count");
+        }
+    }
+
+    #[test]
+    fn subagent_counting_only_releases_on_the_last_one() {
+        let mut s = Session::new("fanout".into(), AgentKind::ClaudeCode, 1);
+        s.launch_subagent();
+        s.launch_subagent();
+        assert!(!s.subagent_finished(), "one still running");
+        assert!(s.subagent_finished(), "that was the last one");
+        // A late or duplicate report must not release a second time — that would
+        // schedule a second announcement for an already-announced turn.
+        assert!(!s.subagent_finished(), "count already empty");
+        assert_eq!(s.pending_agents, 0, "and must not underflow");
+    }
+
+    #[test]
+    fn reset_subagents_reports_what_it_dropped() {
+        let mut s = Session::new("wedged".into(), AgentKind::ClaudeCode, 1);
+        s.launch_subagent();
+        s.launch_subagent();
+        assert_eq!(s.reset_subagents(), 2);
+        assert_eq!(s.reset_subagents(), 0, "nothing left to drop");
+    }
+
+    #[test]
+    fn announceable_needs_idle_finished_and_nothing_outstanding() {
+        let mut s = Session::new("turn".into(), AgentKind::ClaudeCode, 1);
+        // Never stopped: nothing to announce.
+        assert!(!s.announceable());
+        s.mark_finished();
+        assert!(s.announceable(), "stopped, idle, nothing running");
+        // Waiting on work it launched is not a finish, however quiet it looks.
+        s.launch_subagent();
+        assert!(!s.announceable());
+        s.subagent_finished();
+        assert!(s.announceable());
+        // Back at work: the turn moved on.
+        s.status = SessionStatus::Executing;
+        assert!(!s.announceable());
+    }
+
+    #[test]
+    fn a_held_turn_still_reads_as_finished_so_the_ceiling_can_release_it() {
+        // The shape the hold ceiling keys on: a turn waiting on sub-agents is not
+        // announceable, but it is still `just_finished` and still on the same
+        // `finish_seq`. That combination is what tells "held" apart from "the
+        // session moved on", and it is why dropping the count is enough to
+        // release the announcement once the sub-agents are presumed gone.
+        let mut s = Session::new("held".into(), AgentKind::ClaudeCode, 1);
+        s.launch_subagent();
+        s.mark_finished();
+        let held_on = s.finish_seq;
+        assert!(!s.announceable(), "held: nothing to announce yet");
+        assert!(s.just_finished(), "but the turn did end, and stays lit");
+        assert_eq!(s.reset_subagents(), 1, "the ceiling presumes them gone");
+        assert!(s.announceable(), "which releases the announcement");
+        assert_eq!(s.finish_seq, held_on, "still the very turn that was held");
+    }
+
+    #[test]
+    fn just_finished_clears_as_soon_as_the_agent_works_again() {
+        let mut s = finished("back-to-work", 100);
+        s.status = SessionStatus::Thinking;
+        assert!(!s.just_finished());
+    }
+
+    #[test]
+    fn acknowledge_leaves_a_pending_approval_alone() {
+        // Clicking the card means "I'm heading over there", not "allow" —
+        // the prompt must still be answered somewhere.
+        let mut s = ordered("asking", SessionStatus::WaitingApproval, 10, 10);
+        s.pending_approval = Some(PendingApproval {
+            request_id: "r1".into(),
+            tool: "Bash".into(),
+            detail: None,
+            choices: vec![],
+        });
+        s.acknowledge();
+        assert!(s.pending_approval.is_some());
+        assert_eq!(s.status, SessionStatus::WaitingApproval);
+    }
+
+    #[test]
+    fn sort_puts_just_finished_under_approval_and_over_working() {
+        let mut sessions = vec![
+            ordered("idle", SessionStatus::Idle, 10, 10),
+            ordered("thinking", SessionStatus::Thinking, 10, 10),
+            finished("just-finished", 100),
+            ordered("approval", SessionStatus::WaitingApproval, 10, 10),
+        ];
+        sort_by_activity(&mut sessions);
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["approval", "just-finished", "thinking", "idle"]);
+    }
+
+    #[test]
+    fn sort_orders_just_finished_sessions_freshest_first() {
+        let mut sessions = vec![
+            ordered("thinking", SessionStatus::Thinking, 10, 10),
+            finished("older", 100),
+            finished("newest", 200),
+        ];
+        sort_by_activity(&mut sessions);
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["newest", "older", "thinking"]);
+    }
+
+    #[test]
+    fn acknowledged_session_falls_back_into_the_idle_band() {
+        let mut sessions = vec![
+            ordered("thinking", SessionStatus::Thinking, 10, 10),
+            finished("clicked", 100),
+        ];
+        sessions[1].acknowledge();
+        sort_by_activity(&mut sessions);
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["thinking", "clicked"]);
     }
 
     #[test]

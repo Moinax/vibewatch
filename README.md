@@ -26,7 +26,9 @@ vibewatch fixes that. One glance at your bar tells you which sessions are runnin
 - **Live session tracking** — detects running agent processes and follows their state via hook events (thinking, running a tool, waiting for approval, stopped).
 - **Waybar module** — compact JSON module with per-agent icons and click-to-open behavior.
 - **GTK4 overlay panel** — layer-shell popup with a card per session: name, agent, terminal, current tool, elapsed time. Slides in like a drawer from the top edge and auto-hides once nothing needs your attention and the mouse leaves it (both configurable).
-- **Ranked, bounded list** — agents waiting on you come first, then the ones working, then idle ones most-recently-active first. The list shows `panel.max_visible` rows (and never more than a third of the screen) and scrolls for the rest, so a 15-agent fleet still fits on screen.
+- **Ranked, bounded list** — agents waiting on you come first, then the ones that just finished, then the ones working, then idle ones most-recently-active first. The list shows `panel.max_visible` rows (and never more than a third of the screen) and scrolls for the rest, so a 15-agent fleet still fits on screen.
+- **Pops open on completion** — the panel slides down along with the completion chime and lights up the agent that earned it, so the sound tells you *someone* is done and the overlay tells you *which one*. It stays open and lit until you click the card or the agent picks the work back up — a finished turn can't scroll past while you're heads-down elsewhere. `panel.open_on_finish = false` keeps the sound without the pop-up. A turn that ends only to be picked straight back up is a real stop but not a real finish, and two things keep it quiet. Sub-agents are counted: launching one via the `Agent`/`Task` tool arms the session, each sub-agent's own `Stop` disarms it, and while any are outstanding the agent is understood to be parked waiting rather than done — for however many minutes that takes, which no timeout could cover. Then, once nothing is outstanding, `general.idle_debounce_ms` covers the last second or two, because the final sub-agent reporting in is immediately followed by the main agent being re-invoked. The result is one chime per task instead of five. A sub-agent that dies without reporting can't wedge this: the hold expires after `general.hold_ceiling_ms` of complete stillness — a live sub-agent's own tool hooks land on the parent session, so anything actually running cancels that wait — and the count resets on every user prompt.
+- **Click means "take me there"** — clicking any card focuses that agent's pane *and* rolls the drawer up, since the overlay sits right over the window you're heading for. On a finished agent that click is also the acknowledgement that clears its highlight; on one waiting for approval it just gets out of the way, leaving the prompt for you to answer in the pane.
 - **Click-to-approve** — Claude Code permission prompts are rendered as real buttons inside the overlay, forwarded back to the agent via its hook protocol. Yes, "Yes, allow this rule", No — all of it.
 - **Window jumping** — click any session to focus its window (Hyprland, Niri).
 - **Sound alerts** — configurable audio cues for approval requests, task completion, errors.
@@ -76,6 +78,11 @@ vibewatch reads `~/.config/vibewatch/config.toml` if present. All fields are opt
 [general]
 compositor = "auto"          # "auto", "hyprland", or "niri"
 # socket_path = "/run/user/1000/vibewatch.sock"
+idle_debounce_ms = 3000      # quiet required before a finish is announced, once
+                             # nothing is outstanding; 0 announces every turn
+hold_ceiling_ms = 300000     # how long a turn held open by outstanding sub-agents
+                             # may stay silent before it is announced anyway, in
+                             # case none of them ever reports; 0 holds forever
 
 [sounds]
 enabled = true
@@ -85,8 +92,11 @@ error           = "builtin:alert"
 [panel]
 animate       = true   # slide the overlay in/out like a drawer from the top
 animation_ms  = 220    # drawer slide duration
-auto_close    = true   # hide once nothing needs attention and the mouse leaves
+auto_close    = true   # hide once nothing needs attention (no pending approval,
+                       # no unacknowledged finish) and the mouse leaves
 auto_close_ms = 5000   # idle delay before auto-closing
+open_on_finish = true  # pop the overlay open when an agent finishes its turn,
+                       # highlighting the one that just chimed
 max_visible   = 5      # rows shown before the list scrolls (height is also
                        # capped at a third of the monitor, whichever is smaller)
 

@@ -136,6 +136,7 @@ fn cli_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyhow::Result<()> {
     let socket_path = config.socket_path();
     let sound_player = Arc::new(SoundPlayer::new(config.sounds.clone()));
+    let timing = AnnounceTiming::from_config(&config);
 
     eprintln!(
         "vibewatch: starting daemon (headless), socket at {}",
@@ -149,8 +150,28 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
     let compositor = compositor::create_compositor(&config.general.compositor)?;
     let scanner_registry = registry.clone();
     let scanner_notify = status_notify.clone();
+    let scanner_finish_registry = registry.clone();
+    let scanner_sound = sound_player.clone();
+    let scanner_hooks = PanelHooks::default();
+    let scanner_finished = Arc::new(move |sid, seq| {
+        schedule_announce(
+            &scanner_finish_registry,
+            &scanner_sound,
+            &scanner_hooks,
+            sid,
+            seq,
+            timing.idle_debounce,
+        );
+    });
     tokio::spawn(async move {
-        scanner::run_scanner(scanner_registry, compositor, config, scanner_notify).await;
+        scanner::run_scanner(
+            scanner_registry,
+            compositor,
+            config,
+            scanner_notify,
+            scanner_finished,
+        )
+        .await;
     });
 
     eprintln!("vibewatch: daemon ready (headless)");
@@ -196,10 +217,10 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
                         stream,
                         registry,
                         sound_player,
-                        None::<Arc<dyn Fn() + Send + Sync>>,
-                        None::<Arc<dyn Fn() + Send + Sync>>,
+                        PanelHooks::default(),
                         approval_registry,
                         status_notify,
+                        timing,
                     )
                     .await;
                 });
@@ -260,6 +281,12 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
             });
         });
 
+        let panel_hooks = PanelHooks {
+            toggle: Some(toggle_fn),
+            show: Some(show_fn.clone()),
+            finish: config.panel.open_on_finish.then_some(show_fn),
+        };
+
         let config = config.clone();
         let registry = registry.clone();
         std::thread::spawn(move || {
@@ -267,6 +294,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
             rt.block_on(async move {
                 let socket_path = config.socket_path();
                 let sound_player = Arc::new(SoundPlayer::new(config.sounds.clone()));
+                let timing = AnnounceTiming::from_config(&config);
 
                 eprintln!(
                     "vibewatch: starting daemon, socket at {}",
@@ -293,8 +321,28 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
 
                 let scanner_registry = registry.clone();
                 let scanner_notify = status_notify.clone();
+                let scanner_finish_registry = registry.clone();
+                let scanner_sound = sound_player.clone();
+                let scanner_hooks = panel_hooks.clone();
+                let scanner_finished = Arc::new(move |sid, seq| {
+                    schedule_announce(
+                        &scanner_finish_registry,
+                        &scanner_sound,
+                        &scanner_hooks,
+                        sid,
+                        seq,
+                        timing.idle_debounce,
+                    );
+                });
                 tokio::spawn(async move {
-                    scanner::run_scanner(scanner_registry, compositor, config, scanner_notify).await;
+                    scanner::run_scanner(
+                        scanner_registry,
+                        compositor,
+                        config,
+                        scanner_notify,
+                        scanner_finished,
+                    )
+                    .await;
                 });
 
                 eprintln!("vibewatch: daemon ready");
@@ -333,8 +381,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                         Ok(stream) => {
                             let registry = registry.clone();
                             let sound_player = sound_player.clone();
-                            let toggle_fn = toggle_fn.clone();
-                            let show_fn = show_fn.clone();
+                            let panel_hooks = panel_hooks.clone();
                             let approval_registry = approval_registry.clone();
                             let status_notify = status_notify.clone();
                             tokio::spawn(async move {
@@ -342,10 +389,10 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                                     stream,
                                     registry,
                                     sound_player,
-                                    Some(toggle_fn),
-                                    Some(show_fn),
+                                    panel_hooks,
                                     approval_registry,
                                     status_notify,
+                                    timing,
                                 )
                                 .await;
                             });
@@ -361,19 +408,176 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
     Ok(())
 }
 
-/// Handle a single client connection.
+/// What a connection can ask the overlay panel to do. Every field is `Some`
+/// in GTK mode and `None` in headless mode. The callbacks are type-erased to
+/// `Arc<dyn Fn() + Send + Sync>` so this compiles without GTK feature flags.
+#[derive(Clone, Default)]
+struct PanelHooks {
+    /// Flip the drawer open/closed — the waybar click.
+    toggle: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Slide the drawer open because an agent is blocked on the user.
+    show: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Same thing, on an agent finishing its turn. Held separately from
+    /// `show` so `panel.open_on_finish = false` drops it without disarming
+    /// the approval pop-up.
+    finish: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+/// The two waits that stand between a `Stop` and its announcement. Both are
+/// read once at daemon start and handed to every connection.
+#[derive(Clone, Copy)]
+struct AnnounceTiming {
+    /// Quiet required of a turn with nothing outstanding.
+    idle_debounce: std::time::Duration,
+    /// Patience for the sub-agents a held turn is waiting on.
+    hold_ceiling: std::time::Duration,
+}
+
+impl AnnounceTiming {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            idle_debounce: config.idle_debounce(),
+            hold_ceiling: config.hold_ceiling(),
+        }
+    }
+}
+
+/// Announce that an agent finished its turn: the chime, and the panel popping
+/// open with the just-finished row ranked to the top. The sound says *someone*
+/// is done, the panel says which one.
+fn announce_finish(sound_player: &SoundPlayer, panel_hooks: &PanelHooks, why: &str) {
+    eprintln!("vibewatch: announcing finish ({why})");
+    sound_player.play(SoundEvent::Idle);
+    if let Some(ref show) = panel_hooks.finish {
+        show();
+    }
+}
+
+/// What a `Stop` turned out to mean, once the session behind it was found.
+enum StopOutcome {
+    /// A turn with nothing outstanding: announce it if it stays quiet.
+    Ready(String, u64),
+    /// Sub-agents are still running. The last one to report in re-opens the
+    /// question; announcing now would be the false positive being fixed. If none
+    /// of them ever reports, the hold ceiling releases it.
+    Held(String, u64),
+    /// No session matched the stop, so there is nothing to watch and no evidence
+    /// anything resumed. Announce it — silence is the worse failure.
+    Unknown,
+}
+
+/// Announce that `sid` finished, once it has been quiet for `idle_debounce`.
 ///
-/// `toggle_sender` is `Some` when running with a panel (GTK mode), `None` in headless mode.
-/// The sender type is erased to `Arc<dyn Fn() + Send + Sync>` so this function compiles
-/// without GTK feature flags.
+/// The wait is what separates a turn that ended from a turn that ended and was
+/// picked straight back up — including the moment after the last sub-agent
+/// reports in, when the main agent is about to be re-invoked and the count alone
+/// would say "done". Suppression requires positive evidence that the session
+/// moved on; every other outcome announces, because swallowing a real
+/// completion is worse than one chime too many.
+fn schedule_announce(
+    registry: &SessionRegistry,
+    sound_player: &Arc<SoundPlayer>,
+    panel_hooks: &PanelHooks,
+    sid: String,
+    seq: u64,
+    idle_debounce: std::time::Duration,
+) {
+    if idle_debounce.is_zero() {
+        announce_finish(sound_player, panel_hooks, "undebounced");
+        return;
+    }
+    let registry = registry.clone();
+    let sound_player = sound_player.clone();
+    let panel_hooks = panel_hooks.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(idle_debounce).await;
+        match registry.get(&sid) {
+            // Still announceable, and still the turn this was scheduled for.
+            Some(s) if s.announceable() && s.finish_seq == seq => {
+                announce_finish(&sound_player, &panel_hooks, "settled")
+            }
+            Some(s) => eprintln!(
+                "vibewatch: idle announcement for {sid} superseded (status {}, turn {} vs {seq}, {} sub-agents)",
+                s.status.css_class(),
+                s.finish_seq,
+                s.pending_agents
+            ),
+            // Gone from the registry: the agent finished and its process exited
+            // inside the window — a one-shot `claude -p`, or a pane that closed
+            // — and the scanner pruned it. That is a finish, not a resumption.
+            None => announce_finish(&sound_player, &panel_hooks, "exited"),
+        }
+    });
+}
+
+/// Announce a turn that outstanding sub-agents are holding open, if `hold_ceiling`
+/// passes without any of them reporting in.
+///
+/// The hold itself is unbounded by design — a fan-out legitimately runs for
+/// minutes — but a sub-agent that dies on a terminal API error, or in a pane that
+/// was killed, never sends the `Stop` that would release it. Without this the
+/// turn stays held and *silent* until the next user prompt resets the count, and
+/// a chime that never comes is a worse failure than one too many.
+///
+/// A live sub-agent's own tool hooks land on the parent session, so anything
+/// still running keeps that session out of `Idle` and cancels this — which is
+/// what lets the wait be minutes long without bringing the false chimes back.
+/// Only a session still sitting on the very turn that was held, still waiting on
+/// sub-agents, and still untouched since, is released. Releasing it also drops
+/// the count: those sub-agents are now presumed gone, so the next `Stop` is a
+/// finish rather than another hold.
+fn schedule_hold_ceiling(
+    registry: &SessionRegistry,
+    sound_player: &Arc<SoundPlayer>,
+    panel_hooks: &PanelHooks,
+    sid: String,
+    seq: u64,
+    hold_ceiling: std::time::Duration,
+) {
+    if hold_ceiling.is_zero() {
+        return;
+    }
+    let registry = registry.clone();
+    let sound_player = sound_player.clone();
+    let panel_hooks = panel_hooks.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(hold_ceiling).await;
+        // Gone from the registry: the process exited while held, which the user
+        // did themselves (a closed pane) — nothing to announce minutes later.
+        let Some(mut session) = registry.get(&sid) else {
+            return;
+        };
+        if !session.just_finished() || session.finish_seq != seq {
+            eprintln!(
+                "vibewatch: hold on {sid} ended on its own (status {}, turn {} vs {seq})",
+                session.status.css_class(),
+                session.finish_seq
+            );
+            return;
+        }
+        let dropped = session.reset_subagents();
+        if dropped == 0 {
+            eprintln!("vibewatch: hold on {sid} already released by its last sub-agent");
+            return;
+        }
+        registry.register(session);
+        announce_finish(
+            &sound_player,
+            &panel_hooks,
+            &format!("hold expired, {dropped} sub-agent(s) never reported"),
+        );
+    });
+}
+
+/// Handle a single client connection.
 async fn handle_connection(
     stream: tokio::net::UnixStream,
     registry: SessionRegistry,
     sound_player: Arc<SoundPlayer>,
-    toggle_sender: Option<Arc<dyn Fn() + Send + Sync>>,
-    show_sender: Option<Arc<dyn Fn() + Send + Sync>>,
+    panel_hooks: PanelHooks,
     approval_registry: crate::approval::ApprovalRegistry,
     status_notify: Arc<tokio::sync::Notify>,
+    timing: AnnounceTiming,
 ) {
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
@@ -423,6 +627,16 @@ async fn handle_connection(
                     };
                     session.current_tool = Some(tool.clone());
                     session.tool_detail = detail;
+                    // The tool returns as soon as the sub-agent is spawned, so its
+                    // PostToolUse says nothing about whether that work is done —
+                    // only the sub-agent's own Stop does.
+                    if session::spawns_subagent(&tool) {
+                        session.launch_subagent();
+                        eprintln!(
+                            "vibewatch: {} launched a sub-agent ({} outstanding)",
+                            session.id, session.pending_agents
+                        );
+                    }
                     session.touch();
                     log_transition(&session.id, prev, session.status, &format!("tool={}", tool));
                     registry.register(session);
@@ -445,7 +659,7 @@ async fn handle_connection(
                     }
                     session.last_tool = session.current_tool.take();
                     session.last_tool_detail = session.tool_detail.take();
-                    session.last_tool_at = now_epoch();
+                    session.last_tool_at = Some(session::now_epoch());
                     session.status = SessionStatus::Thinking;
                     let agent = session.agent;
                     if let Some(text) = transcript::read_last_assistant_line(
@@ -479,9 +693,19 @@ async fn handle_connection(
                     }
                     session.status = SessionStatus::Thinking;
                     session.last_prompt = prompt;
-                    session.last_prompt_at = now_epoch();
+                    session.last_prompt_at = Some(session::now_epoch());
                     session.current_tool = None;
                     session.tool_detail = None;
+                    // A new prompt is a clean slate: an agent still running from
+                    // the previous turn cannot re-invoke this one now anyway,
+                    // since the user is driving it again.
+                    let dropped = session.reset_subagents();
+                    if dropped > 0 {
+                        eprintln!(
+                            "vibewatch: {} prompted with {dropped} sub-agent(s) still counted — resetting",
+                            session.id
+                        );
+                    }
                     if let Some(name) = session::read_transcript_name(&session_id) {
                         session.session_name = Some(name);
                     }
@@ -559,7 +783,7 @@ async fn handle_connection(
                     log_drop("PermissionRequest", &session_id, pid);
                 }
                 sound_player.play(SoundEvent::ApprovalNeeded);
-                if let Some(ref show) = show_sender {
+                if let Some(ref show) = panel_hooks.show {
                     show();
                 }
 
@@ -652,6 +876,10 @@ async fn handle_connection(
                 }
             }
             InboundEvent::Stop { session_id, pid } => {
+                // Set by the lookup below to the session that finished and the
+                // turn it finished on, so the delayed announcement can check
+                // both are still true when it fires.
+                let mut finished = StopOutcome::Unknown;
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                     let prev = session.status;
                     if session.pending_approval.is_some() {
@@ -661,6 +889,7 @@ async fn handle_connection(
                     session.current_tool = None;
                     session.tool_detail = None;
                     session.pending_approval = None;
+                    session.mark_finished();
                     let agent = session.agent;
                     if let Some(text) = transcript::read_last_assistant_line(
                         agent,
@@ -671,13 +900,87 @@ async fn handle_connection(
                     }
                     session.touch();
                     log_transition(&session.id, prev, session.status, "Stop");
+                    // With sub-agents still running this stop is the agent parking
+                    // itself until they report back, and the last to report is
+                    // what re-opens the question.
+                    finished = if session.pending_agents == 0 {
+                        StopOutcome::Ready(session.id.clone(), session.finish_seq)
+                    } else {
+                        eprintln!(
+                            "vibewatch: {} stopped with {} sub-agent(s) outstanding — holding",
+                            session.id, session.pending_agents
+                        );
+                        StopOutcome::Held(session.id.clone(), session.finish_seq)
+                    };
                     registry.register(session);
                     status_notify.notify_waiters();
                 } else {
                     log_drop("Stop", &session_id, pid);
                 }
-                // The agent finished responding and went idle.
-                sound_player.play(SoundEvent::Idle);
+                // The agent finished responding and went idle. Pop the panel
+                // open alongside the chime: the sound says *someone* is done,
+                // the panel says which one — the just-finished row is ranked
+                // to the top and highlighted for a few seconds.
+                //
+                // Two things gate it, covering gaps neither could alone:
+                // outstanding sub-agents hold it for however many minutes they
+                // run, which no timeout can do; and idle_debounce_ms then covers
+                // the second or two in which a stop gets picked straight back up.
+                // A hold is itself bounded by hold_ceiling_ms, so sub-agents that
+                // die without reporting can't swallow the finish entirely.
+                //
+                // The status flip above is deliberately not delayed — the widget
+                // stays honest about the current state.
+                match finished {
+                    StopOutcome::Ready(sid, seq) => schedule_announce(
+                        &registry,
+                        &sound_player,
+                        &panel_hooks,
+                        sid,
+                        seq,
+                        timing.idle_debounce,
+                    ),
+                    StopOutcome::Held(sid, seq) => schedule_hold_ceiling(
+                        &registry,
+                        &sound_player,
+                        &panel_hooks,
+                        sid,
+                        seq,
+                        timing.hold_ceiling,
+                    ),
+                    StopOutcome::Unknown => {
+                        announce_finish(&sound_player, &panel_hooks, "no session")
+                    }
+                }
+            }
+            InboundEvent::SubAgentStop { session_id, pid } => {
+                // Deliberately does not touch status: a sub-agent finishing says
+                // nothing about what the main agent is doing, and the whole point
+                // of counting is to stop these from flapping the session to Idle.
+                if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
+                    // The last one to report re-opens the question the held stop
+                    // left hanging. Still debounced from there, because the agent
+                    // is about to be re-invoked if it has more to do.
+                    let was_last = session.subagent_finished();
+                    let settling = was_last && session.announceable();
+                    let left = session.pending_agents;
+                    let sid = session.id.clone();
+                    let seq = session.finish_seq;
+                    registry.register(session);
+                    eprintln!("vibewatch: sub-agent of {sid} reported ({left} outstanding)");
+                    if settling {
+                        schedule_announce(
+                            &registry,
+                            &sound_player,
+                            &panel_hooks,
+                            sid,
+                            seq,
+                            timing.idle_debounce,
+                        );
+                    }
+                } else {
+                    log_drop("SubAgentStop", &session_id, pid);
+                }
                 let registry = registry.clone();
                 let sid = session_id.clone();
                 let late_notify = status_notify.clone();
@@ -729,8 +1032,17 @@ async fn handle_connection(
                     status_notify.notified().await;
                 }
             }
+            InboundEvent::AcknowledgeSession { session_id } => {
+                if let Some(mut session) = registry.get(&session_id) {
+                    if session.just_finished() {
+                        session.acknowledge();
+                        registry.register(session);
+                        status_notify.notify_waiters();
+                    }
+                }
+            }
             InboundEvent::TogglePanel => {
-                if let Some(ref sender) = toggle_sender {
+                if let Some(ref sender) = panel_hooks.toggle {
                     sender();
                 }
             }
@@ -805,12 +1117,6 @@ fn waybar_payload(status: &ipc::StatusResponse) -> String {
     .to_string()
 }
 
-fn now_epoch() -> Option<u64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_secs())
-}
 
 fn parse_agent_kind(s: &str) -> AgentKind {
     match s {

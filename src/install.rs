@@ -119,13 +119,17 @@ pub fn run(opts: Options) -> Result<()> {
 /// slug must match the `vibewatch notify` subcommand arms in
 /// `src/notify.rs`. The synchronous entry (PermissionRequest) is what
 /// powers the widget approve/deny + AskUserQuestion flows.
-pub(crate) const HOOK_EVENTS: [(&str, &str, bool); 6] = [
+pub(crate) const HOOK_EVENTS: [(&str, &str, bool); 7] = [
     ("SessionStart",      "session-start",      true),
     ("UserPromptSubmit",  "user-prompt-submit", true),
     ("PreToolUse",        "pre-tool-use",       true),
     ("PostToolUse",       "post-tool-use",      true),
     ("PermissionRequest", "permission-request", false),
     ("Stop",              "stop",               true),
+    // Sub-agent completions arrive on their own event, never as a `Stop` — so
+    // without this entry a session that launches sub-agents counts them up and
+    // never back down, and its finishes stay held and silent.
+    ("SubagentStop",      "subagent-stop",      true),
 ];
 
 /// Canonical hook command for a given `vibewatch notify` slug.
@@ -192,7 +196,7 @@ pub fn merge_hooks(mut settings: Value) -> Value {
 
 /// Remove vibewatch's hook entries (anything whose command string contains
 /// "vibewatch"). Other tools' hooks in the same event array are preserved.
-/// Only inspects the six known HOOK_EVENTS keys; vibewatch commands nested
+/// Only inspects the seven known HOOK_EVENTS keys; vibewatch commands nested
 /// under non-standard event names are left alone.
 pub fn unmerge_hooks(mut settings: Value) -> Value {
     let Some(hooks_obj) = settings
@@ -433,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_hooks_adds_all_six_events() {
+    fn merge_hooks_adds_all_seven_events() {
         let merged = merge_hooks(json!({}));
         for (event, _, _) in HOOK_EVENTS {
             assert!(

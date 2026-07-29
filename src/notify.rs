@@ -96,6 +96,11 @@ pub async fn send_permission_request(
 #[derive(Debug, Deserialize)]
 pub struct ClaudeCodeHook {
     pub session_id: String,
+    /// Set on hooks fired by a sub-agent (the Agent/Task tool) rather than the
+    /// main agent, which has none. `session_id` names the parent either way,
+    /// which is what lets a sub-agent's stop be counted against it.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     #[serde(default)]
     pub tool_name: Option<String>,
     #[serde(default)]
@@ -142,16 +147,6 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
         {
             let _ = writeln!(f, "{}", stdin_buf.trim());
         }
-    }
-
-    // A sub-agent (Task/Agent tool) finishing fires the same `Stop` hook as the
-    // main agent — distinguished only by an `agent_id` in the payload. Treat
-    // only the main agent's stop as a real idle event; otherwise every
-    // sub-agent completion replays the idle sound and briefly flaps the session
-    // to Idle mid-turn. Sub-agent tool/permission hooks still flow normally.
-    if event_type == "stop" && payload_is_subagent(&stdin_buf) {
-        eprintln!("vibewatch-hook: ignoring sub-agent stop (agent_id present)");
-        return Ok(());
     }
 
     let event = match agent {
@@ -336,17 +331,6 @@ fn extract_ask_user_question_labels(tool_input: &Option<serde_json::Value>) -> V
         .unwrap_or_default()
 }
 
-/// True when a hook payload originates from a sub-agent rather than the main
-/// agent. Claude Code stamps sub-agent hook invocations with a non-null
-/// `agent_id`; the main agent has none. Returns false for any payload that
-/// isn't valid JSON (fail open — keep the main agent's idle behavior).
-fn payload_is_subagent(stdin: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(stdin) else {
-        return false;
-    };
-    v.get("agent_id").is_some_and(|id| !id.is_null())
-}
-
 /// Get the parent PID (the claude process that spawned this hook).
 fn parent_pid() -> u32 {
     std::fs::read_to_string("/proc/self/stat")
@@ -434,6 +418,24 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
             })
         }
         "permission-denied" => Ok(InboundEvent::PermissionDenied {
+            session_id: hook.session_id,
+            pid: Some(parent_pid()),
+        }),
+        // A sub-agent finishing is emphatically not the main agent going idle —
+        // treating it as one replays the idle chime and flaps the session to Idle
+        // mid-turn — but it is not nothing either: the daemon counts outstanding
+        // sub-agents to tell a finished turn from one that is still waiting on
+        // work it launched. Sub-agent tool and permission hooks keep flowing as
+        // themselves, against the parent `session_id`.
+        //
+        // Claude Code delivers these on their own `SubagentStop` event. The
+        // `agent_id` arm below is the belt-and-braces path: hooks that do stamp a
+        // sub-agent's `Stop` must not be mistaken for the main agent's.
+        "subagent-stop" => Ok(InboundEvent::SubAgentStop {
+            session_id: hook.session_id,
+            pid: Some(parent_pid()),
+        }),
+        "stop" if hook.agent_id.is_some() => Ok(InboundEvent::SubAgentStop {
             session_id: hook.session_id,
             pid: Some(parent_pid()),
         }),
@@ -689,19 +691,41 @@ mod tests {
     }
 
     #[test]
-    fn payload_is_subagent_detects_agent_id() {
-        // Main-agent stop: no agent_id → real idle.
-        assert!(!payload_is_subagent(
-            r#"{"session_id":"s1","hook_event_name":"Stop","transcript_path":"/t.jsonl"}"#
+    fn stop_splits_on_agent_id() {
+        // The main agent has no agent_id: a real idle event.
+        let main = r#"{"session_id":"s1","hook_event_name":"Stop","transcript_path":"/t.jsonl"}"#;
+        assert!(matches!(
+            parse_claude_code(main, "stop").unwrap(),
+            InboundEvent::Stop { .. }
         ));
-        // Sub-agent stop: agent_id present → suppress.
-        assert!(payload_is_subagent(
-            r#"{"session_id":"s1","hook_event_name":"Stop","agent_id":"sub-123","agent_type":"Explore"}"#
+        // An explicit null is still the main agent, not a sub-agent.
+        let null_id = r#"{"session_id":"s1","agent_id":null}"#;
+        assert!(matches!(
+            parse_claude_code(null_id, "stop").unwrap(),
+            InboundEvent::Stop { .. }
         ));
-        // Explicit null agent_id is still the main agent.
-        assert!(!payload_is_subagent(r#"{"session_id":"s1","agent_id":null}"#));
-        // Garbage in → treat as main agent (fail open: keep the sound).
-        assert!(!payload_is_subagent("not json"));
+        // A sub-agent's stop is counted against the parent it names, and must not
+        // reach the main agent's idle handling.
+        let sub = r#"{"session_id":"parent-1","agent_id":"sub-123","agent_type":"Explore"}"#;
+        match parse_claude_code(sub, "stop").unwrap() {
+            InboundEvent::SubAgentStop { session_id, .. } => {
+                assert_eq!(session_id, "parent-1")
+            }
+            other => panic!("expected SubAgentStop, got {other:?}"),
+        }
+        // The event Claude Code actually delivers a sub-agent's completion on. It
+        // names the parent session and carries no agent_id of its own, so the
+        // event type alone has to be enough — this is the arm the counting
+        // depends on in practice.
+        let own_event = r#"{"session_id":"parent-1","hook_event_name":"SubagentStop"}"#;
+        match parse_claude_code(own_event, "subagent-stop").unwrap() {
+            InboundEvent::SubAgentStop { session_id, .. } => {
+                assert_eq!(session_id, "parent-1")
+            }
+            other => panic!("expected SubAgentStop, got {other:?}"),
+        }
+        // Unparseable payloads fail loudly rather than being taken for either.
+        assert!(parse_claude_code("not json", "stop").is_err());
     }
 
     #[tokio::test]

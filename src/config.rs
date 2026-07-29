@@ -16,6 +16,28 @@ pub struct Config {
 pub struct GeneralConfig {
     pub compositor: String,
     pub socket_path: Option<String>,
+    /// How long a session has to stay idle before the finish is announced, in
+    /// milliseconds. A turn that ends only to be resumed moments later — the
+    /// agent launched a background sub-agent, or is between two reasoning steps
+    /// — is a real `Stop`, so without this it earns a real chime and a real
+    /// panel pop, several times per task. Waiting it out announces once, when
+    /// the agent is actually done. Held here rather than under `sounds` or
+    /// `panel` because it gates both. `0` restores announcing on every `Stop`.
+    pub idle_debounce_ms: u64,
+    /// How long a turn held open by outstanding sub-agents may stay silent
+    /// before it is announced anyway, in milliseconds.
+    ///
+    /// The hold otherwise has no end: a sub-agent that dies without sending its
+    /// `Stop` — a terminal API error, a killed pane — leaves the turn waiting
+    /// on a report that will never come, and the finish is never announced at
+    /// all. A missing chime is the worse failure of the two, so the hold
+    /// expires.
+    ///
+    /// Generous on purpose: a live sub-agent's own tool hooks land on the parent
+    /// session, so anything actually running keeps that session out of `Idle`
+    /// and cancels this wait — only a session that has gone completely still is
+    /// released. `0` lets a held turn stay silent indefinitely.
+    pub hold_ceiling_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -39,10 +61,24 @@ pub struct PanelConfig {
     /// Drawer slide duration in milliseconds.
     pub animation_ms: u32,
     /// Auto-hide the panel once nothing needs attention and the pointer is
-    /// not over it. Sessions waiting for approval keep the panel open.
+    /// not over it.
+    ///
+    /// Two things count as needing attention, and either one holds the panel
+    /// open indefinitely — the timer is reset, not merely deferred: a session
+    /// waiting for approval, and a session that just finished its turn
+    /// (`Session::just_finished`). The second is not time-based, so a finished
+    /// agent never times out on its own; it clears when the card is clicked or
+    /// when that agent picks the work back up. A chime you were away for
+    /// therefore still has its row waiting when you look back.
     pub auto_close: bool,
-    /// Idle delay before auto-closing, in milliseconds.
+    /// How long the pointer has to stay away before the panel closes, in
+    /// milliseconds. Only starts counting once nothing needs attention in the
+    /// sense above.
     pub auto_close_ms: u64,
+    /// Pop the panel open when an agent finishes its turn, alongside the
+    /// completion chime, with the freshly finished row ranked to the top and
+    /// highlighted. Set false to keep the sound but not the interruption.
+    pub open_on_finish: bool,
     /// How many session rows the list shows before it starts scrolling. The
     /// panel is capped at a third of the monitor height regardless, so a few
     /// tall rows (an approval card is several times an idle one) can put the
@@ -61,6 +97,8 @@ impl Default for GeneralConfig {
         Self {
             compositor: "auto".to_string(),
             socket_path: None,
+            idle_debounce_ms: 3000,
+            hold_ceiling_ms: 300_000,
         }
     }
 }
@@ -83,6 +121,7 @@ impl Default for PanelConfig {
             animation_ms: 220,
             auto_close: true,
             auto_close_ms: 5000,
+            open_on_finish: true,
             max_visible: 5,
         }
     }
@@ -95,6 +134,19 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("~/.config"))
             .join("vibewatch")
             .join("config.toml")
+    }
+
+    /// How long a session must stay quiet before its finish is announced.
+    /// See [`GeneralConfig::idle_debounce_ms`]; zero disables the wait.
+    pub fn idle_debounce(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.general.idle_debounce_ms)
+    }
+
+    /// How long a turn held open by outstanding sub-agents may stay silent
+    /// before it is announced anyway. See [`GeneralConfig::hold_ceiling_ms`];
+    /// zero holds forever.
+    pub fn hold_ceiling(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.general.hold_ceiling_ms)
     }
 
     /// Returns the IPC socket path.
@@ -135,6 +187,8 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.general.compositor, "auto");
         assert!(config.general.socket_path.is_none());
+        assert_eq!(config.general.idle_debounce_ms, 3000);
+        assert_eq!(config.general.hold_ceiling_ms, 300_000);
         assert!(config.sounds.enabled);
         assert_eq!(config.sounds.approval_needed, "builtin:chime");
         assert_eq!(config.sounds.idle, "builtin:success");
@@ -143,8 +197,23 @@ mod tests {
         assert_eq!(config.panel.animation_ms, 220);
         assert!(config.panel.auto_close);
         assert_eq!(config.panel.auto_close_ms, 5000);
+        assert!(config.panel.open_on_finish);
         assert_eq!(config.panel.max_visible, 5);
         assert!(config.agents.is_empty());
+    }
+
+    #[test]
+    fn general_section_without_the_waits_keeps_their_defaults() {
+        // Any config.toml written before these fields existed still has a
+        // `[general]` section. The container-level `#[serde(default)]` has to
+        // fill the gaps from `GeneralConfig::default()` and not from
+        // `u64::default()` — 0 would silently mean "announce every Stop" for the
+        // debounce and "keep a stalled turn silent forever" for the ceiling,
+        // i.e. exactly the two failures these settings exist to remove.
+        let config: Config = toml::from_str("[general]\ncompositor = \"hyprland\"\n").unwrap();
+        assert_eq!(config.general.compositor, "hyprland");
+        assert_eq!(config.general.idle_debounce_ms, 3000);
+        assert_eq!(config.general.hold_ceiling_ms, 300_000);
     }
 
     #[test]
@@ -155,6 +224,7 @@ animate = false
 animation_ms = 120
 auto_close = false
 auto_close_ms = 8000
+open_on_finish = false
 max_visible = 8
 "#;
         let config = toml::from_str::<Config>(toml_str).unwrap();
@@ -162,6 +232,7 @@ max_visible = 8
         assert_eq!(config.panel.animation_ms, 120);
         assert!(!config.panel.auto_close);
         assert_eq!(config.panel.auto_close_ms, 8000);
+        assert!(!config.panel.open_on_finish);
         assert_eq!(config.panel.max_visible, 8);
     }
 
