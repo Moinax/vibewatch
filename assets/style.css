@@ -54,6 +54,43 @@ window.csd,
     background: transparent;
 }
 
+/* ── Session scroller ─────────────────────────────────────────── */
+/* Holds the list once it outgrows `panel.max_visible` rows. GTK's default
+   undershoot/overshoot shading paints a grey band over the cards at the
+   clipped edges, so it is switched off. */
+
+.session-scroller {
+    background: transparent;
+}
+
+.session-scroller undershoot.top,
+.session-scroller undershoot.bottom,
+.session-scroller overshoot.top,
+.session-scroller overshoot.bottom {
+    background: none;
+    box-shadow: none;
+}
+
+.session-scroller scrollbar {
+    background: transparent;
+    border: none;
+}
+
+/* `margin` has to shrink along with the slider: Adwaita's default 8px would
+   exceed these min sizes and GTK warns about the negative result. */
+.session-scroller scrollbar slider {
+    margin: 2px;
+    min-width: 6px;
+    min-height: 30px;
+    border: none;
+    border-radius: 3px;
+    background-color: alpha(@cat_border, 0.35);
+}
+
+.session-scroller scrollbar slider:hover {
+    background-color: alpha(@cat_border, 0.60);
+}
+
 /* ── Session card ─────────────────────────────────────────────── */
 
 .session-row {

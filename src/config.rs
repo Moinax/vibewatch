@@ -43,6 +43,12 @@ pub struct PanelConfig {
     pub auto_close: bool,
     /// Idle delay before auto-closing, in milliseconds.
     pub auto_close_ms: u64,
+    /// How many session rows the list shows before it starts scrolling. The
+    /// panel is capped at a third of the monitor height regardless, so a few
+    /// tall rows (an approval card is several times an idle one) can put the
+    /// scrollbar in before this many rows fit. `0` drops the row limit and
+    /// leaves only that height cap.
+    pub max_visible: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,6 +83,7 @@ impl Default for PanelConfig {
             animation_ms: 220,
             auto_close: true,
             auto_close_ms: 5000,
+            max_visible: 5,
         }
     }
 }
@@ -136,6 +143,7 @@ mod tests {
         assert_eq!(config.panel.animation_ms, 220);
         assert!(config.panel.auto_close);
         assert_eq!(config.panel.auto_close_ms, 5000);
+        assert_eq!(config.panel.max_visible, 5);
         assert!(config.agents.is_empty());
     }
 
@@ -147,12 +155,14 @@ animate = false
 animation_ms = 120
 auto_close = false
 auto_close_ms = 8000
+max_visible = 8
 "#;
         let config = toml::from_str::<Config>(toml_str).unwrap();
         assert!(!config.panel.animate);
         assert_eq!(config.panel.animation_ms, 120);
         assert!(!config.panel.auto_close);
         assert_eq!(config.panel.auto_close_ms, 8000);
+        assert_eq!(config.panel.max_visible, 8);
     }
 
     #[test]

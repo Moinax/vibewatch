@@ -26,6 +26,7 @@ vibewatch fixes that. One glance at your bar tells you which sessions are runnin
 - **Live session tracking** — detects running agent processes and follows their state via hook events (thinking, running a tool, waiting for approval, stopped).
 - **Waybar module** — compact JSON module with per-agent icons and click-to-open behavior.
 - **GTK4 overlay panel** — layer-shell popup with a card per session: name, agent, terminal, current tool, elapsed time. Slides in like a drawer from the top edge and auto-hides once nothing needs your attention and the mouse leaves it (both configurable).
+- **Ranked, bounded list** — agents waiting on you come first, then the ones working, then idle ones most-recently-active first. The list shows `panel.max_visible` rows (and never more than a third of the screen) and scrolls for the rest, so a 15-agent fleet still fits on screen.
 - **Click-to-approve** — Claude Code permission prompts are rendered as real buttons inside the overlay, forwarded back to the agent via its hook protocol. Yes, "Yes, allow this rule", No — all of it.
 - **Window jumping** — click any session to focus its window (Hyprland, Niri).
 - **Sound alerts** — configurable audio cues for approval requests, task completion, errors.
@@ -86,6 +87,8 @@ animate       = true   # slide the overlay in/out like a drawer from the top
 animation_ms  = 220    # drawer slide duration
 auto_close    = true   # hide once nothing needs attention and the mouse leaves
 auto_close_ms = 5000   # idle delay before auto-closing
+max_visible   = 5      # rows shown before the list scrolls (height is also
+                       # capped at a third of the monitor, whichever is smaller)
 
 [agents.cursor]
 window_class = "cursor"

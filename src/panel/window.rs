@@ -154,7 +154,17 @@ pub fn build_window(
     empty_label.add_css_class("empty-state");
     session_list.set_placeholder(Some(&empty_label));
 
-    main_box.append(&session_list);
+    // The list scrolls inside the panel instead of growing it: a 15-agent
+    // fleet would otherwise make the drawer taller than the screen. Natural
+    // height is propagated so a short list still gets a short panel — the
+    // ceiling comes from `max_content_height`, recomputed on every rebuild.
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.add_css_class("session-scroller");
+    scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroller.set_propagate_natural_height(true);
+    scroller.set_child(Some(&session_list));
+
+    main_box.append(&scroller);
 
     // The drawer: a Revealer that slides the panel down from the top edge on
     // show and rolls it back up on hide. `transition_duration == 0` (animate
@@ -192,6 +202,8 @@ pub fn build_window(
     // Poll registry every 100ms, only rebuild if data changed.
     // Skip polling when window is hidden to avoid unnecessary work.
     let list_ref = session_list;
+    let scroller_ref = scroller;
+    let header_ref = header;
     // Keep the inner box (not the revealer) for sizing: its natural height is
     // the full panel height regardless of the slide animation's progress, so
     // the window is sized once and the revealer slides within it.
@@ -207,6 +219,7 @@ pub fn build_window(
     // attention-needing). Auto-close fires once this is older than the delay.
     let alive_since = Rc::new(Cell::new(Instant::now()));
     let auto_close_delay = Duration::from_millis(panel_cfg.auto_close_ms);
+    let max_visible = panel_cfg.max_visible;
     gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
         if !win_ref.is_visible() {
             *last_fingerprint.borrow_mut() = None;
@@ -218,17 +231,29 @@ pub fn build_window(
             alive_since.set(Instant::now());
         }
 
-        let sessions = registry.all();
+        let sessions = registry.all_by_activity();
         let fp = sessions_fingerprint(&sessions);
         let mut prev = last_fingerprint.borrow_mut();
         if *prev != Some(fp) {
             *prev = Some(fp);
             drop(prev);
+            // A rebuild throws the rows away, which resets the scroll offset.
+            // Restore it afterwards, or reading the bottom of a busy fleet
+            // would be impossible — any agent's state change snaps you back
+            // to the top. `Adjustment::set_value` clamps for us if the list
+            // got shorter in the meantime.
+            let offset = scroller_ref.vadjustment().value();
             rebuild_list(&list_ref, &sessions);
+            // Cap right here, not in the idle pass below: the pass bails out
+            // while the drawer is sliding, and the slide's own sizing callback
+            // measures this scroller. Cap it late and the panel opens at full
+            // fleet height, then only shrinks at the next data change.
+            cap_list_height(&win_ref, &scroller_ref, &list_ref, &header_ref, max_visible);
             // Resize window height to match content
             let win = win_ref.clone();
             let content = content_ref.clone();
             let rev = rev_ref.clone();
+            let scroller = scroller_ref.clone();
             gtk::glib::idle_add_local_once(move || {
                 // While the drawer is sliding, the tick callback owns sizing —
                 // re-pinning to full height here would flash a black strip for
@@ -236,8 +261,9 @@ pub fn build_window(
                 if rev.is_child_revealed() != rev.reveals_child() {
                     return;
                 }
+                scroller.vadjustment().set_value(offset);
                 let (_, natural) = content.preferred_size();
-                let h = natural.height().max(1);
+                let h = natural.height().min(panel_height_cap(&win)).max(1);
                 // set_default_size is the knob that actually shrinks a GTK
                 // window below a previous allocation; set_size_request only
                 // pins the minimum, which otherwise keeps the surface wide
@@ -274,6 +300,69 @@ pub fn build_window(
 /// Panel width; the window's height tracks the revealed content.
 const PANEL_WIDTH: i32 = 360;
 
+/// Hard ceiling on panel height, as a share of the monitor it sits on. Caps
+/// the height even when `panel.max_visible` rows would fit — approval cards
+/// are several times as tall as idle ones, so a row count alone can't bound it.
+const MAX_SCREEN_FRACTION: f64 = 1.0 / 3.0;
+
+/// Used when no monitor geometry is available yet — the first sizing pass can
+/// run before the layer surface is mapped.
+const FALLBACK_SCREEN_HEIGHT: i32 = 1080;
+
+/// Never squeeze the list below this, whatever the monitor says.
+const MIN_LIST_HEIGHT: i32 = 80;
+
+/// Ceiling on the whole window: a third of the monitor. Applied to every
+/// height we hand the compositor, so no code path can produce a panel taller
+/// than that — not the first slide, not a row measured before its CSS lands.
+fn panel_height_cap(win: &adw::ApplicationWindow) -> i32 {
+    ((monitor_height(win) as f64 * MAX_SCREEN_FRACTION) as i32).max(MIN_LIST_HEIGHT)
+}
+
+/// Logical height of the monitor the panel currently sits on.
+fn monitor_height(win: &adw::ApplicationWindow) -> i32 {
+    let Some(display) = gtk::gdk::Display::default() else {
+        return FALLBACK_SCREEN_HEIGHT;
+    };
+    win.surface()
+        .and_then(|s| display.monitor_at_surface(&s))
+        .or_else(|| display.monitors().item(0).and_downcast())
+        .map(|m: gtk::gdk::Monitor| m.geometry().height())
+        .filter(|h| *h > 0)
+        .unwrap_or(FALLBACK_SCREEN_HEIGHT)
+}
+
+/// Cap the scroller so the list shows at most `max_visible` rows, and the
+/// panel as a whole stays under `MAX_SCREEN_FRACTION` of the screen. Rows are
+/// measured one by one rather than assumed uniform: an idle card is two lines
+/// tall, one with an approval bar is three lines plus a button per choice.
+fn cap_list_height(
+    win: &adw::ApplicationWindow,
+    scroller: &gtk::ScrolledWindow,
+    list: &gtk::ListBox,
+    header: &gtk::Box,
+    max_visible: usize,
+) {
+    let (_, header_h, _, _) = header.measure(gtk::Orientation::Vertical, PANEL_WIDTH);
+    let screen_cap = (panel_height_cap(win) - header_h).max(MIN_LIST_HEIGHT);
+
+    let mut rows_h = 0;
+    for i in 0..max_visible as i32 {
+        let Some(row) = list.row_at_index(i) else { break };
+        let (_, nat, _, _) = row.measure(gtk::Orientation::Vertical, PANEL_WIDTH);
+        rows_h += nat;
+    }
+
+    // An empty list renders the "No agents running" placeholder, whose height
+    // `rows_h` knows nothing about — leave it to the screen cap.
+    let cap = if rows_h > 0 {
+        rows_h.min(screen_cap)
+    } else {
+        screen_cap
+    };
+    scroller.set_max_content_height(cap);
+}
+
 /// Find the drawer revealer that wraps the panel content.
 fn revealer_of(win: &adw::ApplicationWindow) -> Option<gtk::Revealer> {
     win.content().and_then(|c| c.downcast::<gtk::Revealer>().ok())
@@ -289,7 +378,11 @@ fn sync_size_during_transition(win: &adw::ApplicationWindow, rev: &gtk::Revealer
     let rev = rev.clone();
     win.add_tick_callback(move |win, _clock| {
         let (_, nat, _, _) = rev.measure(gtk::Orientation::Vertical, PANEL_WIDTH);
-        let h = nat.max(1);
+        // Clamped as well as measured: the very first slide runs before the
+        // poll loop has ever capped the list, so the raw measure here is the
+        // whole fleet's height. The scroller scrolls when it is allocated less
+        // than it asked for, so clamping loses nothing.
+        let h = nat.min(panel_height_cap(win)).max(1);
         win.set_size_request(PANEL_WIDTH, h);
         win.set_default_size(PANEL_WIDTH, h);
         // Transition is over once the actual reveal state matches the target.

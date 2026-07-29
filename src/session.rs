@@ -434,6 +434,59 @@ impl Session {
             SessionStatus::Stopped => 0,
         }
     }
+
+    /// Which band the session falls into when the panel groups its list:
+    /// 0 = blocked on the user, 1 = working, 2 = idle, 3 = gone.
+    /// `Running` is the scanner's "alive, but no hook data yet" state — it
+    /// reads as `idle` everywhere else in the UI, so it bands with `Idle`.
+    pub fn activity_band(&self) -> u8 {
+        match self.status {
+            SessionStatus::WaitingApproval => 0,
+            SessionStatus::Executing | SessionStatus::Thinking => 1,
+            SessionStatus::Idle | SessionStatus::Running => 2,
+            SessionStatus::Stopped => 3,
+        }
+    }
+
+    /// Unix epoch seconds of the most recent thing that happened in this
+    /// session — a tool, a prompt, an agent sentence, or failing all of those
+    /// the moment we first saw it.
+    pub fn last_activity_at(&self) -> u64 {
+        [
+            self.last_tool_at,
+            self.last_prompt_at,
+            self.last_agent_text_at,
+            self.started_at_epoch,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(0)
+    }
+}
+
+/// Order sessions the way the panel lists them: agents blocked on the user
+/// first, then the ones working, then idle, then stopped.
+///
+/// The two live bands sort by *start* time, not by last activity: a working
+/// agent's activity timestamp moves every second, so ordering on it would
+/// reshuffle the top of the list continuously — and rows are click targets
+/// that focus a pane, so a row moving under the cursor is a misclick. Start
+/// time never changes, which keeps a busy fleet still. Idle and stopped
+/// agents go most-recently-active first, the only thing that separates them.
+pub fn sort_by_activity(sessions: &mut [Session]) {
+    fn key(s: &Session) -> (u8, std::cmp::Reverse<u64>) {
+        let band = s.activity_band();
+        let recency = if band <= 1 {
+            s.started_at_epoch.unwrap_or(0)
+        } else {
+            s.last_activity_at()
+        };
+        (band, std::cmp::Reverse(recency))
+    }
+    // `id` is the final tiebreak so same-timestamp rows can't swap places
+    // between two ticks of the panel's 10 Hz refresh.
+    sessions.sort_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.id.cmp(&b.id)));
 }
 
 /// Thread-safe registry of active sessions.
@@ -480,6 +533,16 @@ impl SessionRegistry {
     pub fn all(&self) -> Vec<Session> {
         let map = self.sessions.read().unwrap();
         map.values().cloned().collect()
+    }
+
+    /// Like [`Self::all`], ordered for display by [`sort_by_activity`]. The
+    /// panel uses this: it also makes the snapshot deterministic, which the
+    /// panel's change-detection fingerprint depends on (`HashMap` iteration
+    /// order shifts on rehash and would fake a change every few ticks).
+    pub fn all_by_activity(&self) -> Vec<Session> {
+        let mut sessions = self.all();
+        sort_by_activity(&mut sessions);
+        sessions
     }
 
     /// Remove sessions whose PID no longer hosts a process of the expected
@@ -928,6 +991,105 @@ mod tests {
         assert_eq!(SessionStatus::Idle.css_class(), "idle");
         assert_eq!(SessionStatus::Running.css_class(), "running");
         assert_eq!(SessionStatus::Stopped.css_class(), "stopped");
+    }
+
+    /// A session with an explicit status, start time and last-activity stamp.
+    fn ordered(id: &str, status: SessionStatus, started: u64, activity: u64) -> Session {
+        let mut s = Session::new(id.into(), AgentKind::ClaudeCode, 1);
+        s.status = status;
+        s.started_at_epoch = Some(started);
+        s.last_tool_at = Some(activity);
+        s
+    }
+
+    #[test]
+    fn sort_puts_approval_first_then_working_then_idle_then_stopped() {
+        let mut sessions = vec![
+            ordered("stopped", SessionStatus::Stopped, 10, 10),
+            ordered("idle", SessionStatus::Idle, 10, 10),
+            ordered("thinking", SessionStatus::Thinking, 10, 10),
+            ordered("approval", SessionStatus::WaitingApproval, 10, 10),
+        ];
+        sort_by_activity(&mut sessions);
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["approval", "thinking", "idle", "stopped"]);
+    }
+
+    #[test]
+    fn sort_bands_executing_with_thinking_and_running_with_idle() {
+        let mut sessions = vec![
+            ordered("running", SessionStatus::Running, 10, 10),
+            ordered("executing", SessionStatus::Executing, 10, 10),
+        ];
+        sort_by_activity(&mut sessions);
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["executing", "running"]);
+    }
+
+    #[test]
+    fn sort_orders_idle_sessions_most_recently_active_first() {
+        let mut sessions = vec![
+            ordered("old", SessionStatus::Idle, 1, 100),
+            ordered("fresh", SessionStatus::Idle, 1, 300),
+            ordered("middle", SessionStatus::Idle, 1, 200),
+        ];
+        sort_by_activity(&mut sessions);
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["fresh", "middle", "old"]);
+    }
+
+    #[test]
+    fn sort_orders_working_sessions_by_start_time_not_activity() {
+        // Live rows must not reshuffle as their tool timestamps tick: the
+        // newest *session* stays on top even though the older one just did
+        // something more recently.
+        let mut sessions = vec![
+            ordered("started-first", SessionStatus::Executing, 100, 900),
+            ordered("started-last", SessionStatus::Executing, 200, 500),
+        ];
+        sort_by_activity(&mut sessions);
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["started-last", "started-first"]);
+    }
+
+    #[test]
+    fn sort_is_stable_on_identical_timestamps() {
+        let mut sessions = vec![
+            ordered("b", SessionStatus::Idle, 10, 10),
+            ordered("a", SessionStatus::Idle, 10, 10),
+        ];
+        sort_by_activity(&mut sessions);
+        let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+    }
+
+    #[test]
+    fn last_activity_takes_the_newest_stamp() {
+        let mut s = Session::new("s1".into(), AgentKind::ClaudeCode, 1);
+        s.started_at_epoch = Some(100);
+        s.last_prompt_at = Some(400);
+        s.last_tool_at = Some(250);
+        assert_eq!(s.last_activity_at(), 400);
+    }
+
+    #[test]
+    fn last_activity_falls_back_to_start_time() {
+        let mut s = Session::new("s1".into(), AgentKind::ClaudeCode, 1);
+        s.started_at_epoch = Some(100);
+        assert_eq!(s.last_activity_at(), 100);
+    }
+
+    #[test]
+    fn registry_all_by_activity_is_ordered() {
+        let registry = SessionRegistry::new();
+        registry.register(ordered("idle", SessionStatus::Idle, 10, 10));
+        registry.register(ordered("approval", SessionStatus::WaitingApproval, 10, 10));
+        let ids: Vec<String> = registry
+            .all_by_activity()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(ids, ["approval", "idle"]);
     }
 
     #[test]
