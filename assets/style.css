@@ -114,6 +114,18 @@ window.csd,
     background-color: alpha(@cat_teal, 0.14);
 }
 
+/* Just finished: the panel pops itself open on the completion chime, so the
+   agent that made it gets the same "look here" tint as one blocked on you —
+   in peach, a hue no other state uses. Stays lit until the card is clicked
+   (or the agent picks the work back up). */
+.session-row.just-finished {
+    background-color: alpha(@cat_peach, 0.09);
+}
+
+.session-row.just-finished:hover {
+    background-color: alpha(@cat_peach, 0.14);
+}
+
 /* Subtle separator between cards */
 .session-row:not(:last-child) .card-box {
     border-bottom: 1px solid alpha(@cat_divider, 0.12);
@@ -146,14 +158,26 @@ window.csd,
     100% { opacity: 1; }
 }
 
-.indicator.waiting-approval {
-    color: @cat_teal;
-    text-shadow: 0 0 6px alpha(@cat_teal, 0.7),
-                 0 0 12px alpha(@cat_teal, 0.3);
+/* Both attention states breathe: one is blocked on you, the other just
+   finished and is why the drawer popped open. Only the hue differs. */
+.indicator.waiting-approval,
+.indicator.just-finished {
     animation-name: vw-attention-pulse;
     animation-duration: 1.4s;
     animation-timing-function: ease-in-out;
     animation-iteration-count: infinite;
+}
+
+.indicator.waiting-approval {
+    color: @cat_teal;
+    text-shadow: 0 0 6px alpha(@cat_teal, 0.7),
+                 0 0 12px alpha(@cat_teal, 0.3);
+}
+
+.indicator.just-finished {
+    color: @cat_peach;
+    text-shadow: 0 0 6px alpha(@cat_peach, 0.7),
+                 0 0 12px alpha(@cat_peach, 0.3);
 }
 
 .indicator.thinking {
@@ -230,6 +254,12 @@ window.csd,
     color: @cat_teal;
     font-weight: 700;
     text-shadow: 0 0 4px alpha(@cat_teal, 0.35);
+}
+
+.action-line.just-finished {
+    color: @cat_peach;
+    font-weight: 700;
+    text-shadow: 0 0 4px alpha(@cat_peach, 0.35);
 }
 
 .action-line.running {

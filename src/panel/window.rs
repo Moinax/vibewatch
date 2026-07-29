@@ -35,12 +35,40 @@ fn sessions_fingerprint(sessions: &[Session]) -> u64 {
         s.session_name.hash(&mut h);
         s.terminal.hash(&mut h);
         s.started_at_epoch.hash(&mut h);
+        // Derived from status + `finished_at`, not stored, and not time-based:
+        // it clears when the click acknowledges the finish, and when the agent
+        // picks the work back up. Hashed so the card stops being lit on the
+        // very next poll instead of staying lit until something else changes.
+        s.just_finished().hash(&mut h);
         s.pending_approval
             .as_ref()
             .map(|p| (&p.request_id, p.choices.len()))
             .hash(&mut h);
     }
     h.finish()
+}
+
+thread_local! {
+    /// When the panel last had a reason to be up. The auto-close countdown
+    /// measures from here. It lives outside `build_window` so [`show`] can
+    /// restamp it: an agent finishing a second before the close deadline pops
+    /// the drawer open, and it must then get its full dwell time rather than
+    /// snapping shut on the previous event's clock.
+    ///
+    /// Process-wide rather than window-owned, which is sound only because the
+    /// daemon builds exactly one panel — the second `activate` is refused in
+    /// `run_daemon_with_panel`. Everything here runs on the GTK main thread.
+    static ALIVE_SINCE: Cell<Instant> = Cell::new(Instant::now());
+}
+
+/// Restart the auto-close countdown.
+fn keep_alive() {
+    ALIVE_SINCE.with(|c| c.set(Instant::now()));
+}
+
+/// How long the panel has been up with nothing asking it to stay.
+fn alive_elapsed() -> Duration {
+    ALIVE_SINCE.with(|c| c.get().elapsed())
 }
 
 /// Set the mute button's icon and tooltip to match the current state.
@@ -215,9 +243,6 @@ pub fn build_window(
     let last_fingerprint: Rc<std::cell::RefCell<Option<u64>>> =
         Rc::new(std::cell::RefCell::new(None));
     let was_visible = Rc::new(Cell::new(false));
-    // Timestamp the panel became visible / was last "kept alive" (hovered or
-    // attention-needing). Auto-close fires once this is older than the delay.
-    let alive_since = Rc::new(Cell::new(Instant::now()));
     let auto_close_delay = Duration::from_millis(panel_cfg.auto_close_ms);
     let max_visible = panel_cfg.max_visible;
     gtk::glib::timeout_add_local(Duration::from_millis(100), move || {
@@ -228,7 +253,7 @@ pub fn build_window(
         }
         if !was_visible.replace(true) {
             // false -> true transition: (re)start the auto-close clock.
-            alive_since.set(Instant::now());
+            keep_alive();
         }
 
         let sessions = registry.all_by_activity();
@@ -276,15 +301,16 @@ pub fn build_window(
         }
 
         // Auto-close: hide once nothing needs attention and the pointer has
-        // left the panel for `auto_close_delay`. Sessions awaiting approval
-        // keep it open indefinitely.
+        // left the panel for `auto_close_delay`. Sessions awaiting approval,
+        // and finished ones nobody has clicked yet, keep it open
+        // indefinitely — clicking the card is what releases the latter.
         if panel_cfg.auto_close {
             let needs_attention = sessions
                 .iter()
-                .any(|s| s.status == SessionStatus::WaitingApproval);
+                .any(|s| s.status == SessionStatus::WaitingApproval || s.just_finished());
             if needs_attention || hovered.get() {
-                alive_since.set(Instant::now());
-            } else if alive_since.get().elapsed() >= auto_close_delay {
+                keep_alive();
+            } else if alive_elapsed() >= auto_close_delay {
                 hide(&win_ref, &rev_ref);
             }
         }
@@ -397,6 +423,9 @@ fn sync_size_during_transition(win: &adw::ApplicationWindow, rev: &gtk::Revealer
 /// Show the panel: map the surface and slide the drawer down.
 pub fn show(win: &adw::ApplicationWindow) {
     let Some(rev) = revealer_of(win) else { return };
+    // Also covers the already-open case, which the poll loop's visibility
+    // edge never sees: a second pop-up has to buy the drawer more time.
+    keep_alive();
     win.set_visible(true);
     win.present();
     rev.set_reveal_child(true);
@@ -414,6 +443,15 @@ fn hide(win: &adw::ApplicationWindow, rev: &gtk::Revealer) {
     } else {
         sync_size_during_transition(win, rev);
     }
+}
+
+/// Roll the drawer up because the user picked a session and is on their way
+/// to its pane. Separate entry point from the timer-driven [`hide`] so a row
+/// click gets out of the way at once, without waiting out `auto_close_ms` —
+/// and regardless of `auto_close`, which only governs the timer.
+pub fn dismiss(win: &adw::ApplicationWindow) {
+    let Some(rev) = revealer_of(win) else { return };
+    hide(win, &rev);
 }
 
 /// Toggle the panel open/closed with the drawer animation.

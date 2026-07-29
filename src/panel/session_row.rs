@@ -1,4 +1,5 @@
 use gtk4 as gtk;
+use libadwaita as adw;
 use gtk::prelude::*;
 
 use crate::compositor::niri::NiriWindow;
@@ -9,7 +10,16 @@ use crate::session::{describe_tool, prettify_tool_name, Session, SessionStatus};
 /// Active (executing/thinking/approval): name + badges + description + action line
 /// Idle (compact): name + badges only
 pub fn build_row(session: &Session) -> gtk::ListBoxRow {
-    let status_class = session.status.css_class();
+    // A session that just finished takes its own class for the whole card
+    // instead of the flat `idle` one, so the row that made the chime is
+    // obvious the moment the drawer slides open. It reverts when the click
+    // acknowledges the finish, or when that agent picks the work back up —
+    // never on a timer, so a chime you were away for is still marked.
+    let status_class = if session.just_finished() {
+        "just-finished"
+    } else {
+        session.status.css_class()
+    };
 
     let row = gtk::ListBoxRow::new();
     row.add_css_class("session-row");
@@ -99,13 +109,30 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     let pid = session.pid;
     let window_id = session.window_id.clone();
+    let session_id = session.id.clone();
     let gesture = gtk::GestureClick::new();
-    gesture.connect_released(move |_, _, _, _| {
+    gesture.connect_released(move |gesture, _, _, _| {
         let wid = window_id.clone();
         let p = pid;
+        let sid = session_id.clone();
         std::thread::spawn(move || {
             focus_session(wid.as_deref(), p);
+            // Off the GTK thread: the row stops asking for attention, which
+            // is also what lets the drawer's auto-close resume for a
+            // finished agent. Deliberately not tied to answering an
+            // approval — going to read the context in the pane and replying
+            // there is the common way that ends too.
+            send_to_daemon(crate::ipc::InboundEvent::AcknowledgeSession { session_id: sid });
         });
+        // Roll the drawer up right away: the click means "take me there",
+        // and the overlay sits over the very window we are focusing.
+        if let Some(win) = gesture
+            .widget()
+            .and_then(|w| w.root())
+            .and_downcast::<adw::ApplicationWindow>()
+        {
+            super::window::dismiss(&win);
+        }
     });
     row.add_controller(gesture);
 
@@ -163,7 +190,10 @@ fn build_choice_bar(
         button.connect_clicked(move |_| {
             let rid = rid.clone();
             std::thread::spawn(move || {
-                send_approval_decision(&rid, idx);
+                send_to_daemon(crate::ipc::InboundEvent::ApprovalDecision {
+                    request_id: rid,
+                    choice_index: idx,
+                });
             });
         });
         bar.append(&button);
@@ -250,8 +280,14 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Short state word for the second line — same vocabulary as the waybar
-/// widget (`idle`, `thinking`, `Bash`, `Edit`, `approval`, `stopped`).
+/// widget (`idle`, `thinking`, `Bash`, `Edit`, `approval`, `stopped`), plus
+/// `finished` for the few seconds after a `Stop`. That one is panel-only: the
+/// waybar shows a single aggregate line and would flap between `finished` and
+/// `idle` for every agent in the fleet.
 fn state_label(session: &Session) -> String {
+    if session.just_finished() {
+        return "finished".to_string();
+    }
     session.inline_status()
 }
 
@@ -347,20 +383,20 @@ fn resolve_niri_window_id_by_pid(pid: u32) -> Option<u64> {
         .find_map(|cand| windows.iter().find(|w| w.pid == Some(cand)).map(|w| w.id))
 }
 
-/// Send an `ApprovalDecision` event to the running daemon on its IPC socket.
-/// Called from Accept/Deny button click handlers on a spawned OS thread.
-fn send_approval_decision(request_id: &str, choice_index: usize) {
+/// Send one event to the running daemon on its IPC socket. Called from click
+/// handlers on a spawned OS thread — never on the GTK thread, which must not
+/// block on socket I/O.
+fn send_to_daemon(event: crate::ipc::InboundEvent) {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("vibewatch: failed to build tokio rt for approval: {e}");
+            eprintln!("vibewatch: failed to build tokio rt for {event:?}: {e}");
             return;
         }
     };
-    let request_id = request_id.to_string();
     rt.block_on(async move {
         let config = match crate::config::Config::load() {
             Ok(c) => c,
@@ -369,12 +405,8 @@ fn send_approval_decision(request_id: &str, choice_index: usize) {
                 return;
             }
         };
-        let event = crate::ipc::InboundEvent::ApprovalDecision {
-            request_id,
-            choice_index,
-        };
         if let Err(e) = crate::ipc::send_event(&config.socket_path(), &event).await {
-            eprintln!("vibewatch: send_event ApprovalDecision failed: {e}");
+            eprintln!("vibewatch: send_event {event:?} failed: {e}");
         }
     });
 }
