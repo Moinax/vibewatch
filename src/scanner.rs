@@ -1,5 +1,6 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::PathBuf;
 
 use crate::compositor::Compositor;
 use crate::config::Config;
@@ -92,6 +93,7 @@ pub async fn run_scanner(
         let found_processes = scan_agent_processes();
         let all_sessions = registry.all();
         let known_pids: HashSet<u32> = all_sessions.iter().map(|s| s.pid).collect();
+        let census = claude_cwd_census(&found_processes);
 
         for (kind, pid) in &found_processes {
             if known_pids.contains(pid) {
@@ -105,6 +107,9 @@ pub async fn run_scanner(
             let mut session = Session::new(id, *kind, *pid);
             session.session_name = info.session_name;
             session.terminal = Some(detect_terminal(*pid));
+            if *kind == AgentKind::ClaudeCode {
+                hydrate_from_transcript(&mut session, &census);
+            }
             registry.register(session);
         }
 
@@ -271,6 +276,91 @@ fn process_started_at(pid: u32) -> Option<std::time::SystemTime> {
     )
 }
 
+/// How many live Claude Code processes share each cwd. Two agents in one
+/// directory write to the same project directory, and nothing in a transcript
+/// says which process wrote it.
+fn claude_cwd_census(found: &[(AgentKind, u32)]) -> HashMap<PathBuf, usize> {
+    let mut census: HashMap<PathBuf, usize> = HashMap::new();
+    for (kind, pid) in found {
+        if *kind != AgentKind::ClaudeCode {
+            continue;
+        }
+        if let Ok(cwd) = fs::read_link(format!("/proc/{pid}/cwd")) {
+            *census.entry(cwd).or_insert(0) += 1;
+        }
+    }
+    census
+}
+
+/// Re-derive a freshly discovered Claude Code session's state from its
+/// transcript.
+///
+/// Discovery means one of two things, and the hooks can help with neither: the
+/// daemon restarted under a running agent, or it started after one. Either way
+/// the session arrives at `Idle` and the next hook is the first thing that could
+/// correct that — which, for an agent blocked on a question, is the answer
+/// itself, however many minutes later. Hence reading the state off the durable
+/// record instead, the way Codex sessions have always been read.
+///
+/// Deliberately not a chime: `finished_at` stays untouched, so a session found
+/// sitting idle is not announced as having just finished.
+///
+/// Quiet on failure by design — no cwd, no project directory, a transcript
+/// older than the process — because `Idle` is the honest answer when the record
+/// says nothing. The one case that gets a log line is two agents sharing a
+/// directory: that one we could have guessed at and chose not to, since the
+/// wrong row lit up is worse than no row lit up.
+fn hydrate_from_transcript(session: &mut Session, census: &HashMap<PathBuf, usize>) {
+    let Ok(cwd) = fs::read_link(format!("/proc/{}/cwd", session.pid)) else {
+        return;
+    };
+    if census.get(&cwd).copied().unwrap_or(0) > 1 {
+        eprintln!(
+            "vibewatch: {} shares {} with another live agent — leaving its state to the hooks",
+            session.id,
+            cwd.display()
+        );
+        return;
+    }
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let not_before = process_started_at(session.pid)
+        .unwrap_or(std::time::UNIX_EPOCH)
+        .checked_sub(std::time::Duration::from_secs(5))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let Some(path) = crate::transcript::find_claude_transcript_for_cwd(
+        &home.join(".claude/projects"),
+        &cwd,
+        not_before,
+    ) else {
+        return;
+    };
+    let Some(snapshot) = crate::transcript::snapshot_claude_file(&path) else {
+        return;
+    };
+    session.cwd = Some(cwd.to_string_lossy().into_owned());
+    session.status = snapshot.status;
+    session.current_tool = snapshot.current_tool;
+    session.tool_detail = snapshot.tool_detail;
+    session.transcript_path = Some(path);
+    // Caching the path is what makes the text readable at all: the reader
+    // resolves by session id, which a `scan-` session does not have.
+    if let Some(text) = crate::transcript::read_last_assistant_line(
+        AgentKind::ClaudeCode,
+        &snapshot.session_id,
+        &mut session.transcript_path,
+    ) {
+        session.set_last_agent_text_if_changed(text);
+    }
+    eprintln!(
+        "vibewatch: {} re-derived as {} from transcript of {}",
+        session.id,
+        session.status.css_class(),
+        snapshot.session_id
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,6 +382,19 @@ mod tests {
             crate::session::SessionStatus::Executing,
             crate::session::SessionStatus::Idle,
         ));
+    }
+
+    #[test]
+    fn census_counts_claude_pids_per_cwd_only() {
+        let me = std::process::id();
+        let cwd = std::fs::read_link(format!("/proc/{me}/cwd")).expect("own cwd resolves");
+        let census = claude_cwd_census(&[
+            (AgentKind::ClaudeCode, me),
+            (AgentKind::ClaudeCode, me),
+            (AgentKind::Codex, me),
+            (AgentKind::ClaudeCode, u32::MAX), // no such process
+        ]);
+        assert_eq!(census.get(&cwd).copied(), Some(2));
     }
 
     #[test]

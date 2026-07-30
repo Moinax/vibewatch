@@ -1,6 +1,10 @@
-//! Per-agent transcript parsing: find the last assistant text line.
+//! Per-agent transcript parsing: find the last assistant text line, and reduce
+//! a Claude Code transcript to the live state the hooks would have reported.
 
-use crate::session::AgentKind;
+use crate::session::{AgentKind, SessionStatus};
+use serde_json::Value;
+use std::collections::HashSet;
+use std::io::{BufRead, Read, Seek};
 use std::path::{Path, PathBuf};
 
 /// Read the last assistant text line from the session's transcript file.
@@ -219,6 +223,254 @@ fn walk_for_suffix(dir: &Path, suffix: &str) -> Option<PathBuf> {
     None
 }
 
+/// What a Claude Code transcript says a session is doing, as of its last line.
+///
+/// Hooks are the source of truth for this and the daemon holds the result in
+/// memory. The reduction exists for the moments there is no memory to hold it:
+/// the daemon restarting mid-session, or starting after the agent did. A
+/// freshly discovered session begins at `Idle`, and an agent blocked on a
+/// question emits no further hooks — so without this, nothing ever corrects
+/// that guess and the widget reads "idle" until the user answers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaudeSnapshot {
+    pub session_id: String,
+    pub status: SessionStatus,
+    pub current_tool: Option<String>,
+    pub tool_detail: Option<String>,
+}
+
+/// Tools that hand the turn to the user the moment they run: the transcript
+/// shows the `tool_use` and then nothing until an answer arrives, so a pending
+/// one is an agent waiting, not an agent working.
+///
+/// Every other pending tool reduces to `Executing`. A permission prompt on a
+/// Bash call looks identical to that Bash call still running — Claude Code
+/// records the prompt nowhere — so "running" is the most this can honestly say.
+fn waits_on_the_user(tool: &str) -> bool {
+    tool == crate::session::TOOL_ASK_USER_QUESTION || tool == crate::session::TOOL_EXIT_PLAN_MODE
+}
+
+/// Reduce Claude Code transcript JSONL to the state it ends in.
+///
+/// Folds forward rather than reading backwards: only the final state matters,
+/// and a turn is a run of records (thinking, text, several tool calls) whose
+/// meaning depends on what came before it in the turn.
+pub fn reduce_claude(content: &str) -> Option<ClaudeSnapshot> {
+    let mut session_id: Option<String> = None;
+    let mut status = SessionStatus::Idle;
+    let mut current_tool: Option<String> = None;
+    let mut tool_detail: Option<String> = None;
+    // tool_use ids still awaiting a tool_result.
+    let mut pending: HashSet<String> = HashSet::new();
+
+    for line in content.lines() {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if session_id.is_none() {
+            session_id = record
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+        }
+        // A sub-agent's turns are recorded in its parent's transcript. That is
+        // the sub-agent's work, not what this pane is doing.
+        if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        // Injected context (system reminders and the like) wears the user role
+        // without a user having typed anything.
+        if record.get("isMeta").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let message = record.get("message").unwrap_or(&record);
+        let blocks = message.get("content").and_then(Value::as_array);
+        match message.get("role").and_then(Value::as_str) {
+            Some("assistant") => {
+                let Some(blocks) = blocks else { continue };
+                for block in blocks {
+                    match block.get("type").and_then(Value::as_str) {
+                        Some("tool_use") => {
+                            let name =
+                                block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                            if let Some(id) = block.get("id").and_then(Value::as_str) {
+                                pending.insert(id.to_owned());
+                            }
+                            status = if waits_on_the_user(name) {
+                                SessionStatus::WaitingApproval
+                            } else {
+                                SessionStatus::Executing
+                            };
+                            current_tool = Some(name.to_owned());
+                            tool_detail = extract_detail(block.get("input"));
+                        }
+                        // Text with nothing outstanding is the turn ending. With a
+                        // tool still pending it is the preamble to that tool call,
+                        // and `thinking` blocks say nothing either way.
+                        Some("text") if pending.is_empty() => {
+                            status = SessionStatus::Idle;
+                            current_tool = None;
+                            tool_detail = None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some("user") => {
+                let results: Vec<&str> = blocks
+                    .map(|bs| {
+                        bs.iter()
+                            .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+                            .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if results.is_empty() {
+                    // A prompt — content is a bare string, or blocks of text and
+                    // images. The agent is on it.
+                    status = SessionStatus::Thinking;
+                    current_tool = None;
+                    tool_detail = None;
+                    pending.clear();
+                    continue;
+                }
+                for id in results {
+                    pending.remove(id);
+                }
+                // Parallel tool calls each get their own result; the turn is only
+                // back to the model once the last of them lands.
+                if pending.is_empty() {
+                    status = SessionStatus::Thinking;
+                    current_tool = None;
+                    tool_detail = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Some(ClaudeSnapshot {
+        session_id: session_id?,
+        status,
+        current_tool,
+        tool_detail,
+    })
+}
+
+/// One line of context for the tool a session is sitting in, pulled from its
+/// input. `AskUserQuestion` is asked first because the question itself is the
+/// only useful thing about it.
+fn extract_detail(input: Option<&Value>) -> Option<String> {
+    let input = input?;
+    let raw = input
+        .get("questions")
+        .and_then(Value::as_array)
+        .and_then(|qs| qs.first())
+        .and_then(|q| q.get("question"))
+        .or_else(|| {
+            ["command", "file_path", "path", "pattern", "query", "prompt", "description"]
+                .iter()
+                .find_map(|key| input.get(key))
+        })
+        .and_then(Value::as_str)?;
+    Some(raw.lines().next().unwrap_or(raw).chars().take(160).collect())
+}
+
+/// Reduce the transcript at `path`, reading only its tail on large files.
+///
+/// The first line is kept whatever the size: it carries the `sessionId` on a
+/// transcript whose later records have scrolled out of the window.
+pub fn snapshot_claude_file(path: &Path) -> Option<ClaudeSnapshot> {
+    const TAIL_BYTES: u64 = 512 * 1024;
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let mut first = String::new();
+    std::io::BufReader::new(file.try_clone().ok()?)
+        .read_line(&mut first)
+        .ok()?;
+
+    if len <= TAIL_BYTES {
+        file.seek(std::io::SeekFrom::Start(0)).ok()?;
+        let mut content = String::new();
+        file.read_to_string(&mut content).ok()?;
+        return reduce_claude(&content);
+    }
+
+    file.seek(std::io::SeekFrom::Start(len - TAIL_BYTES)).ok()?;
+    let mut tail = String::new();
+    file.read_to_string(&mut tail).ok()?;
+    // The seek probably landed in the middle of a record.
+    let tail = tail.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
+    first.push_str(tail);
+    reduce_claude(&first)
+}
+
+/// Claude Code's project directory name for `cwd`: the path with every
+/// non-alphanumeric character replaced by a dash.
+fn project_dir_name(cwd: &Path) -> String {
+    cwd.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// Resolve `<projects_root>/<mangled cwd>`, the directory Claude Code keeps a
+/// project's transcripts in.
+///
+/// Falls back to comparing existing directory names put through the same
+/// mangling, so a rule that differs from ours on some character still resolves
+/// — the names are lossy, and only Claude Code knows the exact rule.
+fn project_dir_for_cwd(projects_root: &Path, cwd: &Path) -> Option<PathBuf> {
+    let want = project_dir_name(cwd);
+    let direct = projects_root.join(&want);
+    if direct.is_dir() {
+        return Some(direct);
+    }
+    for entry in std::fs::read_dir(projects_root).ok()?.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if project_dir_name(Path::new(&*entry.file_name().to_string_lossy())) == want {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// The transcript a live agent in `cwd` is writing: the most recently touched
+/// one in its project directory, ignoring anything untouched since the process
+/// started.
+///
+/// That mtime floor is what keeps a long-dead session's transcript — there are
+/// dozens per project — from being pinned on a process that has written
+/// nothing yet.
+pub fn find_claude_transcript_for_cwd(
+    projects_root: &Path,
+    cwd: &Path,
+    not_before: std::time::SystemTime,
+) -> Option<PathBuf> {
+    let dir = project_dir_for_cwd(projects_root, cwd)?;
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if modified < not_before {
+            continue;
+        }
+        if best.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
+            best = Some((modified, path));
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,5 +647,159 @@ mod tests {
             &mut None,
         );
         assert_eq!(got.as_deref(), Some("Survived malformed lines."));
+    }
+
+    /// A prompt, a thought, and a question left hanging — the shape a daemon
+    /// restart used to turn into "idle".
+    const PENDING_QUESTION: &str = r#"{"type":"file-history-snapshot","sessionId":"sess-1"}
+{"type":"user","sessionId":"sess-1","message":{"role":"user","content":"make me a ticket"}}
+{"type":"assistant","sessionId":"sess-1","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"}]}}
+{"type":"assistant","sessionId":"sess-1","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"AskUserQuestion","input":{"questions":[{"question":"Quelle priorité ?","header":"Priorité"}]}}]}}
+{"type":"attachment","sessionId":"sess-1"}
+{"type":"system","sessionId":"sess-1","content":"hook ran"}
+"#;
+
+    #[test]
+    fn pending_question_waits_on_the_user() {
+        let got = reduce_claude(PENDING_QUESTION).unwrap();
+        assert_eq!(got.session_id, "sess-1");
+        assert_eq!(got.status, SessionStatus::WaitingApproval);
+        assert_eq!(got.current_tool.as_deref(), Some("AskUserQuestion"));
+        assert_eq!(got.tool_detail.as_deref(), Some("Quelle priorité ?"));
+    }
+
+    #[test]
+    fn answered_question_hands_the_turn_back() {
+        let answered = format!(
+            "{PENDING_QUESTION}{}\n",
+            r#"{"type":"user","sessionId":"sess-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1"}]}}"#
+        );
+        let got = reduce_claude(&answered).unwrap();
+        assert_eq!(got.status, SessionStatus::Thinking);
+        assert!(got.current_tool.is_none());
+    }
+
+    #[test]
+    fn pending_tool_is_executing_with_its_detail() {
+        let jsonl = r#"{"type":"user","sessionId":"s","message":{"role":"user","content":"build it"}}
+{"type":"assistant","sessionId":"s","message":{"role":"assistant","content":[{"type":"text","text":"Running the suite."},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test --all\n"}}]}}
+"#;
+        let got = reduce_claude(jsonl).unwrap();
+        assert_eq!(got.status, SessionStatus::Executing);
+        assert_eq!(got.current_tool.as_deref(), Some("Bash"));
+        assert_eq!(got.tool_detail.as_deref(), Some("cargo test --all"));
+    }
+
+    #[test]
+    fn parallel_calls_wait_for_the_last_result() {
+        let both = r#"{"type":"assistant","sessionId":"s","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/a"}},{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/b"}}]}}
+{"type":"user","sessionId":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1"}]}}
+"#;
+        assert_eq!(
+            reduce_claude(both).unwrap().status,
+            SessionStatus::Executing,
+            "one result in, one still outstanding"
+        );
+        let all = format!(
+            "{both}{}\n",
+            r#"{"type":"user","sessionId":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2"}]}}"#
+        );
+        assert_eq!(reduce_claude(&all).unwrap().status, SessionStatus::Thinking);
+    }
+
+    #[test]
+    fn closing_text_is_idle() {
+        let jsonl = r#"{"type":"user","sessionId":"s","message":{"role":"user","content":"go"}}
+{"type":"assistant","sessionId":"s","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","sessionId":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1"}]}}
+{"type":"assistant","sessionId":"s","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}
+"#;
+        let got = reduce_claude(jsonl).unwrap();
+        assert_eq!(got.status, SessionStatus::Idle);
+        assert!(got.current_tool.is_none());
+    }
+
+    #[test]
+    fn sidechain_and_meta_records_are_ignored() {
+        let jsonl = format!(
+            "{PENDING_QUESTION}{}\n{}\n",
+            r#"{"type":"user","sessionId":"sess-1","isMeta":true,"message":{"role":"user","content":"<system-reminder>"}}"#,
+            r#"{"type":"assistant","sessionId":"sess-1","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"sub-agent report"}]}}"#
+        );
+        assert_eq!(
+            reduce_claude(&jsonl).unwrap().status,
+            SessionStatus::WaitingApproval
+        );
+    }
+
+    #[test]
+    fn prompt_with_no_reply_yet_is_thinking() {
+        let jsonl = r#"{"type":"user","sessionId":"s","message":{"role":"user","content":[{"type":"text","text":"why is it idle?"}]}}"#;
+        assert_eq!(reduce_claude(jsonl).unwrap().status, SessionStatus::Thinking);
+    }
+
+    #[test]
+    fn transcript_without_a_session_id_is_not_a_snapshot() {
+        assert!(reduce_claude(r#"{"type":"summary","summary":"nothing useful"}"#).is_none());
+    }
+
+    #[test]
+    fn malformed_lines_do_not_derail_the_reduction() {
+        let jsonl = format!("not json\n{PENDING_QUESTION}\n{{\"broken\":\n");
+        assert_eq!(
+            reduce_claude(&jsonl).unwrap().status,
+            SessionStatus::WaitingApproval
+        );
+    }
+
+    #[test]
+    fn project_dir_name_dashes_everything_but_alphanumerics() {
+        assert_eq!(
+            project_dir_name(Path::new("/home/moinax/Projects/o27/cppb.preview")),
+            "-home-moinax-Projects-o27-cppb-preview"
+        );
+        assert_eq!(
+            project_dir_name(Path::new("/home/moinax/.t3/worktrees/x")),
+            "-home-moinax--t3-worktrees-x"
+        );
+    }
+
+    #[test]
+    fn project_dir_resolves_through_a_differing_mangling() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Claude Code kept the underscore where our rule dashes it.
+        let actual = tmp.path().join("-home-moinax-my_project");
+        std::fs::create_dir(&actual).unwrap();
+        let got = project_dir_for_cwd(tmp.path(), Path::new("/home/moinax/my_project"));
+        assert_eq!(got.as_deref(), Some(actual.as_path()));
+    }
+
+    #[test]
+    fn transcript_search_takes_the_newest_and_skips_the_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("-repo");
+        std::fs::create_dir(&dir).unwrap();
+        let old = dir.join("old.jsonl");
+        let live = dir.join("live.jsonl");
+        std::fs::write(&old, "{}\n").unwrap();
+        std::fs::write(&live, "{}\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+        let floor = std::fs::metadata(&live).unwrap().modified().unwrap();
+        // Backdate the stale one well behind the floor.
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(floor - std::time::Duration::from_secs(3600)),
+            )
+            .unwrap();
+        let got = find_claude_transcript_for_cwd(
+            tmp.path(),
+            Path::new("/repo"),
+            floor - std::time::Duration::from_secs(5),
+        );
+        assert_eq!(got.as_deref(), Some(live.as_path()));
     }
 }
