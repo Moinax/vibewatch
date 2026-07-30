@@ -15,7 +15,7 @@ use tokio::net::UnixStream;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PermissionDecisionResult {
     pub label: Option<String>,
-    pub behavior: String,                                           // "allow" | "deny" | "ask" | "answer"
+    pub behavior: String, // "allow" | "deny" | "ask" | "answer"
     pub suggestion: Option<crate::session::PermissionSuggestion>,
     /// Raw `updatedPermissions` array to forward verbatim as part of
     /// `decision.updatedPermissions`. Kept for future choices that need to
@@ -174,9 +174,11 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
             {
                 Some("ExitPlanMode handled by Claude Code TUI")
             }
-            InboundEvent::PermissionRequest { tool: Some(t), option_labels, .. }
-                if t == crate::session::TOOL_ASK_USER_QUESTION && option_labels.is_empty() =>
-            {
+            InboundEvent::PermissionRequest {
+                tool: Some(t),
+                option_labels,
+                ..
+            } if t == crate::session::TOOL_ASK_USER_QUESTION && option_labels.is_empty() => {
                 Some("AskUserQuestion shape unsupported by panel; handled by TUI")
             }
             _ => None,
@@ -216,44 +218,42 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
             }
         };
 
-        let decision = if is_ask_user_question
-            && result.behavior == "answer"
-            && result.label.is_some()
-        {
-            // AskUserQuestion: merge answers into the original tool_input and
-            // return it as `updatedInput` so Claude Code uses it instead of
-            // (or in race with) prompting in the terminal.
-            let mut updated_input = original_tool_input.unwrap_or(serde_json::json!({}));
-            let mut answers = serde_json::Map::new();
-            answers.insert(
-                question_text.unwrap_or_default(),
-                serde_json::Value::String(result.label.unwrap_or_default()),
-            );
-            if let serde_json::Value::Object(ref mut map) = updated_input {
-                map.insert("answers".to_string(), serde_json::Value::Object(answers));
-            }
-            serde_json::json!({
-                "behavior": "allow",
-                "reason": "answered via vibewatch widget",
-                "updatedInput": updated_input,
-            })
-        } else {
-            let mut decision = serde_json::json!({
-                "behavior": result.behavior,
-                "reason": "via vibewatch widget",
-            });
-            if let Some(sug) = result.suggestion {
-                if let serde_json::Value::Object(ref mut map) = decision {
-                    map.insert("suggestion".to_string(), serde_json::to_value(sug)?);
+        let decision =
+            if is_ask_user_question && result.behavior == "answer" && result.label.is_some() {
+                // AskUserQuestion: merge answers into the original tool_input and
+                // return it as `updatedInput` so Claude Code uses it instead of
+                // (or in race with) prompting in the terminal.
+                let mut updated_input = original_tool_input.unwrap_or(serde_json::json!({}));
+                let mut answers = serde_json::Map::new();
+                answers.insert(
+                    question_text.unwrap_or_default(),
+                    serde_json::Value::String(result.label.unwrap_or_default()),
+                );
+                if let serde_json::Value::Object(ref mut map) = updated_input {
+                    map.insert("answers".to_string(), serde_json::Value::Object(answers));
                 }
-            }
-            if let Some(ups) = result.updated_permissions {
-                if let serde_json::Value::Object(ref mut map) = decision {
-                    map.insert("updatedPermissions".to_string(), ups);
+                serde_json::json!({
+                    "behavior": "allow",
+                    "reason": "answered via vibewatch widget",
+                    "updatedInput": updated_input,
+                })
+            } else {
+                let mut decision = serde_json::json!({
+                    "behavior": result.behavior,
+                    "reason": "via vibewatch widget",
+                });
+                if let Some(sug) = result.suggestion {
+                    if let serde_json::Value::Object(ref mut map) = decision {
+                        map.insert("suggestion".to_string(), serde_json::to_value(sug)?);
+                    }
                 }
-            }
-            decision
-        };
+                if let Some(ups) = result.updated_permissions {
+                    if let serde_json::Value::Object(ref mut map) = decision {
+                        map.insert("updatedPermissions".to_string(), ups);
+                    }
+                }
+                decision
+            };
 
         let out = serde_json::json!({
             "hookSpecificOutput": {
@@ -275,9 +275,7 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
 /// single non-multiSelect question, return `(true, original tool_input,
 /// question text)` so the caller can merge the widget's answer back into
 /// `decision.updatedInput`. Otherwise return `(false, None, None)`.
-fn ask_user_question_context(
-    stdin_buf: &str,
-) -> (bool, Option<serde_json::Value>, Option<String>) {
+fn ask_user_question_context(stdin_buf: &str) -> (bool, Option<serde_json::Value>, Option<String>) {
     let Ok(hook) = serde_json::from_str::<ClaudeCodeHook>(stdin_buf) else {
         return (false, None, None);
     };
@@ -294,7 +292,10 @@ fn ask_user_question_context(
         return (false, None, None);
     }
     let q = &questions[0];
-    if q.get("multiSelect").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if q.get("multiSelect")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return (false, None, None);
     }
     let question_text = q
@@ -318,7 +319,10 @@ fn extract_ask_user_question_labels(tool_input: &Option<serde_json::Value>) -> V
         return Vec::new();
     }
     let q = &questions[0];
-    if q.get("multiSelect").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if q.get("multiSelect")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return Vec::new();
     }
     q.get("options")
@@ -351,8 +355,7 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
 
     match event_type {
         "session-start" => {
-            let session_name = hook.transcript_path.as_deref()
-                .and_then(read_session_name);
+            let session_name = hook.transcript_path.as_deref().and_then(read_session_name);
             Ok(InboundEvent::SessionStart {
                 agent: "claude_code".to_string(),
                 session_id: hook.session_id,
@@ -402,11 +405,12 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 .map(|d| d.as_nanos())
                 .unwrap_or(0);
             let request_id = format!("{}-{}-{}", hook.session_id, pid, nanos);
-            let option_labels = if hook.tool_name.as_deref() == Some(crate::session::TOOL_ASK_USER_QUESTION) {
-                extract_ask_user_question_labels(&hook.tool_input)
-            } else {
-                Vec::new()
-            };
+            let option_labels =
+                if hook.tool_name.as_deref() == Some(crate::session::TOOL_ASK_USER_QUESTION) {
+                    extract_ask_user_question_labels(&hook.tool_input)
+                } else {
+                    Vec::new()
+                };
             Ok(InboundEvent::PermissionRequest {
                 session_id: hook.session_id,
                 request_id: Some(request_id),
@@ -449,8 +453,7 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
 
 /// Map a Codex hook JSON payload to an IPC `InboundEvent`.
 pub fn parse_codex(stdin: &str, event_type: &str) -> anyhow::Result<InboundEvent> {
-    let hook: CodexHook =
-        serde_json::from_str(stdin).context("failed to parse Codex hook JSON")?;
+    let hook: CodexHook = serde_json::from_str(stdin).context("failed to parse Codex hook JSON")?;
 
     match event_type {
         "session-start" => Ok(InboundEvent::SessionStart {
@@ -645,7 +648,10 @@ mod tests {
         let json = r#"{"session_id":"abc123","hook_event_name":"unknown"}"#;
         let result = parse_claude_code(json, "bogus");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unknown event type"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown event type"));
     }
 
     #[test]
@@ -663,7 +669,11 @@ mod tests {
             } => {
                 assert_eq!(session_id, "abc123");
                 let rid = request_id.expect("request_id must be set by hook");
-                assert!(rid.contains("abc123"), "request_id should contain session_id, got {:?}", rid);
+                assert!(
+                    rid.contains("abc123"),
+                    "request_id should contain session_id, got {:?}",
+                    rid
+                );
                 assert_eq!(tool.as_deref(), Some("Bash"));
                 assert_eq!(detail.as_deref(), Some("rm -rf /tmp"));
                 assert!(pid.is_some());
@@ -677,7 +687,10 @@ mod tests {
         let json = r#"{"session_id":"s1","hook_event_name":"permission-request","tool_name":"Read","tool_input":{"file_path":"/etc/hosts"},"permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//etc/**"}],"behavior":"allow","destination":"session"}]}"#;
         let event = parse_claude_code(json, "permission-request").unwrap();
         match event {
-            InboundEvent::PermissionRequest { permission_suggestions, .. } => {
+            InboundEvent::PermissionRequest {
+                permission_suggestions,
+                ..
+            } => {
                 assert_eq!(permission_suggestions.len(), 1);
                 assert_eq!(permission_suggestions[0].kind, "addRules");
                 assert_eq!(permission_suggestions[0].behavior, "allow");
@@ -785,7 +798,11 @@ mod tests {
             permission_suggestions: vec![],
             option_labels: vec![],
         };
-        let result = send_permission_request(&path, &event, std::time::Duration::from_millis(100)).await;
-        assert!(result.is_err(), "missing daemon socket should produce an error");
+        let result =
+            send_permission_request(&path, &event, std::time::Duration::from_millis(100)).await;
+        assert!(
+            result.is_err(),
+            "missing daemon socket should produce an error"
+        );
     }
 }

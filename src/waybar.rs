@@ -155,7 +155,11 @@ pub fn build_status(sessions: &[Session]) -> StatusResponse {
 
 /// Wrap `raw` in a Pango color span. `raw` is escaped; `color` is ours.
 fn tint(color: &str, raw: &str) -> String {
-    format!("<span foreground=\"{}\">{}</span>", color, pango_escape(raw))
+    format!(
+        "<span foreground=\"{}\">{}</span>",
+        color,
+        pango_escape(raw)
+    )
 }
 
 /// The state word and its color for the session in the lead. The word comes
@@ -190,7 +194,10 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
 
     let count = active.len();
 
-    let class = if sessions.iter().any(|s| s.status == SessionStatus::WaitingApproval) {
+    let class = if sessions
+        .iter()
+        .any(|s| s.status == SessionStatus::WaitingApproval)
+    {
         "attention".to_string()
     } else if sessions.iter().any(|s| {
         matches!(
@@ -694,7 +701,10 @@ mod tests {
         let status = dark(&[session]);
         assert_eq!(
             status.text,
-            format!("dotfiles {} <span foreground=\"#a6e3a1\">\u{f120} Bash</span>", SEP_DARK)
+            format!(
+                "dotfiles {} <span foreground=\"#a6e3a1\">\u{f120} Bash</span>",
+                SEP_DARK
+            )
         );
     }
 }

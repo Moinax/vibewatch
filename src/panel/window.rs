@@ -417,7 +417,9 @@ fn cap_list_height(
 
     let mut rows_h = 0;
     for i in 0..max_visible as i32 {
-        let Some(row) = list.row_at_index(i) else { break };
+        let Some(row) = list.row_at_index(i) else {
+            break;
+        };
         let (_, nat, _, _) = row.measure(gtk::Orientation::Vertical, PANEL_WIDTH);
         rows_h += nat;
     }
@@ -434,7 +436,8 @@ fn cap_list_height(
 
 /// Find the drawer revealer that wraps the panel content.
 fn revealer_of(win: &adw::ApplicationWindow) -> Option<gtk::Revealer> {
-    win.content().and_then(|c| c.downcast::<gtk::Revealer>().ok())
+    win.content()
+        .and_then(|c| c.downcast::<gtk::Revealer>().ok())
 }
 
 /// Keep the window exactly as tall as the *currently revealed* portion of the

@@ -1,6 +1,6 @@
+use gtk::prelude::*;
 use gtk4 as gtk;
 use libadwaita as adw;
-use gtk::prelude::*;
 
 use crate::compositor::niri::NiriWindow;
 use crate::session::{describe_tool, prettify_tool_name, Session, SessionStatus};
@@ -162,10 +162,7 @@ fn format_elapsed(session: &Session) -> String {
 /// Buttons stack so the card never demands more horizontal space than the
 /// panel width, regardless of how long a suggestion label is.
 /// Click handler sends `ApprovalDecision { request_id, choice_index }`.
-fn build_choice_bar(
-    request_id: String,
-    choices: &[crate::session::ApprovalChoice],
-) -> gtk::Box {
+fn build_choice_bar(request_id: String, choices: &[crate::session::ApprovalChoice]) -> gtk::Box {
     let bar = gtk::Box::new(gtk::Orientation::Vertical, 4);
     bar.add_css_class("approval-bar");
     bar.set_halign(gtk::Align::Fill);
@@ -240,7 +237,10 @@ pub(crate) fn top_line(session: &Session) -> Option<String> {
 
     match kind {
         Kind::User => session.last_prompt.as_deref().map(render_user),
-        Kind::Agent => session.last_agent_text.as_deref().map(|a| render_agent(session, a)),
+        Kind::Agent => session
+            .last_agent_text
+            .as_deref()
+            .map(|a| render_agent(session, a)),
         Kind::Tool => session
             .last_tool
             .as_deref()
@@ -328,7 +328,10 @@ fn focus_hyprland(window_id: Option<&str>, pid: u32) {
 /// `hl.dsp.focus({ window = "…" })`. Returns true when Hyprland reports `ok`.
 fn hypr_focus(selector: &str) -> bool {
     std::process::Command::new("hyprctl")
-        .args(["dispatch", &format!("hl.dsp.focus({{ window = {selector:?} }})")])
+        .args([
+            "dispatch",
+            &format!("hl.dsp.focus({{ window = {selector:?} }})"),
+        ])
         .output()
         .map(|out| String::from_utf8_lossy(&out.stdout).trim() == "ok")
         .unwrap_or(false)
@@ -564,5 +567,4 @@ mod tests {
         assert!(out.ends_with("...\""));
         assert!(out.len() < long.len() + 20);
     }
-
 }

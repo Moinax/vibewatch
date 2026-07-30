@@ -1,15 +1,15 @@
-mod compositor;
-mod codex_rollout;
-mod config;
-mod ipc;
-mod install;
-mod notify;
 mod approval;
+mod codex_rollout;
+mod compositor;
+mod config;
+mod install;
+mod ipc;
+mod mute;
+mod notify;
 mod scanner;
 mod session;
-mod transcript;
 mod sound;
-mod mute;
+mod transcript;
 mod waybar;
 
 #[cfg(feature = "panel")]
@@ -102,7 +102,12 @@ fn main() -> anyhow::Result<()> {
         Commands::Rename { session_id, name } => {
             cli_runtime()?.block_on(run_rename(session_id, name))
         }
-        Commands::Install { no_service, no_hooks, dry_run, uninstall } => {
+        Commands::Install {
+            no_service,
+            no_hooks,
+            dry_run,
+            uninstall,
+        } => {
             install::run(install::Options {
                 no_service,
                 no_hooks,
@@ -126,7 +131,9 @@ fn run_daemon() -> anyhow::Result<()> {
         return run_daemon_with_panel(config, registry);
 
         #[cfg(not(feature = "panel"))]
-        eprintln!("vibewatch: WAYLAND_DISPLAY set but panel feature not compiled; running headless");
+        eprintln!(
+            "vibewatch: WAYLAND_DISPLAY set but panel feature not compiled; running headless"
+        );
     } else {
         eprintln!("vibewatch: no WAYLAND_DISPLAY, running in headless mode (no panel)");
     }
@@ -252,9 +259,9 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
 /// GTK-driven daemon: adw::Application is the outer loop, tokio runs on a background thread.
 #[cfg(feature = "panel")]
 fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::Result<()> {
-    use libadwaita as adw;
     use adw::prelude::*;
     use gtk4::glib;
+    use libadwaita as adw;
 
     panel::prefer_software_renderer();
 
@@ -771,10 +778,7 @@ async fn handle_connection(
                 let tool_name = tool.clone().unwrap_or_else(|| "tool".into());
 
                 let choices = if option_labels.is_empty() {
-                    crate::session::ApprovalChoice::build_from(
-                        &tool_name,
-                        &permission_suggestions,
-                    )
+                    crate::session::ApprovalChoice::build_from(&tool_name, &permission_suggestions)
                 } else {
                     crate::session::ApprovalChoice::from_labels(&option_labels)
                 };
@@ -835,7 +839,10 @@ async fn handle_connection(
                     status_notify.notify_waiters();
                 }
             }
-            InboundEvent::ApprovalDecision { request_id, choice_index } => {
+            InboundEvent::ApprovalDecision {
+                request_id,
+                choice_index,
+            } => {
                 eprintln!(
                     "vibewatch: recv ApprovalDecision request_id={} choice_index={}",
                     request_id, choice_index
@@ -847,9 +854,11 @@ async fn handle_connection(
                     );
                     continue;
                 };
-                let chosen = registry
-                    .get(&entry.session_id)
-                    .and_then(|s| s.pending_approval.as_ref().and_then(|p| p.choices.get(choice_index).cloned()));
+                let chosen = registry.get(&entry.session_id).and_then(|s| {
+                    s.pending_approval
+                        .as_ref()
+                        .and_then(|p| p.choices.get(choice_index).cloned())
+                });
                 let (label, behavior_str, suggestion, updated_permissions) = match chosen {
                     Some(c) => (c.label, c.behavior, c.suggestion, c.updated_permissions),
                     None => {
@@ -1193,10 +1202,7 @@ async fn run_status_watch(
     }
 }
 
-async fn stream_once(
-    socket_path: &std::path::Path,
-    part: ipc::StatusPart,
-) -> anyhow::Result<()> {
+async fn stream_once(socket_path: &std::path::Path, part: ipc::StatusPart) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
 

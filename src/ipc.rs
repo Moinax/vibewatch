@@ -206,9 +206,7 @@ impl Drop for IpcServer {
 }
 
 /// Read one JSON line from the stream and parse it as an `InboundEvent`.
-pub async fn read_event<R: AsyncBufRead + Unpin>(
-    stream: &mut R,
-) -> anyhow::Result<InboundEvent> {
+pub async fn read_event<R: AsyncBufRead + Unpin>(stream: &mut R) -> anyhow::Result<InboundEvent> {
     let mut line = String::new();
     let n = stream.read_line(&mut line).await?;
     if n == 0 {
@@ -219,10 +217,7 @@ pub async fn read_event<R: AsyncBufRead + Unpin>(
 }
 
 /// Write a JSON value followed by a newline to the stream.
-pub async fn write_json<T: Serialize>(
-    stream: &mut UnixStream,
-    value: &T,
-) -> anyhow::Result<()> {
+pub async fn write_json<T: Serialize>(stream: &mut UnixStream, value: &T) -> anyhow::Result<()> {
     let mut json = serde_json::to_string(value)?;
     json.push('\n');
     stream.write_all(json.as_bytes()).await?;
@@ -234,10 +229,7 @@ pub async fn write_json<T: Serialize>(
 /// down the write half signals EOF to its reader and lets us exit without
 /// blocking. Permission flows use `notify::send_permission_request`, which
 /// keeps the stream open to await a decision line.
-pub async fn send_event(
-    socket_path: &Path,
-    event: &InboundEvent,
-) -> anyhow::Result<()> {
+pub async fn send_event(socket_path: &Path, event: &InboundEvent) -> anyhow::Result<()> {
     let mut stream = UnixStream::connect(socket_path).await?;
     write_json(&mut stream, event).await?;
     stream.shutdown().await.ok();
@@ -257,7 +249,11 @@ pub async fn request_response(
     let mut reader = tokio::io::BufReader::new(stream);
     let mut line = String::new();
     let n = reader.read_line(&mut line).await?;
-    Ok(if n == 0 { None } else { Some(line.trim().to_string()) })
+    Ok(if n == 0 {
+        None
+    } else {
+        Some(line.trim().to_string())
+    })
 }
 
 #[cfg(test)]
@@ -267,7 +263,8 @@ mod tests {
 
     #[test]
     fn test_parse_session_start() {
-        let json = r#"{"event":"session_start","agent":"claude_code","session_id":"s1","pid":1234}"#;
+        let json =
+            r#"{"event":"session_start","agent":"claude_code","session_id":"s1","pid":1234}"#;
         let event: InboundEvent = serde_json::from_str(json).unwrap();
         match event {
             InboundEvent::SessionStart {
@@ -289,7 +286,8 @@ mod tests {
 
     #[test]
     fn test_parse_pre_tool_use() {
-        let json = r#"{"event":"pre_tool_use","session_id":"s1","tool":"Read","detail":"src/main.rs"}"#;
+        let json =
+            r#"{"event":"pre_tool_use","session_id":"s1","tool":"Read","detail":"src/main.rs"}"#;
         let event: InboundEvent = serde_json::from_str(json).unwrap();
         match event {
             InboundEvent::PreToolUse {
@@ -436,7 +434,10 @@ mod tests {
         let json = r#"{"event":"permission_request","session_id":"s1","request_id":"r1","tool":"Read","detail":"/etc/hosts","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Read","ruleContent":"//etc/**"}],"behavior":"allow","destination":"session"}]}"#;
         let e: InboundEvent = serde_json::from_str(json).unwrap();
         match e {
-            InboundEvent::PermissionRequest { permission_suggestions, .. } => {
+            InboundEvent::PermissionRequest {
+                permission_suggestions,
+                ..
+            } => {
                 assert_eq!(permission_suggestions.len(), 1);
                 assert_eq!(permission_suggestions[0].kind, "addRules");
                 assert_eq!(permission_suggestions[0].destination, "session");
@@ -452,7 +453,10 @@ mod tests {
         let json = r#"{"event":"permission_request","session_id":"s1","tool":"Bash"}"#;
         let e: InboundEvent = serde_json::from_str(json).unwrap();
         match e {
-            InboundEvent::PermissionRequest { permission_suggestions, .. } => {
+            InboundEvent::PermissionRequest {
+                permission_suggestions,
+                ..
+            } => {
                 assert!(permission_suggestions.is_empty());
             }
             _ => panic!("expected PermissionRequest"),
@@ -464,7 +468,10 @@ mod tests {
         let json = r#"{"event":"approval_decision","request_id":"r1","choice_index":2}"#;
         let e: InboundEvent = serde_json::from_str(json).unwrap();
         match e {
-            InboundEvent::ApprovalDecision { request_id, choice_index } => {
+            InboundEvent::ApprovalDecision {
+                request_id,
+                choice_index,
+            } => {
                 assert_eq!(request_id, "r1");
                 assert_eq!(choice_index, 2);
             }

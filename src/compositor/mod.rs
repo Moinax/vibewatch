@@ -18,10 +18,7 @@ pub trait Compositor: Send + Sync {
 
     async fn find_by_class(&self, class: &str) -> Result<Vec<CompositorWindow>> {
         let windows = self.list_windows().await?;
-        Ok(windows
-            .into_iter()
-            .filter(|w| w.app_id == class)
-            .collect())
+        Ok(windows.into_iter().filter(|w| w.app_id == class).collect())
     }
 
     /// Find the first window matching any of `pids`, in the order given.

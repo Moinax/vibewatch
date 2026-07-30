@@ -44,13 +44,13 @@ pub fn tool_icon(tool: &str) -> &'static str {
         // rather than repeat the codepoint and drift from it.
         "Bash" | "BashOutput" | "KillShell" => ICON_TOOL_DEFAULT,
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => "\u{f03eb}", // md-pencil
-        "Read" | "NotebookRead" => "\u{f09ee}",            // md-file_document_outline
-        "Grep" | "Glob" | "LS" => "\u{f0349}",             // md-magnify
-        "WebFetch" | "WebSearch" => "\u{f059f}",           // md-web
+        "Read" | "NotebookRead" => "\u{f09ee}",                         // md-file_document_outline
+        "Grep" | "Glob" | "LS" => "\u{f0349}",                          // md-magnify
+        "WebFetch" | "WebSearch" => "\u{f059f}",                        // md-web
         // A sub-agent is the one tool that is itself an agent, and it inherits
         // the robot vibewatch used to wear in the bar before it had a mark.
-        TOOL_AGENT | TOOL_TASK => "\u{f06a9}", // md-robot
-        "TodoWrite" => "\u{f0756}",            // md-format_list_checks
+        TOOL_AGENT | TOOL_TASK => "\u{f06a9}",      // md-robot
+        "TodoWrite" => "\u{f0756}",                 // md-format_list_checks
         t if t.starts_with("mcp__") => "\u{f06a5}", // md-power_plug
         _ => ICON_TOOL_DEFAULT,
     }
@@ -98,7 +98,9 @@ pub fn normalize_comm(comm: &str) -> String {
 /// Pure helper: does a `comm` string identify the given `AgentKind`?
 pub fn is_agent_pid_alive_with_comm(comm: &str, kind: AgentKind) -> bool {
     let comm = normalize_comm(comm);
-    expected_comms_for(kind).iter().any(|expected| comm == *expected)
+    expected_comms_for(kind)
+        .iter()
+        .any(|expected| comm == *expected)
 }
 
 /// Everything we need to derive from a running agent's `/proc/<pid>/cmdline`
@@ -274,7 +276,10 @@ impl ApprovalChoice {
     /// for tools the panel can't faithfully answer (ExitPlanMode,
     /// AskUserQuestion) — those render as warning-only and the user
     /// answers in Claude Code's TUI.
-    pub fn build_from(tool_name: &str, suggestions: &[PermissionSuggestion]) -> Vec<ApprovalChoice> {
+    pub fn build_from(
+        tool_name: &str,
+        suggestions: &[PermissionSuggestion],
+    ) -> Vec<ApprovalChoice> {
         if tool_name == TOOL_EXIT_PLAN_MODE || tool_name == TOOL_ASK_USER_QUESTION {
             return Vec::new();
         }
@@ -299,7 +304,11 @@ impl ApprovalChoice {
                 .join(" + ");
             let label = format!(
                 "{} {} for {} ({})",
-                if sug.behavior == "allow" { "Yes, allow" } else { "No, deny" },
+                if sug.behavior == "allow" {
+                    "Yes, allow"
+                } else {
+                    "No, deny"
+                },
                 tool_name,
                 rules_label,
                 sug.destination,
@@ -951,7 +960,11 @@ impl SessionRegistry {
 /// richer hook-driven state; within the same tier the most recently active
 /// session wins, since that's the one the user is actually driving.
 fn cli_keep_score(session: &Session) -> (u8, u64) {
-    let tier = if session.id.starts_with("scan-") { 0 } else { 1 };
+    let tier = if session.id.starts_with("scan-") {
+        0
+    } else {
+        1
+    };
     let recency = [
         session.last_prompt_at,
         session.last_agent_text_at,
@@ -1032,13 +1045,14 @@ fn ancestry(pid: u32) -> Vec<u32> {
 /// PID belongs to so we can find the matching client window. None outside Zellij.
 pub fn zellij_session_of(pid: u32) -> Option<String> {
     let raw = std::fs::read(format!("/proc/{}/environ", pid)).ok()?;
-    raw.split(|b| *b == 0).find_map(|kv| {
-        std::str::from_utf8(kv)
-            .ok()?
-            .strip_prefix("ZELLIJ_SESSION_NAME=")
-            .map(str::to_string)
-    })
-    .filter(|s| !s.is_empty())
+    raw.split(|b| *b == 0)
+        .find_map(|kv| {
+            std::str::from_utf8(kv)
+                .ok()?
+                .strip_prefix("ZELLIJ_SESSION_NAME=")
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty())
 }
 
 /// Find the Zellij *client* process for `session` — the one running inside a
@@ -1095,7 +1109,9 @@ fn herdr_pane_from_environ(raw: &[u8]) -> Option<HerdrPane> {
     let mut pane_id = None;
     let mut socket_path = None;
     for kv in raw.split(|b| *b == 0) {
-        let Ok(kv) = std::str::from_utf8(kv) else { continue };
+        let Ok(kv) = std::str::from_utf8(kv) else {
+            continue;
+        };
         if let Some(v) = kv.strip_prefix("HERDR_PANE_ID=") {
             pane_id = Some(v.to_string());
         } else if let Some(v) = kv.strip_prefix("HERDR_SOCKET_PATH=") {
@@ -1249,17 +1265,28 @@ mod tests {
 
     #[test]
     fn programmatic_args_detect_no_session_persistence() {
-        assert!(is_programmatic_args(&["claude", "--no-session-persistence"]));
+        assert!(is_programmatic_args(&[
+            "claude",
+            "--no-session-persistence"
+        ]));
     }
 
     #[test]
     fn programmatic_args_detect_stream_json_output() {
-        assert!(is_programmatic_args(&["claude", "--output-format", "stream-json"]));
+        assert!(is_programmatic_args(&[
+            "claude",
+            "--output-format",
+            "stream-json"
+        ]));
     }
 
     #[test]
     fn programmatic_args_ignore_interactive_text_output() {
-        assert!(!is_programmatic_args(&["claude", "--output-format", "text"]));
+        assert!(!is_programmatic_args(&[
+            "claude",
+            "--output-format",
+            "text"
+        ]));
     }
 
     #[test]
@@ -1463,9 +1490,21 @@ mod tests {
         s.status = SessionStatus::Executing;
         // Same icon for a family, different across families.
         for (tool, twin) in [("Bash", "KillShell"), ("Edit", "Write"), ("Grep", "Glob")] {
-            assert_eq!(tool_icon(tool), tool_icon(twin), "{tool}/{twin} should match");
+            assert_eq!(
+                tool_icon(tool),
+                tool_icon(twin),
+                "{tool}/{twin} should match"
+            );
         }
-        let families = ["Bash", "Edit", "Read", "Grep", "WebFetch", "Task", "TodoWrite"];
+        let families = [
+            "Bash",
+            "Edit",
+            "Read",
+            "Grep",
+            "WebFetch",
+            "Task",
+            "TodoWrite",
+        ];
         let icons: std::collections::HashSet<_> = families.iter().map(|t| tool_icon(t)).collect();
         assert_eq!(icons.len(), families.len(), "two families share an icon");
 
@@ -1606,11 +1645,7 @@ mod tests {
         session.agent_session_id = Some("thread-abc".into());
         registry.register(session);
 
-        assert!(registry.set_name_from_outside(
-            "thread-abc",
-            "vibewatch stale".into(),
-            None
-        ));
+        assert!(registry.set_name_from_outside("thread-abc", "vibewatch stale".into(), None));
         assert_eq!(
             registry
                 .get("scan-codex-42")
@@ -1879,7 +1914,11 @@ mod tests {
     #[test]
     fn registry_get_or_adopt_returns_none_when_no_pid_match() {
         let registry = SessionRegistry::new();
-        registry.register(Session::new("scan-claude-1".into(), AgentKind::ClaudeCode, 1));
+        registry.register(Session::new(
+            "scan-claude-1".into(),
+            AgentKind::ClaudeCode,
+            1,
+        ));
         // Different pid — should NOT adopt.
         assert!(registry.get_or_adopt("uuid", 9999).is_none());
     }
@@ -1948,8 +1987,10 @@ mod tests {
         assert!(json.contains(r#""type":"addRules""#), "got {json}");
         assert!(json.contains(r#""behavior":"allow""#));
         assert!(json.contains(r#""destination":"session""#));
-        assert!(json.contains(r#""toolName":"Read""#),
-            "PermissionRule must serialize with camelCase to match Claude payload; got {json}");
+        assert!(
+            json.contains(r#""toolName":"Read""#),
+            "PermissionRule must serialize with camelCase to match Claude payload; got {json}"
+        );
         assert!(!json.contains("tool_name"));
     }
 
@@ -2001,7 +2042,11 @@ mod tests {
         assert!(choices.is_empty());
     }
 
-    fn choice(label: &str, behavior: &str, suggestion: Option<PermissionSuggestion>) -> ApprovalChoice {
+    fn choice(
+        label: &str,
+        behavior: &str,
+        suggestion: Option<PermissionSuggestion>,
+    ) -> ApprovalChoice {
         ApprovalChoice {
             label: label.into(),
             behavior: behavior.into(),
@@ -2018,7 +2063,10 @@ mod tests {
             behavior: "allow".into(),
             destination: "session".into(),
         };
-        assert_eq!(choice("Yes, allow Read", "allow", Some(sug)).css_class(), "approval-scope");
+        assert_eq!(
+            choice("Yes, allow Read", "allow", Some(sug)).css_class(),
+            "approval-scope"
+        );
     }
 
     #[test]
@@ -2033,7 +2081,10 @@ mod tests {
 
     #[test]
     fn css_class_answer_is_approval_answer() {
-        assert_eq!(choice("Option A", "answer", None).css_class(), "approval-answer");
+        assert_eq!(
+            choice("Option A", "answer", None).css_class(),
+            "approval-answer"
+        );
     }
 
     #[test]
@@ -2066,7 +2117,10 @@ mod tests {
         assert!(choices[1].label.contains("/home/moinax/.claude/**"));
         assert!(choices[1].label.contains("session"));
         assert_eq!(choices[1].behavior, "allow");
-        assert_eq!(choices[1].suggestion.as_ref().unwrap().destination, "session");
+        assert_eq!(
+            choices[1].suggestion.as_ref().unwrap().destination,
+            "session"
+        );
         assert_eq!(choices[2].label, "No");
     }
 
@@ -2075,8 +2129,14 @@ mod tests {
         let sug = PermissionSuggestion {
             kind: "addRules".into(),
             rules: vec![
-                PermissionRule { tool_name: "Read".into(), rule_content: "//a/**".into() },
-                PermissionRule { tool_name: "Read".into(), rule_content: "//b/**".into() },
+                PermissionRule {
+                    tool_name: "Read".into(),
+                    rule_content: "//a/**".into(),
+                },
+                PermissionRule {
+                    tool_name: "Read".into(),
+                    rule_content: "//b/**".into(),
+                },
             ],
             behavior: "allow".into(),
             destination: "session".into(),
@@ -2101,21 +2161,33 @@ mod tests {
 
     #[test]
     fn is_agent_pid_alive_with_comm_matches() {
-        assert!(is_agent_pid_alive_with_comm("claude", AgentKind::ClaudeCode));
+        assert!(is_agent_pid_alive_with_comm(
+            "claude",
+            AgentKind::ClaudeCode
+        ));
         assert!(is_agent_pid_alive_with_comm("codex", AgentKind::Codex));
     }
 
     #[test]
     fn is_agent_pid_alive_with_comm_is_case_insensitive() {
-        assert!(is_agent_pid_alive_with_comm("Claude", AgentKind::ClaudeCode));
+        assert!(is_agent_pid_alive_with_comm(
+            "Claude",
+            AgentKind::ClaudeCode
+        ));
         assert!(is_agent_pid_alive_with_comm("CODEX", AgentKind::Codex));
     }
 
     #[test]
     fn is_agent_pid_alive_with_comm_trims_whitespace() {
         // /proc/<pid>/comm always has a trailing newline.
-        assert!(is_agent_pid_alive_with_comm("claude\n", AgentKind::ClaudeCode));
-        assert!(is_agent_pid_alive_with_comm("  claude  ", AgentKind::ClaudeCode));
+        assert!(is_agent_pid_alive_with_comm(
+            "claude\n",
+            AgentKind::ClaudeCode
+        ));
+        assert!(is_agent_pid_alive_with_comm(
+            "  claude  ",
+            AgentKind::ClaudeCode
+        ));
     }
 
     #[test]
@@ -2294,10 +2366,7 @@ mod tests {
 
     #[test]
     fn herdr_client_pid_is_none_for_bogus_session() {
-        assert_eq!(
-            herdr_client_pid("vibewatch-no-such-session-zzz-9999"),
-            None
-        );
+        assert_eq!(herdr_client_pid("vibewatch-no-such-session-zzz-9999"), None);
     }
 
     #[test]
@@ -2341,7 +2410,10 @@ mod tests {
 
         let all = registry.all();
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].id, "real-uuid", "hook session outranks scan placeholder");
+        assert_eq!(
+            all[0].id, "real-uuid",
+            "hook session outranks scan placeholder"
+        );
     }
 
     #[test]
@@ -2361,8 +2433,16 @@ mod tests {
         // Multiple editor windows legitimately share one GUI process PID; their
         // identity is the window id, so dedup must not collapse them.
         let registry = SessionRegistry::new();
-        registry.register(Session::new("window-cursor-1".into(), AgentKind::Cursor, 700));
-        registry.register(Session::new("window-cursor-2".into(), AgentKind::Cursor, 700));
+        registry.register(Session::new(
+            "window-cursor-1".into(),
+            AgentKind::Cursor,
+            700,
+        ));
+        registry.register(Session::new(
+            "window-cursor-2".into(),
+            AgentKind::Cursor,
+            700,
+        ));
 
         registry.dedupe_cli_pids();
 

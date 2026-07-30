@@ -131,7 +131,8 @@ pub async fn run_scanner(
                         windows.iter().map(|w| w.id.clone()).collect();
 
                     // Register new windows
-                    let known_ids: HashSet<String> = all_sessions.iter().map(|s| s.id.clone()).collect();
+                    let known_ids: HashSet<String> =
+                        all_sessions.iter().map(|s| s.id.clone()).collect();
                     for win in &windows {
                         let id = format!("window-{}-{}", name, win.id);
                         if !known_ids.contains(&id) {
@@ -305,7 +306,9 @@ fn cwd_is_shared(census: &HashMap<u32, PathBuf>, pid: u32) -> bool {
     let Some(cwd) = census.get(&pid) else {
         return false;
     };
-    census.iter().any(|(other, dir)| *other != pid && dir == cwd)
+    census
+        .iter()
+        .any(|(other, dir)| *other != pid && dir == cwd)
 }
 
 /// The oldest transcript mtime that can belong to `pid`, with a few seconds of
@@ -418,7 +421,11 @@ mod tests {
             (AgentKind::ClaudeCode, u32::MAX), // no such process
         ]);
         assert_eq!(census.get(&me), Some(&cwd));
-        assert_eq!(census.len(), 1, "a pid with no /proc entry contributes none");
+        assert_eq!(
+            census.len(),
+            1,
+            "a pid with no /proc entry contributes none"
+        );
     }
 
     #[test]
@@ -428,7 +435,10 @@ mod tests {
         let census = HashMap::from([(1, mine.clone()), (2, theirs), (3, mine)]);
         assert!(cwd_is_shared(&census, 1), "pid 3 is in the same directory");
         assert!(!cwd_is_shared(&census, 2), "alone in its own");
-        assert!(!cwd_is_shared(&census, 9), "a pid the census never resolved");
+        assert!(
+            !cwd_is_shared(&census, 9),
+            "a pid the census never resolved"
+        );
     }
 
     #[test]

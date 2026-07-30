@@ -21,8 +21,8 @@ impl Compositor for HyprlandCompositor {
             .await
             .context("failed to run hyprctl")?;
 
-        let clients: Vec<HyprClient> = serde_json::from_slice(&output.stdout)
-            .context("failed to parse hyprctl output")?;
+        let clients: Vec<HyprClient> =
+            serde_json::from_slice(&output.stdout).context("failed to parse hyprctl output")?;
 
         Ok(clients
             .into_iter()

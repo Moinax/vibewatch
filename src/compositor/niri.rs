@@ -21,8 +21,8 @@ impl Compositor for NiriCompositor {
             .await
             .context("failed to run niri msg")?;
 
-        let windows: Vec<NiriWindow> = serde_json::from_slice(&output.stdout)
-            .context("failed to parse niri msg output")?;
+        let windows: Vec<NiriWindow> =
+            serde_json::from_slice(&output.stdout).context("failed to parse niri msg output")?;
 
         Ok(windows
             .into_iter()

@@ -50,7 +50,10 @@ impl ApprovalRegistry {
             .filter(|(_, e)| e.session_id == session_id)
             .map(|(k, _)| k.clone())
             .collect();
-        matching.into_iter().filter_map(|k| map.remove(&k)).collect()
+        matching
+            .into_iter()
+            .filter_map(|k| map.remove(&k))
+            .collect()
     }
 
     /// Remove and return any entries older than `max_age`.
@@ -106,7 +109,10 @@ mod tests {
 
         let taken = reg.take("req-1").await.expect("should find entry");
         assert_eq!(taken.session_id, "s1");
-        assert!(reg.take("req-1").await.is_none(), "second take returns None");
+        assert!(
+            reg.take("req-1").await.is_none(),
+            "second take returns None"
+        );
     }
 
     #[tokio::test]

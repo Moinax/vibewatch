@@ -66,7 +66,10 @@ fn is_code_fence(trimmed: &str) -> bool {
     trimmed == "```"
         || (trimmed.starts_with("```")
             && !trimmed.contains(' ')
-            && trimmed.chars().skip(3).all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            && trimmed
+                .chars()
+                .skip(3)
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
 }
 
 /// Parse a Claude JSONL file and return the last non-empty assistant text line.
@@ -289,8 +292,7 @@ pub fn reduce_claude(content: &str) -> Option<ClaudeSnapshot> {
                 for block in blocks {
                     match block.get("type").and_then(Value::as_str) {
                         Some("tool_use") => {
-                            let name =
-                                block.get("name").and_then(Value::as_str).unwrap_or("tool");
+                            let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
                             if let Some(id) = block.get("id").and_then(Value::as_str) {
                                 pending.insert(id.to_owned());
                             }
@@ -318,7 +320,9 @@ pub fn reduce_claude(content: &str) -> Option<ClaudeSnapshot> {
                 let results: Vec<&str> = blocks
                     .map(|bs| {
                         bs.iter()
-                            .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+                            .filter(|b| {
+                                b.get("type").and_then(Value::as_str) == Some("tool_result")
+                            })
                             .filter_map(|b| b.get("tool_use_id").and_then(Value::as_str))
                             .collect()
                     })
@@ -390,7 +394,14 @@ pub fn tool_detail_from_input(input: &Value) -> Option<String> {
             KEYS.iter()
                 .find_map(|key| input.get(key).and_then(Value::as_str))
         })?;
-    Some(raw.lines().next().unwrap_or(raw).chars().take(160).collect())
+    Some(
+        raw.lines()
+            .next()
+            .unwrap_or(raw)
+            .chars()
+            .take(160)
+            .collect(),
+    )
 }
 
 /// The head and tail of `path` as one string, skipping the middle on a large
@@ -528,8 +539,7 @@ mod tests {
     }
 
     fn claude_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/transcripts/claude")
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/transcripts/claude")
     }
 
     #[test]
@@ -621,21 +631,17 @@ mod tests {
     }
 
     fn codex_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/transcripts/codex")
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/transcripts/codex")
     }
 
     #[test]
     fn codex_path_found_by_recursive_walk() {
-        let got = resolve_codex_path_in(
-            &codex_root(),
-            "codex0001-0000-0000-0000-000000000001",
-        );
+        let got = resolve_codex_path_in(&codex_root(), "codex0001-0000-0000-0000-000000000001");
         assert!(got.is_some(), "expected path resolution to succeed");
         let p = got.unwrap();
-        assert!(p.to_string_lossy().ends_with(
-            "codex0001-0000-0000-0000-000000000001.jsonl"
-        ));
+        assert!(p
+            .to_string_lossy()
+            .ends_with("codex0001-0000-0000-0000-000000000001.jsonl"));
     }
 
     #[test]
@@ -763,7 +769,10 @@ mod tests {
     #[test]
     fn prompt_with_no_reply_yet_is_thinking() {
         let jsonl = r#"{"type":"user","sessionId":"s","message":{"role":"user","content":[{"type":"text","text":"why is it idle?"}]}}"#;
-        assert_eq!(reduce_claude(jsonl).unwrap().status, SessionStatus::Thinking);
+        assert_eq!(
+            reduce_claude(jsonl).unwrap().status,
+            SessionStatus::Thinking
+        );
     }
 
     #[test]
