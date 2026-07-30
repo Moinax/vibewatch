@@ -1,11 +1,64 @@
 {
+    // The simple form: one widget, one label. Add "custom/vibewatch" to a
+    // modules-* array and you are done.
+    //
+    // Long-running subscriber: one JSON line per state change, pushed from the
+    // daemon. No `interval` — waybar reads each new line as an update.
     "custom/vibewatch": {
-        // Long-running subscriber: one JSON line per state change, pushed
-        // from the daemon. No `interval` — waybar reads each new line as
-        // an update.
         "exec": "vibewatch status --watch",
         "return-type": "json",
         "on-click": "vibewatch toggle-panel",
+        "format": "{}",
+        "tooltip": false
+    },
+
+    // The split form, for a bar that wants the state in its own rounded chip.
+    // Pango can colour text but cannot draw a rounded background, so the state
+    // has to be a real widget to get one — the same reason group/stats splits
+    // cpu and memory. Waybar cannot feed two widgets from one `exec`, hence
+    // `--part`: three desktop-level subscribers, one per child.
+    //
+    // Use "group/vibewatch" in your modules-* array *instead of*
+    // "custom/vibewatch", and style it roughly like this:
+    //
+    //   #vibewatch { background: rgba(100,100,255,0.22); border-radius: 8px;
+    //                padding: 2px 8px; }          /* a group is not a .module */
+    //   #custom-vibewatch-name, #custom-vibewatch-state, #custom-vibewatch-count {
+    //                background: transparent; margin: 0; padding: 0 4px; }
+    //   #custom-vibewatch-state {                 /* the recess */
+    //                background: rgba(0,0,0,0.40); border-radius: 7px;
+    //                padding: 0 7px; margin: 2px; }
+    //
+    // Translucent black rather than a solid colour on purpose: the bar is
+    // see-through, so the chip has to darken whatever shows through it.
+    // `custom/vibewatch` keeps the whole line, so the split form needs its own
+    // name child rather than redefining that key.
+    "group/vibewatch": {
+        "orientation": "horizontal",
+        "modules": ["custom/vibewatch-name", "custom/vibewatch-state", "custom/vibewatch-count"]
+    },
+    "custom/vibewatch-name": {
+        "exec": "vibewatch status --watch --part name",
+        "return-type": "json",
+        "on-click": "vibewatch toggle-panel",
+        "format": "{}",
+        "tooltip": false
+    },
+    "custom/vibewatch-state": {
+        "exec": "vibewatch status --watch --part state",
+        "return-type": "json",
+        "on-click": "vibewatch toggle-panel",
+        "format": "{}",
+        "tooltip": false
+    },
+    "custom/vibewatch-count": {
+        "exec": "vibewatch status --watch --part count",
+        "return-type": "json",
+        "on-click": "vibewatch toggle-panel",
+        // Empty whenever one agent is alive; waybar drops the widget rather
+        // than leaving its padding behind. Do not reach for CSS `:empty` —
+        // GTK has no such pseudo-class and waybar exits over it, bar and all.
+        "hide-empty-text": true,
         "format": "{}",
         "tooltip": false
     }

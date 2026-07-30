@@ -33,7 +33,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     card.set_margin_top(10);
     card.set_margin_bottom(10);
 
-    let indicator = gtk::Label::new(Some("\u{25cf}"));
+    let indicator = gtk::Label::new(Some(session.indicator_glyph()));
     indicator.add_css_class("indicator");
     indicator.add_css_class(status_class);
     indicator.set_valign(gtk::Align::Start);
@@ -84,7 +84,7 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
         content.append(&desc_label);
     }
 
-    let state_text = state_label(session);
+    let state_text = session.state_label();
     let action_label = gtk::Label::new(Some(&state_text));
     action_label.add_css_class("action-line");
     action_label.add_css_class(status_class);
@@ -279,18 +279,6 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Short state word for the second line — same vocabulary as the waybar
-/// widget (`idle`, `thinking`, `Bash`, `Edit`, `approval`, `stopped`), plus
-/// `finished` for the few seconds after a `Stop`. That one is panel-only: the
-/// waybar shows a single aggregate line and would flap between `finished` and
-/// `idle` for every agent in the fleet.
-fn state_label(session: &Session) -> String {
-    if session.just_finished() {
-        return "finished".to_string();
-    }
-    session.inline_status()
-}
-
 fn focus_session(window_id: Option<&str>, pid: u32) {
     if pid != 0 {
         focus_herdr_pane(pid);
@@ -413,7 +401,7 @@ fn send_to_daemon(event: crate::ipc::InboundEvent) {
 
 #[cfg(test)]
 mod tests {
-    use super::{state_label, top_line};
+    use super::top_line;
     use crate::session::{AgentKind, Session, SessionStatus};
 
     fn mk(agent: AgentKind) -> Session {
@@ -581,21 +569,21 @@ mod tests {
     #[test]
     fn state_label_idle_by_default() {
         let s = mk(AgentKind::ClaudeCode);
-        assert_eq!(state_label(&s), "idle");
+        assert_eq!(s.state_label(), "idle");
     }
 
     #[test]
     fn state_label_thinking_when_thinking() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Thinking;
-        assert_eq!(state_label(&s), "thinking");
+        assert_eq!(s.state_label(), "thinking");
     }
 
     #[test]
     fn state_label_exec_fallback_when_no_tool() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Executing;
-        assert_eq!(state_label(&s), "exec");
+        assert_eq!(s.state_label(), "exec");
     }
 
     #[test]
@@ -603,14 +591,14 @@ mod tests {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Executing;
         s.current_tool = Some("Edit".into());
-        assert_eq!(state_label(&s), "Edit");
+        assert_eq!(s.state_label(), "Edit");
     }
 
     #[test]
     fn state_label_stopped_when_stopped() {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::Stopped;
-        assert_eq!(state_label(&s), "stopped");
+        assert_eq!(s.state_label(), "stopped");
     }
 
     #[test]
@@ -618,7 +606,7 @@ mod tests {
         let mut s = mk(AgentKind::ClaudeCode);
         s.status = SessionStatus::WaitingApproval;
         s.current_tool = Some("Bash".into());
-        assert_eq!(state_label(&s), "awaiting approval");
+        assert_eq!(s.state_label(), "awaiting approval");
     }
 
 }

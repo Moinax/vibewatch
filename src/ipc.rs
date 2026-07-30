@@ -76,11 +76,18 @@ pub enum InboundEvent {
         #[serde(default)]
         pid: Option<u32>,
     },
-    GetStatus,
+    GetStatus {
+        /// Defaulted, so `{"event":"get_status"}` from an older client still parses.
+        #[serde(default)]
+        part: StatusPart,
+    },
     /// Subscribe to status updates. The connection stays open; the daemon
     /// writes one JSON line per state change (prefixed with an immediate
     /// snapshot so the subscriber doesn't wait for the next transition).
-    SubscribeStatus,
+    SubscribeStatus {
+        #[serde(default)]
+        part: StatusPart,
+    },
     TogglePanel,
     ApprovalDecision {
         request_id: String,
@@ -103,6 +110,29 @@ pub enum InboundEvent {
     },
 }
 
+/// Which slice of the status line a subscriber wants.
+///
+/// Waybar cannot feed two widgets from one `exec`, so a bar that wants the state
+/// in its own rounded, darkened chip has to run the module as a `group/` of
+/// children — and each child needs its own stream. Asking for a part rather than
+/// filtering client-side keeps the daemon's per-connection de-duplication
+/// honest: it compares what it is about to send, not the whole line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusPart {
+    /// Everything in one label — the single-module layout, and the default so a
+    /// subscriber from before parts existed keeps working unchanged.
+    #[default]
+    All,
+    /// The session name alone. Wears the `logo-*` class, so this is the child
+    /// that carries the agent's mark.
+    Name,
+    /// The state word, Pango-coloured. The child a stylesheet gives the chip to.
+    State,
+    /// The `+n` badge, or empty when there is nothing behind the leader.
+    Count,
+}
+
 /// Status response for Waybar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusResponse {
@@ -116,6 +146,17 @@ pub struct StatusResponse {
     /// existed still deserializes, instead of erroring out into a blank widget.
     #[serde(default)]
     pub logo: String,
+    /// The pieces `text` is assembled from, so a `group/` layout can put each in
+    /// its own widget and let CSS shape them. `text` stays the single-label form
+    /// and is what the default `all` part emits.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub state: String,
+    /// Empty when the leader is the only session — a widget with no text draws
+    /// nothing, which is how the badge disappears instead of showing `+0`.
+    #[serde(default)]
+    pub count: String,
 }
 
 /// Unix socket IPC server.
@@ -283,6 +324,9 @@ mod tests {
             text: "1 active".into(),
             class: "active".into(),
             logo: "logo-claude".into(),
+            name: "dotfiles".into(),
+            state: "Bash".into(),
+            count: "+3".into(),
         };
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"text\":\"1 active\""));

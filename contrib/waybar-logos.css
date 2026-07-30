@@ -24,7 +24,12 @@
 #custom-vibewatch.logo-claude,
 #custom-vibewatch.logo-codex,
 #custom-vibewatch.logo-cursor,
-#custom-vibewatch.logo-webstorm {
+#custom-vibewatch.logo-webstorm,
+#custom-vibewatch-name.logo-vibewatch,
+#custom-vibewatch-name.logo-claude,
+#custom-vibewatch-name.logo-codex,
+#custom-vibewatch-name.logo-cursor,
+#custom-vibewatch-name.logo-webstorm {
   background-repeat: no-repeat;
   background-position: 8px center;
   background-size: 17px 17px;
@@ -33,18 +38,23 @@
   padding-left: 30px;
 }
 
-#custom-vibewatch.logo-vibewatch {
+#custom-vibewatch.logo-vibewatch,
+#custom-vibewatch-name.logo-vibewatch {
   background-image: url("logos/vibewatch.svg");
 }
-#custom-vibewatch.logo-claude {
+#custom-vibewatch.logo-claude,
+#custom-vibewatch-name.logo-claude {
   background-image: url("logos/claude.svg");
 }
-#custom-vibewatch.logo-codex {
+#custom-vibewatch.logo-codex,
+#custom-vibewatch-name.logo-codex {
   background-image: url("logos/codex.svg");
 }
-#custom-vibewatch.logo-cursor {
+#custom-vibewatch.logo-cursor,
+#custom-vibewatch-name.logo-cursor {
   background-image: url("logos/cursor.svg");
 }
-#custom-vibewatch.logo-webstorm {
+#custom-vibewatch.logo-webstorm,
+#custom-vibewatch-name.logo-webstorm {
   background-image: url("logos/webstorm.svg");
 }

@@ -13,6 +13,55 @@ pub const TOOL_ASK_USER_QUESTION: &str = "AskUserQuestion";
 pub const TOOL_AGENT: &str = "Agent";
 pub const TOOL_TASK: &str = "Task";
 
+/// State and tool icons, as Nerd Font codepoints. Written as escapes rather than
+/// literals on purpose: a private-use character pasted into a source file gets
+/// silently flattened to a space by some editors and tools, and the failure is
+/// invisible until the widget renders blank.
+///
+/// All of them were checked rendered at 13px, the size the panel's indicator
+/// draws at — that is where an icon with internal detail turns to mush, and it
+/// is why `md-brain` is not here despite being the obvious choice for thinking.
+/// Being Nerd Font glyphs, they need one in the font stack; the geometric shapes
+/// these replaced did not. See the note on `.indicator` in `assets/style.css`.
+pub const ICON_DONE: &str = "\u{2714}"; // heavy check — plain Unicode, unlike the rest
+pub const ICON_THINKING: &str = "\u{f07f6}"; // md-thought_bubble
+pub const ICON_APPROVAL: &str = "\u{f128}"; // fa-question
+pub const ICON_IDLE: &str = "\u{f04b2}"; // md-sleep, a literal zᶻᶻ
+pub const ICON_STOPPED: &str = "\u{00d7}"; // multiplication sign
+/// Worn by any tool without an entry in [`tool_icon`], MCP servers aside.
+pub const ICON_TOOL_DEFAULT: &str = "\u{f120}"; // fa-terminal
+
+/// Which icon a tool wears while it runs. Keyed on the raw tool name, not the
+/// prettified one, so an MCP tool is recognised by its `mcp__` prefix before
+/// `prettify_tool_name` has turned it into `Linear.list_issues`.
+///
+/// The table is deliberately shallow: the point is to say *what kind* of work is
+/// happening at a glance, not to name every tool. Anything unlisted falls back
+/// to the terminal, which is the honest default for "running something".
+pub fn tool_icon(tool: &str) -> &'static str {
+    match tool {
+        "Bash" | "BashOutput" | "KillShell" => "\u{f120}", // fa-terminal
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => "\u{f03eb}", // md-pencil
+        "Read" | "NotebookRead" => "\u{f09ee}",            // md-file_document_outline
+        "Grep" | "Glob" | "LS" => "\u{f0349}",             // md-magnify
+        "WebFetch" | "WebSearch" => "\u{f059f}",           // md-web
+        // A sub-agent is the one tool that is itself an agent, and it inherits
+        // the robot vibewatch used to wear in the bar before it had a mark.
+        TOOL_AGENT | TOOL_TASK => "\u{f06a9}", // md-robot
+        "TodoWrite" => "\u{f0756}",            // md-format_list_checks
+        t if t.starts_with("mcp__") => "\u{f06a5}", // md-power_plug
+        _ => ICON_TOOL_DEFAULT,
+    }
+}
+
+/// What a turn that has ended and not been acknowledged is called, everywhere.
+///
+/// The word only. The check mark belongs to the *shape*, not the name of the
+/// state — see [`Session::indicator_glyph`] — so a surface with an indicator
+/// column shows it there and one without inlines it. Baking it in here put it
+/// twice on the same panel row.
+pub const FINISHED_LABEL: &str = "done";
+
 /// True for a tool that spawns a sub-agent.
 pub fn spawns_subagent(tool: &str) -> bool {
     tool == TOOL_AGENT || tool == TOOL_TASK
@@ -568,6 +617,53 @@ impl Session {
     }
 
     /// Short inline status text for waybar/status display.
+    /// The state word for any surface that shows one — the panel row and the
+    /// waybar pill both call this, so the vocabulary is one thing rather than
+    /// two that resemble each other. It drifted exactly that way once: the bar
+    /// said `✔ done` while the panel said `finished`, for the same session at
+    /// the same moment.
+    ///
+    /// Only the word is shared. Colour is each surface's own business — the bar
+    /// tints inline with Pango, the panel goes through CSS classes — and so is
+    /// whether the state's shape appears beside it, since only one of the two
+    /// has an indicator column to put it in.
+    pub fn state_label(&self) -> String {
+        if self.just_finished() {
+            return FINISHED_LABEL.to_string();
+        }
+        self.inline_status()
+    }
+
+    /// The row's indicator: an icon per state, so the state survives being read
+    /// by someone who cannot tell teal from green, and so a finish is
+    /// recognisable at a glance rather than by hue alone. While executing it
+    /// says which *kind* of work is under way — see [`tool_icon`].
+    ///
+    /// Every icon here was checked rendered at 13px, the size the panel's
+    /// indicator draws at, because that is where they fail: anything with
+    /// internal detail collapses into a smudge. A brain was asked for and
+    /// rejected on those grounds — it needs 17px to read as a brain — so
+    /// thinking wears a thought bubble, whose outline survives.
+    ///
+    /// `Running` follows its *word*, not its colour: it is the scan's
+    /// "alive, nothing reported yet" state and reads as `idle` everywhere else,
+    /// so it sleeps alongside the idle ones.
+    pub fn indicator_glyph(&self) -> &'static str {
+        if self.just_finished() {
+            return ICON_DONE;
+        }
+        match self.status {
+            SessionStatus::Executing => self
+                .current_tool
+                .as_deref()
+                .map_or(ICON_TOOL_DEFAULT, tool_icon),
+            SessionStatus::Thinking => ICON_THINKING,
+            SessionStatus::WaitingApproval => ICON_APPROVAL,
+            SessionStatus::Idle | SessionStatus::Running => ICON_IDLE,
+            SessionStatus::Stopped => ICON_STOPPED,
+        }
+    }
+
     pub fn inline_status(&self) -> String {
         match self.status {
             SessionStatus::Executing => self
@@ -1298,6 +1394,79 @@ mod tests {
         // Back at work: the turn moved on.
         s.status = SessionStatus::Executing;
         assert!(!s.announceable());
+    }
+
+    #[test]
+    fn every_state_has_its_own_indicator_shape() {
+        // The point of shapes over one dot in six colours: two states must never
+        // be told apart by hue alone.
+        let mut seen = std::collections::HashMap::new();
+        for status in [
+            SessionStatus::Executing,
+            SessionStatus::Thinking,
+            SessionStatus::WaitingApproval,
+            SessionStatus::Idle,
+            SessionStatus::Stopped,
+        ] {
+            let mut s = Session::new("s".into(), AgentKind::ClaudeCode, 1);
+            s.status = status;
+            if let Some(clash) = seen.insert(s.indicator_glyph(), status) {
+                panic!("{status:?} and {clash:?} share a shape");
+            }
+        }
+        // A finish is its own shape too, distinct from all of the above.
+        let mut done = Session::new("s".into(), AgentKind::ClaudeCode, 1);
+        done.mark_finished();
+        assert_eq!(done.indicator_glyph(), "\u{2714}");
+        assert!(!seen.contains_key(done.indicator_glyph()));
+        // And the word must not repeat it: a surface with an indicator column
+        // would then draw the check twice on one row, which it did.
+        assert!(
+            !done.state_label().contains(done.indicator_glyph()),
+            "the mark belongs to the shape, not the word"
+        );
+    }
+
+    #[test]
+    fn a_running_tool_says_what_kind_of_work_it_is() {
+        let mut s = Session::new("s".into(), AgentKind::ClaudeCode, 1);
+        s.status = SessionStatus::Executing;
+        // Same icon for a family, different across families.
+        for (tool, twin) in [("Bash", "KillShell"), ("Edit", "Write"), ("Grep", "Glob")] {
+            assert_eq!(tool_icon(tool), tool_icon(twin), "{tool}/{twin} should match");
+        }
+        let families = ["Bash", "Edit", "Read", "Grep", "WebFetch", "Task", "TodoWrite"];
+        let icons: std::collections::HashSet<_> = families.iter().map(|t| tool_icon(t)).collect();
+        assert_eq!(icons.len(), families.len(), "two families share an icon");
+
+        // An MCP tool is recognised by its raw prefix, before prettifying turns
+        // it into `Linear.list_issues`.
+        assert_eq!(
+            tool_icon("mcp__claude_ai_Linear__list_issues"),
+            tool_icon("mcp__anything__else")
+        );
+        assert_ne!(tool_icon("mcp__x__y"), ICON_TOOL_DEFAULT);
+
+        // Anything unlisted runs *something*, so the terminal is the fallback —
+        // including the case where no tool was reported at all.
+        assert_eq!(tool_icon("SomeToolInventedNextYear"), ICON_TOOL_DEFAULT);
+        s.current_tool = None;
+        assert_eq!(s.indicator_glyph(), ICON_TOOL_DEFAULT);
+        s.current_tool = Some("Read".into());
+        assert_eq!(s.indicator_glyph(), tool_icon("Read"));
+    }
+
+    #[test]
+    fn a_scanned_session_gets_the_shape_its_word_promises() {
+        // `Running` says "idle", so it must not wear the working shape — the
+        // colour already disagrees with the word here, and the glyph siding
+        // with the colour would make the row contradict itself twice.
+        let mut running = Session::new("r".into(), AgentKind::ClaudeCode, 1);
+        running.status = SessionStatus::Running;
+        let mut idle = Session::new("i".into(), AgentKind::ClaudeCode, 1);
+        idle.status = SessionStatus::Idle;
+        assert_eq!(running.state_label(), idle.state_label());
+        assert_eq!(running.indicator_glyph(), idle.indicator_glyph());
     }
 
     #[test]

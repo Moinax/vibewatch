@@ -1,9 +1,27 @@
 /* Catppuccin Mocha palette — dark mode */
 
-@define-color cat_panel_bg   #11111b;
+/* How far a card sinks below its background. Carries its own alpha so a
+   theme sets the depth as well as the direction: the ground was lightened
+   precisely so that digging into it has room, which it did not when the
+   panel sat on near-black.
+
+   0.45, not the 0.26 this started at: 0.26 measured 14 points of luminance
+   between a card and the ground, which reads as "almost the same" rather than as
+   depth. 0.45 doubles that to 24. Anything below ~10 is invisible outright —
+   worth knowing before spending a change on it. */
+@define-color cat_row_step  rgba(0, 0, 0, 0.45);
+/* surface0 taken 10% down (#313244 → #2c2d3d): still light enough that
+   `cat_row_step` has somewhere to dig, but no longer competing with the cards it
+   holds. Deliberately off the Catppuccin ramp — surface0 was the nearest token
+   and sat too high, while the one below it (base, #1e1e2e) is the *bar's* own
+   colour, which would collapse the distinction between the two surfaces.
+
+   The waybar pill mirrors this value through an alpha solve; the note on
+   `#vibewatch` in style-dark.css carries the arithmetic. Move one, re-solve the
+   other. */
+@define-color cat_panel_bg   #2c2d3d;
 @define-color cat_border     #585b70;
 @define-color cat_hover_bg   #45475a;
-@define-color cat_divider    #585b70;
 @define-color cat_button_bg  #313244;
 
 @define-color cat_text       #cdd6f4;

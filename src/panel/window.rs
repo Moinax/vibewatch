@@ -71,6 +71,31 @@ fn alive_elapsed() -> Duration {
     ALIVE_SINCE.with(|c| c.get().elapsed())
 }
 
+/// vibewatch's own mark, beside the panel title — the same file the waybar pill
+/// paints, embedded rather than read from `~/.config/vibewatch/logos/` so the
+/// panel does not depend on `vibewatch install` having run.
+///
+/// `None` when the SVG cannot be decoded, which means no gdk-pixbuf SVG loader
+/// (librsvg) on the system. The header then simply has no mark: a missing
+/// decoration must never be the reason a panel fails to build.
+fn brand_mark() -> Option<gtk::Image> {
+    const MARK: &[u8] = include_bytes!("../../assets/logos/vibewatch.svg");
+    let stream = gtk::gio::MemoryInputStream::from_bytes(&gtk::glib::Bytes::from_static(MARK));
+    // Rasterised at 2x the display size so it stays clean on a HiDPI output.
+    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
+        &stream,
+        32,
+        32,
+        true,
+        gtk::gio::Cancellable::NONE,
+    )
+    .ok()?;
+    let image = gtk::Image::from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)));
+    image.set_pixel_size(16);
+    image.add_css_class("panel-mark");
+    Some(image)
+}
+
 /// Set the mute button's icon and tooltip to match the current state.
 fn apply_mute_icon(btn: &gtk::Button, muted: bool) {
     btn.set_icon_name(if muted {
@@ -129,15 +154,23 @@ pub fn build_window(
 
     const PALETTE_MOCHA: &str = include_str!("../../assets/palette-mocha.css");
     const PALETTE_LATTE: &str = include_str!("../../assets/palette-latte.css");
-    let load_palette = |provider: &gtk::CssProvider, dark: bool| {
+    /// Adopt a colour scheme across both surfaces vibewatch paints.
+    ///
+    /// The panel's half is CSS. The bar's half is not: those colours are inline
+    /// Pango the daemon writes into its own payload, out of reach of any
+    /// stylesheet, so the flavour has to be pushed into `waybar` by hand. GTK is
+    /// the right place to push it from — it is the one component here that hears
+    /// the portal's scheme changes live, and the daemon owns both surfaces.
+    fn apply_scheme(provider: &gtk::CssProvider, dark: bool) {
         provider.load_from_string(if dark { PALETTE_MOCHA } else { PALETTE_LATTE });
-    };
+        crate::waybar::set_dark_mode(dark);
+    }
 
     let style_manager = adw::StyleManager::default();
-    load_palette(&palette_provider, style_manager.is_dark());
+    apply_scheme(&palette_provider, style_manager.is_dark());
     let palette_for_notify = palette_provider.clone();
     style_manager.connect_dark_notify(move |sm| {
-        load_palette(&palette_for_notify, sm.is_dark());
+        apply_scheme(&palette_for_notify, sm.is_dark());
     });
 
     // Main layout box
@@ -151,6 +184,10 @@ pub fn build_window(
     // Header row: app title on the left, sound mute toggle on the right.
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     header.add_css_class("panel-header");
+
+    if let Some(mark) = brand_mark() {
+        header.append(&mark);
+    }
 
     let title = gtk::Label::new(Some("vibewatch"));
     title.add_css_class("panel-title");
@@ -301,13 +338,20 @@ pub fn build_window(
         }
 
         // Auto-close: hide once nothing needs attention and the pointer has
-        // left the panel for `auto_close_delay`. Sessions awaiting approval,
-        // and finished ones nobody has clicked yet, keep it open
-        // indefinitely — clicking the card is what releases the latter.
+        // left the panel for `auto_close_delay`.
+        //
+        // Only a session awaiting approval holds the drawer open, because only
+        // that one cannot proceed without you. A finish used to hold it too, and
+        // in use that was wrong: the drawer stayed parked over the work for as
+        // long as it took to notice it. The finish is not lost by closing —
+        // `just_finished` is not time-based, so the card stays peach and the row
+        // keeps its check until the click acknowledges it or that agent picks
+        // the work back up. Announcing pops the drawer open again anyway, and
+        // `keep_alive` on show gives it a fresh dwell each time.
         if panel_cfg.auto_close {
             let needs_attention = sessions
                 .iter()
-                .any(|s| s.status == SessionStatus::WaitingApproval || s.just_finished());
+                .any(|s| s.status == SessionStatus::WaitingApproval);
             if needs_attention || hovered.get() {
                 keep_alive();
             } else if alive_elapsed() >= auto_close_delay {

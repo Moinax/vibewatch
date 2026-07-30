@@ -1,9 +1,30 @@
 /* Catppuccin Latte palette — light mode */
 
-@define-color cat_panel_bg   #eff1f5;
+/* How far a card sinks below its background. Carries its own alpha so a
+   theme sets the depth as well as the direction: on a light ground a little
+   black goes a long way, so this stays far gentler than Mocha's 0.45.
+
+   0.12 rather than 0.10: the ground below moved off `base` and took ~10 points
+   of absolute room with it, since the same fraction of black over a darker
+   ground yields a smaller absolute step. This buys them back. Whatever it is,
+   the waybar state chip must carry the identical number — the two are one
+   surface. */
+@define-color cat_row_step  rgba(0, 0, 0, 0.12);
+/* surface0, not `base`. Base is what the *bar* is made of, and a panel painted
+   the same colour could only separate from the bar by its alpha — an difference
+   worth 0.10*(wallpaper - base), which vanishes over a light wallpaper. Measured:
+   7 points, and a light theme's wallpaper is light by definition. A hairline was
+   hiding it.
+
+   surface0 is one step off base, the same role Mocha's ground plays, and it puts
+   ~25 points between the pill and the bar over a wallpaper like the one here.
+   Worst case is a *dark* wallpaper under a light theme, where it narrows to 7 —
+   the sign flips rather than the gap closing, so the two never coincide. If that
+   case ever matters, surface1 (#bcc0cc) holds a 22-point floor throughout, at the
+   cost of a visibly greyer drawer. */
+@define-color cat_panel_bg   #ccd0da;
 @define-color cat_border     #acb0be;
 @define-color cat_hover_bg   #bcc0cc;
-@define-color cat_divider    #acb0be;
 @define-color cat_button_bg  #ccd0da;
 
 @define-color cat_text       #4c4f69;

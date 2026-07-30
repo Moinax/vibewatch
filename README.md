@@ -127,19 +127,55 @@ The daemon emits the line as a JSON object with these relevant fields:
 | `class`  | Two entries: the state (`idle`, `active`, `attention`) and the mark (`logo-*`), as an array so waybar replaces the whole list on each update |
 | `sessions` | Full session snapshot (panel consumers; ignored by waybar)                                     |
 
-The **status word** is colored by the daemon using the [Catppuccin](https://catppuccin.com/) palette (Mocha when the system is in dark mode, Latte otherwise — detected via `gsettings get org.gnome.desktop.interface color-scheme`):
+The **status word** is colored by the daemon using the [Catppuccin](https://catppuccin.com/) palette (Mocha when the system is in dark mode, Latte otherwise). The daemon follows the scheme live: GTK's style manager hears the portal's changes and pushes the flavour into the bar's payload at the same moment it swaps the panel's own palette. Short-lived CLI invocations have no GTK to ask, so they seed from `gsettings get org.gnome.desktop.interface color-scheme`:
 
-| Status                  | Mocha     | Latte     |
-|-------------------------|-----------|-----------|
-| `thinking`              | `#74c7ec` | `#209fb5` |
-| `executing` / `running` | `#a6e3a1` | `#40a02b` |
-| `✔ done` (just finished)| `#fab387` | `#fe640b` |
-| `waiting-approval`      | *(skipped — handled by `.attention` CSS background)* | |
-| `idle` / `stopped`      | `#6c7086` | `#8c8fa1` |
+| Status                   | Icon                       | Mocha     | Latte     |
+|--------------------------|----------------------------|-----------|-----------|
+| `thinking`               | `md-thought_bubble`        | `#74c7ec` | `#209fb5` |
+| `executing`              | per tool, see below        | `#a6e3a1` | `#40a02b` |
+| `done` (just finished)   | `U+2714`, a heavy check    | `#fab387` | `#fe640b` |
+| `awaiting approval`      | `fa-question`              | *(skipped — handled by `.attention` CSS background)* | |
+| `idle` / `running`       | `md-sleep`, a literal zᶻᶻ  | `#6c7086` | `#8c8fa1` |
+| `stopped`                | `U+00D7`, a multiplication sign | `#6c7086` | `#8c8fa1` |
+
+While a tool runs, the icon says what kind of work it is: a terminal for `Bash`, a pencil for `Edit`/`Write`, a document for `Read`, a magnifier for `Grep`/`Glob`, a globe for `WebFetch`, a robot for a sub-agent (`Agent`/`Task`), a checklist for `TodoWrite`, a plug for any MCP tool. Anything else runs *something*, so it falls back to the terminal. The table is `Session::tool_icon`.
+
+The word comes from one place, `Session::state_label`, so the bar and the panel cannot describe the same session differently — they did once, the bar saying `✔ done` while the panel said `finished`. The shape comes from another, `Session::indicator_glyph`, so the state survives being read by someone who cannot tell teal from green.
+
+Word and shape stay separate because the two surfaces have different room for them. The panel has an indicator column and draws the shape there, next to the bare word. The waybar is a single label with no such column, so for the one state whose word would otherwise be a bare `done` in a colour it inlines the mark: `✔ done`. Every other state names a tool or an action and carries itself.
+
+Every icon is checked rendered at 13px, the size the panel's indicator draws at, because that is where they fail: anything with internal detail collapses into a smudge. A brain for `thinking` was tried and dropped for exactly that — it needs 17px before it reads as a brain — so thinking wears a thought bubble instead.
+
+These are Nerd Font glyphs, so **the panel needs a Nerd Font in its font stack**, which `assets/style.css` names on `.indicator`. Without one that row draws tofu; the waybar module already required a Nerd Font for the agent marks, so this only extends the requirement to the panel.
+
+`running` is the scan's "process is alive, nothing reported yet" state. It reads as `idle` in both surfaces, which is why it shares the hollow ring.
 
 So the inline color always looks "right" on any bar theme without needing user CSS. The one thing you do want to style yourself is the `.attention` state (a session is blocked on a widget click), because its visibility depends on your bar's background.
 
 The widget uses Waybar's **continuous** custom-module mode: `vibewatch status --watch` stays connected to the daemon and writes one JSON line per transition, so the bar updates the instant a tool starts or a prompt arrives — no 2 s polling lag. The module config has no `interval` field (see `contrib/waybar-module.jsonc`).
+
+### Splitting the pill
+
+Pango can colour text but cannot draw a rounded background, so a state word in its own chip needs to be a real widget. Waybar gives you that through a `group/` of children — the same mechanism `group/stats` uses for `cpu` and `memory` — and each child needs its own `exec`, since one stream cannot feed two widgets. Hence `--part`:
+
+```jsonc
+"group/vibewatch": {
+  "orientation": "horizontal",
+  "modules": ["custom/vibewatch-name", "custom/vibewatch-state", "custom/vibewatch-count"]
+}
+```
+
+with each child running `vibewatch status --watch --part name` / `state` / `count`. The full snippet, and the CSS to go with it, are in [`contrib/waybar-module.jsonc`](contrib/waybar-module.jsonc). Use `custom/vibewatch` instead if you want the single-label form; it is still the default and unchanged.
+
+Three things are easy to get wrong here:
+
+- **A `group/` does not match `.module`.** It is a box, not a module, so the pill background has to name `#vibewatch` explicitly or each child ends up carrying its own chip and the bar grows extra pills.
+- **A group emits no CSS class.** Only the children do, so the group cannot know the fleet is blocked on you; put `.attention` on a child. vibewatch's own bar puts it on the state chip, which reads better anyway — the state is the thing waiting.
+- **Do not reach for CSS `:empty`** to collapse the count child when one agent is alive. GTK has no such pseudo-class, and it does not degrade gracefully: waybar rejects the whole stylesheet and exits, taking the bar with it. Waybar's own `"hide-empty-text": true` drops the widget instead, padding and all. (The daemon also puts an `empty` class on that part, for anyone who would rather style it than hide it.)
+
+The recess is translucent black rather than a solid colour on purpose. The bar is see-through, so the chip has to darken the wallpaper showing through it too; an opaque fill would ignore whatever is behind and read as a floating slab.
+
+Cost, measured rather than assumed: each subscriber is ~5 MB PSS, so a three-child group across three monitors is ~46 MB against ~15 MB for the single module. (Its ~28 MB RSS is mostly shared library pages, counted once per process — RSS overstates this by 5×.)
 
 A reference snippet lives at [`contrib/waybar-style.css`](contrib/waybar-style.css) — drop it into your waybar `style.css` or `@import` it:
 
@@ -189,6 +225,7 @@ The name is held in memory, so a daemon restart drops it back to the agent's tit
 | `vibewatch daemon`                  | Start the daemon (auto-embeds the GTK panel when `WAYLAND_DISPLAY` is set) |
 | `vibewatch status`                  | Emit the current session snapshot as JSON (one-shot)          |
 | `vibewatch status --watch`          | Stream JSON lines on every state change (for Waybar continuous mode) |
+| `… --part name\|state\|count`        | Stream one slice instead of the whole line — one per child of a `group/` (see [Splitting the pill](#splitting-the-pill)) |
 | `vibewatch toggle-panel`            | Show/hide the overlay panel                                   |
 | `vibewatch rename <id> <name>`      | Name a session yourself, overriding the agent's own title (see [Session names](#session-names)) |
 | `vibewatch notify <event> --agent <name>` | Forward a hook event (reads the payload from stdin)     |

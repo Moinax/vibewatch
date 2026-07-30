@@ -18,7 +18,17 @@ window.csd,
 }
 
 .main-box {
-    background-color: alpha(@cat_panel_bg, 0.94);
+    /* vibewatch's own ground, and the reference the waybar module mirrors.
+       0.95, not the 0.22 a bar chip carries: a chip sits on a bar that is already
+       0.85 opaque, so its *total* coverage of the wallpaper is 0.883, and at a
+       literal 0.22 this window would be a pane of glass with text on it. 0.883
+       was tried and let too much of the desktop through, and 0.92 still did, so
+       this leaves the wallpaper only a twentieth of the surface.
+
+       The waybar pill's colour is derived from this figure — see the note on
+       `#vibewatch` in the user's stylesheet. Changing it moves the target the bar
+       is aiming at, so the two have to be re-solved together. */
+    background-color: alpha(@cat_panel_bg, 0.95);
     border-radius: 14px;
     border: 1px solid alpha(@cat_border, 0.25);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
@@ -93,25 +103,41 @@ window.csd,
 
 /* ── Session card ─────────────────────────────────────────────── */
 
+/* Each row is dug into the ground, the same recess the waybar pill puts behind
+   its state. Darkening only works because the ground was lightened to make room
+   for it: over the old near-black panel, 40% black moved (19,19,29) to (12,12,18)
+   — seven points for the eye to find. Depth and direction both live in
+   `cat_row_step`, so a theme can tune how deep it digs.
+
+   It also replaces the hairline that used to divide the rows: once every card
+   has an edge of its own, a separator is drawing a boundary that is already
+   there. The margin below is what spaces them now. */
 .session-row {
-    background: transparent;
-    margin: 1px 5px;
+    background-color: @cat_row_step;
+    margin: 3px 6px;
     padding: 0;
     border-radius: 10px;
 }
 
+/* Hover and the two attention tints go on as a *second* layer, via a flat
+   gradient, rather than as another `background-color` — that property holds one
+   value, so setting it here would drop the recess and leave the rows that most
+   want emphasis lighter than the calm ones. */
 .session-row:hover {
-    background-color: alpha(@cat_hover_bg, 0.20);
+    background-image: linear-gradient(alpha(@cat_hover_bg, 0.22),
+                                      alpha(@cat_hover_bg, 0.22));
 }
 
 /* Awaiting approval: tint the whole card so the row reads as "attention
    needed" at a glance, independent of the state-line color. */
 .session-row.waiting-approval {
-    background-color: alpha(@cat_teal, 0.09);
+    background-image: linear-gradient(alpha(@cat_teal, 0.13),
+                                      alpha(@cat_teal, 0.13));
 }
 
 .session-row.waiting-approval:hover {
-    background-color: alpha(@cat_teal, 0.14);
+    background-image: linear-gradient(alpha(@cat_teal, 0.20),
+                                      alpha(@cat_teal, 0.20));
 }
 
 /* Just finished: the panel pops itself open on the completion chime, so the
@@ -119,27 +145,37 @@ window.csd,
    in peach, a hue no other state uses. Stays lit until the card is clicked
    (or the agent picks the work back up). */
 .session-row.just-finished {
-    background-color: alpha(@cat_peach, 0.09);
+    background-image: linear-gradient(alpha(@cat_peach, 0.13),
+                                      alpha(@cat_peach, 0.13));
 }
 
 .session-row.just-finished:hover {
-    background-color: alpha(@cat_peach, 0.14);
+    background-image: linear-gradient(alpha(@cat_peach, 0.20),
+                                      alpha(@cat_peach, 0.20));
 }
 
-/* Subtle separator between cards */
-.session-row:not(:last-child) .card-box {
-    border-bottom: 1px solid alpha(@cat_divider, 0.12);
-}
+/* ── Indicator ────────────────────────────────────────────────── */
 
-.card-box {
-    /* Internal card padding */
-}
+/* One icon per state rather than one dot in six colours (see
+   `Session::indicator_glyph`), so the state reads without depending on hue, and
+   while a tool runs it says which kind of work it is.
 
-/* ── Indicator dot ────────────────────────────────────────────── */
+   These are Nerd Font glyphs, so a Nerd Font has to be named here: the panel
+   otherwise inherits GTK's UI font (Noto Sans), which has nothing in the private
+   use area and would draw tofu. The geometric shapes these replaced needed no
+   such stack. Listed widest-net first, then a couple of common patched families;
+   without any of them the indicator is the one part of the panel that degrades.
 
+   13px, not the 9px a plain dot got away with: these need the pixels to come out
+   crisp, and the icon is the *only* place the mark appears — the action line
+   beside it carries the bare word, since printing the check twice on one row is
+   what a dot never did. `min-width` absorbs the widest glyph so the text beside
+   it stays aligned row to row. */
 .indicator {
-    font-size: 9px;
-    min-width: 12px;
+    font-family: "Symbols Nerd Font", "Maple Mono NF", "FiraCode Nerd Font",
+                 "MesloLGS Nerd Font", monospace;
+    font-size: 13px;
+    min-width: 14px;
     margin-top: 1px;
 }
 

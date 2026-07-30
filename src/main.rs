@@ -53,6 +53,12 @@ enum Commands {
     Status {
         #[arg(long)]
         watch: bool,
+        /// Which slice of the line to emit. `all` is the single-module layout;
+        /// the others exist so a `group/` of child widgets can give each piece
+        /// its own CSS — one stream per child, since waybar cannot feed two
+        /// widgets from one `exec`.
+        #[arg(long, value_enum, default_value_t = ipc::StatusPart::All)]
+        part: ipc::StatusPart,
     },
     /// Toggle the overlay panel visibility
     TogglePanel,
@@ -91,7 +97,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Notify { event, agent } => {
             cli_runtime()?.block_on(notify::handle_notify(&event, &agent))
         }
-        Commands::Status { watch } => cli_runtime()?.block_on(run_status(watch)),
+        Commands::Status { watch, part } => cli_runtime()?.block_on(run_status(watch, part)),
         Commands::TogglePanel => cli_runtime()?.block_on(run_toggle_panel()),
         Commands::Rename { session_id, name } => {
             cli_runtime()?.block_on(run_rename(session_id, name))
@@ -1018,24 +1024,28 @@ async fn handle_connection(
                     }
                 });
             }
-            InboundEvent::GetStatus => {
+            InboundEvent::GetStatus { part } => {
                 let sessions = registry.all();
                 let status = waybar::build_status(&sessions);
-                let mut json = waybar::payload(&status);
+                let mut json = waybar::payload_part(&status, part);
                 json.push('\n');
                 let _ = write_half.write_all(json.as_bytes()).await;
                 let _ = write_half.flush().await;
                 return;
             }
-            InboundEvent::SubscribeStatus => {
+            InboundEvent::SubscribeStatus { part } => {
                 // Push one line per state change. The initial line is emitted
                 // immediately so the subscriber doesn't wait for the next
                 // transition to render something.
+                //
+                // De-duplicating on the *part* and not the whole line matters
+                // once a bar runs several children: a name change must not wake
+                // the state widget, or every child would redraw on every event.
                 let mut last_payload = String::new();
                 loop {
                     let sessions = registry.all();
                     let status = waybar::build_status(&sessions);
-                    let mut json = waybar::payload(&status);
+                    let mut json = waybar::payload_part(&status, part);
                     if json != last_payload {
                         last_payload = json.clone();
                         json.push('\n');
@@ -1146,21 +1156,22 @@ fn parse_agent_kind(s: &str) -> AgentKind {
 }
 
 /// Connect to the daemon and print current status as Waybar JSON.
-async fn run_status(watch: bool) -> anyhow::Result<()> {
+async fn run_status(watch: bool, part: ipc::StatusPart) -> anyhow::Result<()> {
     let config = Config::load()?;
     let socket_path = config.socket_path();
 
     if watch {
-        return run_status_watch(&socket_path).await;
+        return run_status_watch(&socket_path, part).await;
     }
 
     // Bounded wait: if the daemon hangs, waybar would hang too and accumulate
     // stalled `status` subprocesses, undoing the fire-and-forget fix.
     let timeout = std::time::Duration::from_secs(2);
-    let request = ipc::request_response(&socket_path, &InboundEvent::GetStatus);
+    let event = InboundEvent::GetStatus { part };
+    let request = ipc::request_response(&socket_path, &event);
     match tokio::time::timeout(timeout, request).await {
         Ok(Ok(Some(response))) => println!("{}", response),
-        _ => waybar::print_waybar_status(&[]),
+        _ => waybar::print_waybar_part(&[], part),
     }
 
     Ok(())
@@ -1169,25 +1180,31 @@ async fn run_status(watch: bool) -> anyhow::Result<()> {
 /// Streaming subscriber: keep forwarding daemon-pushed JSON lines to stdout
 /// forever. Reconnects on socket drops (daemon restart) so waybar's
 /// continuous custom-module stays alive across daemon upgrades.
-async fn run_status_watch(socket_path: &std::path::Path) -> anyhow::Result<()> {
+async fn run_status_watch(
+    socket_path: &std::path::Path,
+    part: ipc::StatusPart,
+) -> anyhow::Result<()> {
     const RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
     loop {
         // Either a clean close (Ok) or a connect/read failure (Err) means the
         // widget should show offline until we reconnect.
-        let _ = stream_once(socket_path).await;
-        emit_offline();
+        let _ = stream_once(socket_path, part).await;
+        emit_offline(part);
         tokio::time::sleep(RETRY).await;
     }
 }
 
-async fn stream_once(socket_path: &std::path::Path) -> anyhow::Result<()> {
+async fn stream_once(
+    socket_path: &std::path::Path,
+    part: ipc::StatusPart,
+) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
 
     let mut stream = UnixStream::connect(socket_path).await?;
 
-    let event = serde_json::to_string(&InboundEvent::SubscribeStatus)?;
+    let event = serde_json::to_string(&InboundEvent::SubscribeStatus { part })?;
     stream.write_all(event.as_bytes()).await?;
     stream.write_all(b"\n").await?;
     stream.flush().await?;
@@ -1202,8 +1219,8 @@ async fn stream_once(socket_path: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn emit_offline() {
-    waybar::print_waybar_status(&[]);
+fn emit_offline(part: ipc::StatusPart) {
+    waybar::print_waybar_part(&[], part);
     use std::io::Write;
     let _ = std::io::stdout().flush();
 }
