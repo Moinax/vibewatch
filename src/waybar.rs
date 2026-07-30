@@ -666,7 +666,7 @@ mod tests {
         // 30 multibyte chars; each is 3 bytes in UTF-8. Naive byte slicing
         // would panic; char-based truncation must produce a valid string of
         // MAX_NAME_CHARS chars total (including the ellipsis).
-        let multibyte: String = std::iter::repeat('é').take(30).collect();
+        let multibyte = "é".repeat(30);
         let truncated = truncate_name(&multibyte);
         assert_eq!(truncated.chars().count(), MAX_NAME_CHARS);
         assert!(truncated.ends_with('\u{2026}'));

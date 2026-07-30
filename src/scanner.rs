@@ -220,6 +220,7 @@ pub async fn run_scanner(
             let Some(snapshot) = crate::codex_rollout::parse_file(&path) else {
                 continue;
             };
+            session.agent_session_id = Some(snapshot.session_id.clone());
             let finished_turn = is_codex_finish_transition(session.status, snapshot.status);
             session.cwd = snapshot.cwd;
             session.status = snapshot.status;

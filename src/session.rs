@@ -125,7 +125,7 @@ pub fn inspect_pid_cmdline(pid: u32) -> PidCmdlineInfo {
 }
 
 fn is_programmatic_args(args: &[&str]) -> bool {
-    if args.iter().any(|a| *a == "--no-session-persistence") {
+    if args.contains(&"--no-session-persistence") {
         return true;
     }
     args.windows(2)
@@ -399,6 +399,11 @@ pub struct Session {
     /// Cached path to the transcript file once resolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript_path: Option<std::path::PathBuf>,
+    /// Provider-owned session id discovered from a transcript. Scanner rows
+    /// use `scan-<agent>-<pid>` as their registry key, but integrations name
+    /// sessions with the real Claude/Codex id.
+    #[serde(skip)]
+    pub agent_session_id: Option<String>,
     /// Set while the session is waiting on a user Accept/Deny click in
     /// the widget. `None` at all other times.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -470,6 +475,7 @@ impl Session {
             last_agent_text_at: None,
             last_prompt_at: None,
             transcript_path: None,
+            agent_session_id: None,
             pending_approval: None,
             finished_at: None,
             finish_seq: 0,
@@ -806,10 +812,18 @@ impl SessionRegistry {
         let mut map = self.sessions.write().unwrap();
         if let Some(session) = map.get_mut(id) {
             session.set_name_from_outside(name, agent_title);
-            true
-        } else {
-            false
+            return true;
         }
+
+        let scanner_id = map
+            .iter()
+            .find(|(_, session)| session.agent_session_id.as_deref() == Some(id))
+            .map(|(id, _)| id.clone());
+        let Some(session) = scanner_id.and_then(|id| map.get_mut(&id)) else {
+            return false;
+        };
+        session.set_name_from_outside(name, agent_title);
+        true
     }
 
     /// Offer the agent's own title as the session name, honouring a name pushed
@@ -1049,10 +1063,10 @@ pub fn zellij_client_pid(session: &str) -> Option<u32> {
             .filter(|a| !a.is_empty())
             .collect();
         // Skip the shared server; match a client that names this session.
-        if args.iter().any(|a| *a == "--server") {
+        if args.contains(&"--server") {
             continue;
         }
-        if args.iter().any(|a| *a == session) {
+        if args.contains(&session) {
             return Some(pid);
         }
     }
@@ -1583,6 +1597,28 @@ mod tests {
             "but a moved title takes it back"
         );
         assert!(!registry.set_name_from_outside("gone", "x".into(), None));
+    }
+
+    #[test]
+    fn scanner_session_accepts_a_name_addressed_to_its_provider_id() {
+        let registry = SessionRegistry::new();
+        let mut session = Session::new("scan-codex-42".into(), AgentKind::Codex, 42);
+        session.agent_session_id = Some("thread-abc".into());
+        registry.register(session);
+
+        assert!(registry.set_name_from_outside(
+            "thread-abc",
+            "vibewatch stale".into(),
+            None
+        ));
+        assert_eq!(
+            registry
+                .get("scan-codex-42")
+                .unwrap()
+                .session_name
+                .as_deref(),
+            Some("vibewatch stale")
+        );
     }
 
     #[test]
