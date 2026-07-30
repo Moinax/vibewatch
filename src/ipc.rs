@@ -93,6 +93,14 @@ pub enum InboundEvent {
     AcknowledgeSession {
         session_id: String,
     },
+    /// Someone outside vibewatch has a better name for this session than the
+    /// agent's own title — a multiplexer tab the user renamed by hand. Their
+    /// words outrank the agent's account of the work, so this name holds until
+    /// that title *moves*, and then the agent gets the say back.
+    SetSessionName {
+        session_id: String,
+        name: String,
+    },
 }
 
 /// Status response for Waybar.

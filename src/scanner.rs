@@ -166,10 +166,12 @@ pub async fn run_scanner(
         for session in registry.all() {
             // Only refresh hook sessions (UUID ids), not scanner sessions
             if !session.id.starts_with("scan-") && !session.id.starts_with("window-") {
-                if let Some(name) = crate::session::read_transcript_name(&session.id) {
-                    if session.session_name.as_deref() != Some(&name) {
-                        registry.set_session_name(&session.id, name);
-                    }
+                if let Some(title) = crate::session::read_transcript_name(&session.id) {
+                    // Not an unconditional overwrite: a name pushed in from
+                    // outside holds until this title *moves*, or this tick —
+                    // which runs every couple of seconds — would undo every
+                    // hand rename before the user let go of the keyboard.
+                    registry.apply_agent_title(&session.id, &title);
                 }
             }
         }

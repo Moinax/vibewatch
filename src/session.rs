@@ -373,6 +373,20 @@ pub struct Session {
     /// Daemon bookkeeping, never the wire.
     #[serde(skip)]
     pub pending_agents: u32,
+    /// Set while `session_name` came from outside vibewatch — a multiplexer tab
+    /// the user renamed by hand, pushed in with `SetSessionName`.
+    ///
+    /// A hand-typed name has to survive the scan that re-reads the agent's own
+    /// title every tick, or it would be overwritten within seconds. But it must
+    /// not win forever either: Claude resharpens its title as the work drifts,
+    /// and that is worth hearing. See [`Session::agent_title_wins`].
+    #[serde(skip)]
+    pub name_from_outside: bool,
+    /// The agent's own title as it stood when that name was adopted — `None`
+    /// when the agent had not titled itself yet. Meaningless unless
+    /// `name_from_outside`.
+    #[serde(skip)]
+    pub title_when_named: Option<String>,
 }
 
 /// Unix epoch seconds; 0 if the system clock predates the epoch.
@@ -409,6 +423,46 @@ impl Session {
             finished_at: None,
             finish_seq: 0,
             pending_agents: 0,
+            name_from_outside: false,
+            title_when_named: None,
+        }
+    }
+
+    /// Adopt a name chosen outside vibewatch, banking the agent's own title as
+    /// it stands so the transcript can win the name back once it says something
+    /// new. `agent_title` may be `None` — an agent that has not titled itself
+    /// yet; the first title seen is banked then (see [`Self::agent_title_wins`]).
+    pub fn set_name_from_outside(&mut self, name: String, agent_title: Option<String>) {
+        self.session_name = Some(name);
+        self.name_from_outside = true;
+        self.title_when_named = agent_title;
+    }
+
+    /// Should `agent_title`, freshly read from the transcript, become the
+    /// session name? Always, unless a name from outside is being held over that
+    /// same title — an unchanged title has nothing new to say, and it is read
+    /// again on every scan tick, so without this the hand-typed name would be
+    /// gone within seconds.
+    ///
+    /// Mutating rather than a plain predicate because both "no" answers have to
+    /// record something: the first sighting of a title gets banked so the change
+    /// that frees the name is the *next* one and not everything it missed, and a
+    /// title that has genuinely moved spends the hold for good.
+    pub fn agent_title_wins(&mut self, agent_title: &str) -> bool {
+        if !self.name_from_outside {
+            return true;
+        }
+        match self.title_when_named.as_deref() {
+            None => {
+                self.title_when_named = Some(agent_title.to_string());
+                false
+            }
+            Some(banked) if banked == agent_title => false,
+            Some(_) => {
+                self.name_from_outside = false;
+                self.title_when_named = None;
+                true
+            }
         }
     }
 
@@ -626,11 +680,35 @@ impl SessionRegistry {
         map.insert(session.id.clone(), session);
     }
 
-    /// Update the session name. Returns false if the session does not exist.
-    pub fn set_session_name(&self, id: &str, name: String) -> bool {
+    /// Adopt a name chosen outside vibewatch. `agent_title` is the agent's own
+    /// title as it stands, banked so the transcript can win the name back once
+    /// it says something new. Returns false if the session is unknown.
+    pub fn set_name_from_outside(
+        &self,
+        id: &str,
+        name: String,
+        agent_title: Option<String>,
+    ) -> bool {
         let mut map = self.sessions.write().unwrap();
         if let Some(session) = map.get_mut(id) {
-            session.session_name = Some(name);
+            session.set_name_from_outside(name, agent_title);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Offer the agent's own title as the session name, honouring a name pushed
+    /// in from outside for as long as that title stands still. Done under the
+    /// write lock rather than on a clone: the scan tick and the hooks both name
+    /// sessions, and a read-modify-write of the whole struct would let one lose
+    /// the other's status update.
+    pub fn apply_agent_title(&self, id: &str, agent_title: &str) -> bool {
+        let mut map = self.sessions.write().unwrap();
+        if let Some(session) = map.get_mut(id) {
+            if session.agent_title_wins(agent_title) {
+                session.session_name = Some(agent_title.to_string());
+            }
             true
         } else {
             false
@@ -1220,6 +1298,84 @@ mod tests {
         // Back at work: the turn moved on.
         s.status = SessionStatus::Executing;
         assert!(!s.announceable());
+    }
+
+    #[test]
+    fn an_agent_title_names_a_session_nobody_else_has_named() {
+        let mut s = Session::new("s".into(), AgentKind::ClaudeCode, 1);
+        assert!(
+            s.agent_title_wins("vibewatch-on-idle"),
+            "with no outside name the agent's own title is all there is"
+        );
+    }
+
+    #[test]
+    fn a_hand_typed_name_survives_the_title_it_replaced() {
+        // The bug this exists for: the scan tick re-reads the agent's title every
+        // couple of seconds, so an unguarded refresh undid a tab rename before
+        // the user had let go of the keyboard.
+        let mut s = Session::new("s".into(), AgentKind::ClaudeCode, 1);
+        s.set_name_from_outside("vibewatch ui".into(), Some("vibewatch-on-idle".into()));
+        for _ in 0..5 {
+            assert!(
+                !s.agent_title_wins("vibewatch-on-idle"),
+                "an unchanged title has nothing new to say"
+            );
+        }
+        assert_eq!(s.display_name(), "vibewatch ui");
+    }
+
+    #[test]
+    fn a_title_that_moves_wins_the_name_back_for_good() {
+        let mut s = Session::new("s".into(), AgentKind::ClaudeCode, 1);
+        s.set_name_from_outside("vibewatch ui".into(), Some("vibewatch-on-idle".into()));
+        assert!(
+            s.agent_title_wins("waybar-logo-classes"),
+            "the agent resharpened its title; that is worth hearing"
+        );
+        // And the hold is spent: no going back to the old title afterwards.
+        assert!(s.agent_title_wins("vibewatch-on-idle"));
+        assert!(!s.name_from_outside);
+    }
+
+    #[test]
+    fn naming_a_session_before_its_agent_has_a_title_still_holds() {
+        // Renamed while the agent had written no title at all. The first title
+        // seen gets banked instead of taking the name, so the change that frees
+        // it is the next one and not everything it missed.
+        let mut s = Session::new("s".into(), AgentKind::ClaudeCode, 1);
+        s.set_name_from_outside("vibewatch ui".into(), None);
+        assert!(
+            !s.agent_title_wins("vibewatch-on-idle"),
+            "the first sighting is banked, not applied"
+        );
+        assert_eq!(s.title_when_named.as_deref(), Some("vibewatch-on-idle"));
+        assert!(!s.agent_title_wins("vibewatch-on-idle"), "and then held");
+        assert!(s.agent_title_wins("waybar-logo-classes"), "until it moves");
+    }
+
+    #[test]
+    fn the_registry_reconciles_a_name_and_a_title_without_a_clone() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("s".into(), AgentKind::ClaudeCode, 1));
+        assert!(registry.set_name_from_outside(
+            "s",
+            "vibewatch ui".into(),
+            Some("vibewatch-on-idle".into())
+        ));
+        registry.apply_agent_title("s", "vibewatch-on-idle");
+        assert_eq!(
+            registry.get("s").unwrap().session_name.as_deref(),
+            Some("vibewatch ui"),
+            "the tick must not undo the rename"
+        );
+        registry.apply_agent_title("s", "waybar-logo-classes");
+        assert_eq!(
+            registry.get("s").unwrap().session_name.as_deref(),
+            Some("waybar-logo-classes"),
+            "but a moved title takes it back"
+        );
+        assert!(!registry.set_name_from_outside("gone", "x".into(), None));
     }
 
     #[test]

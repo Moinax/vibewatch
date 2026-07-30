@@ -166,6 +166,22 @@ The marks are single-colour by necessity — GTK paints a `background-image` as-
 
 One caveat if you edit them: **librsvg parses strict XML and rejects a whole file over a double hyphen inside a comment**, leaving the widget silently mark-less. `rsvg-convert -w 17 file.svg -o /tmp/x.png` is the check that matters — Inkscape and ImageMagick are more forgiving than GTK is.
 
+## Session names
+
+A session is named after the agent's own title — the one Claude Code keeps for the conversation, what `/rename` writes and what it resharpens as the work drifts. It is re-read on every scan tick, so a `/rename` shows up in the panel and the bar within seconds without any hook.
+
+If something outside vibewatch has a better name, push it in:
+
+```sh
+vibewatch rename <session-id> "auth token refresh"
+```
+
+That name outranks the agent's title, because a name a person typed beats a model's summary of the work. It is not permanent, though: the agent's title as it stood is banked at that moment, and the first time the title says something *different* the agent gets the say back. So a hand-typed name survives the scan tick that would otherwise wipe it two seconds later, without freezing the session's name forever.
+
+The intended caller is a multiplexer hook. In this repo's own setup, [`herdr-agent-title`](https://github.com/Moinax/dotfiles) runs on Claude Code's `Stop`/`SessionStart` and names the herdr tab, the sidebar and vibewatch together — so renaming a tab by hand renames it everywhere instead of leaving the bar on the old title.
+
+The name is held in memory, so a daemon restart drops it back to the agent's title. A caller that wants it to stick should re-send on every turn; the call is idempotent.
+
 ## CLI
 
 | Command                             | Description                                                   |
@@ -174,6 +190,7 @@ One caveat if you edit them: **librsvg parses strict XML and rejects a whole fil
 | `vibewatch status`                  | Emit the current session snapshot as JSON (one-shot)          |
 | `vibewatch status --watch`          | Stream JSON lines on every state change (for Waybar continuous mode) |
 | `vibewatch toggle-panel`            | Show/hide the overlay panel                                   |
+| `vibewatch rename <id> <name>`      | Name a session yourself, overriding the agent's own title (see [Session names](#session-names)) |
 | `vibewatch notify <event> --agent <name>` | Forward a hook event (reads the payload from stdin)     |
 
 ## Contributing

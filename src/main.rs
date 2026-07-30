@@ -56,6 +56,16 @@ enum Commands {
     },
     /// Toggle the overlay panel visibility
     TogglePanel,
+    /// Name a session yourself, overriding the agent's own title. Meant for a
+    /// multiplexer hook: when the user renames an agent's tab by hand, this is
+    /// how the panel and the bar hear about it. The name holds until the agent's
+    /// own title changes, and then the agent gets the say back.
+    Rename {
+        /// The agent session id (Claude Code's `session_id`).
+        session_id: String,
+        /// The name to show.
+        name: String,
+    },
     /// Install vibewatch's systemd user service and Claude Code hooks.
     Install {
         /// Skip systemd user unit install/enable.
@@ -83,6 +93,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Status { watch } => cli_runtime()?.block_on(run_status(watch)),
         Commands::TogglePanel => cli_runtime()?.block_on(run_toggle_panel()),
+        Commands::Rename { session_id, name } => {
+            cli_runtime()?.block_on(run_rename(session_id, name))
+        }
         Commands::Install { no_service, no_hooks, dry_run, uninstall } => {
             install::run(install::Options {
                 no_service,
@@ -706,8 +719,12 @@ async fn handle_connection(
                             session.id
                         );
                     }
-                    if let Some(name) = session::read_transcript_name(&session_id) {
-                        session.session_name = Some(name);
+                    // Same rule as the scan tick: the agent's title only takes
+                    // the name if it has moved since a hand rename banked it.
+                    if let Some(title) = session::read_transcript_name(&session_id) {
+                        if session.agent_title_wins(&title) {
+                            session.session_name = Some(title);
+                        }
                     }
                     session.touch();
                     log_transition(&session.id, prev, session.status, "UserPromptSubmit");
@@ -1046,6 +1063,18 @@ async fn handle_connection(
                     sender();
                 }
             }
+            InboundEvent::SetSessionName { session_id, name } => {
+                // The agent's title as it stands goes in with the name, so the
+                // hold ends on the next change to it rather than on everything
+                // it has already said.
+                let title = session::read_transcript_name(&session_id);
+                if registry.set_name_from_outside(&session_id, name.clone(), title) {
+                    eprintln!("vibewatch: {session_id} named \"{name}\" from outside");
+                    status_notify.notify_waiters();
+                } else {
+                    log_drop("SetSessionName", &session_id, None);
+                }
+            }
         }
     }
 }
@@ -1180,6 +1209,19 @@ fn emit_offline() {
 }
 
 /// Toggle the panel by sending a TogglePanel IPC event to the daemon.
+/// Push a name in for one session. Silent on success, and never fatal: this
+/// runs from a hook on somebody's turn end, so a daemon that is not up must
+/// cost a warning and nothing else.
+async fn run_rename(session_id: String, name: String) -> anyhow::Result<()> {
+    let config = Config::load()?;
+    let event = InboundEvent::SetSessionName { session_id, name };
+    if let Err(e) = ipc::send_event(&config.socket_path(), &event).await {
+        eprintln!("vibewatch: failed to rename session: {}", e);
+        eprintln!("vibewatch: is the daemon running?");
+    }
+    Ok(())
+}
+
 async fn run_toggle_panel() -> anyhow::Result<()> {
     let config = Config::load()?;
     let socket_path = config.socket_path();
