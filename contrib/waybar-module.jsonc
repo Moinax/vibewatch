@@ -16,7 +16,16 @@
     // Pango can colour text but cannot draw a rounded background, so the state
     // has to be a real widget to get one — the same reason group/stats splits
     // cpu and memory. Waybar cannot feed two widgets from one `exec`, hence
-    // `--part`: three desktop-level subscribers, one per child.
+    // `--part`: three long-running subscribers where the simple form needs one.
+    //
+    // Three *per bar instance*, which is the multiplier to check before reaching
+    // for this form: waybar starts an instance per output its bar is configured
+    // for, and each runs its own copy of every `exec`. Measured on a two-bar
+    // config across three monitors: 9 subscriber processes, ~50MB PSS / ~270MB
+    // RSS in total, against 3 and ~16MB for `custom/vibewatch`. CPU is nil
+    // either way — a subscriber sleeps on the socket — but the daemon fans every
+    // state change out to that many pipes. Worth it for the chip; not worth it
+    // by default.
     //
     // Use "group/vibewatch" in your modules-* array *instead of*
     // "custom/vibewatch", and style it roughly like this:
