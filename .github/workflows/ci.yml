@@ -14,19 +14,21 @@ jobs:
   checks:
     name: Format, lint, and test
     runs-on: ubuntu-24.04
+    container: fedora:42
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes \
-            libadwaita-1-dev \
-            libasound2-dev \
-            libgtk-4-dev \
-            libgtk4-layer-shell-dev
+          dnf install --assumeyes \
+            alsa-lib-devel \
+            gcc \
+            gtk4-devel \
+            gtk4-layer-shell-devel \
+            libadwaita-devel \
+            pkgconf-pkg-config
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
