@@ -12,6 +12,36 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// Resolve the rollout currently held open by a live Codex process.
+///
+/// A Codex process can rotate to a new rollout without changing PID (resume,
+/// compaction, or a new thread). Looking up by cwd cannot distinguish two
+/// Codex processes in the same repository and, once cached, misses that
+/// rotation entirely. The writer's open file descriptor is unambiguous.
+pub fn find_open_for_pid(pid: u32) -> Option<PathBuf> {
+    find_open_in(Path::new("/proc"), pid)
+}
+
+fn find_open_in(proc_root: &Path, pid: u32) -> Option<PathBuf> {
+    let fd_dir = proc_root.join(pid.to_string()).join("fd");
+    std::fs::read_dir(fd_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("rollout-") && name.ends_with(".jsonl"))
+                .unwrap_or(false)
+                && path.components().any(|part| part.as_os_str() == "sessions")
+        })
+        .max_by_key(|path| {
+            std::fs::metadata(path)
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::UNIX_EPOCH)
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RolloutSnapshot {
     pub session_id: String,
@@ -182,6 +212,26 @@ fn extract_detail(payload: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn open_fd_identifies_the_rollout_for_one_pid() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join(".codex/sessions/2026/07/30");
+        let fd_dir = tmp.path().join("proc/42/fd");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&fd_dir).unwrap();
+        let rollout = sessions.join("rollout-current.jsonl");
+        let unrelated = tmp.path().join("notes.jsonl");
+        std::fs::write(&rollout, "{}\n").unwrap();
+        std::fs::write(&unrelated, "{}\n").unwrap();
+        symlink(&unrelated, fd_dir.join("3")).unwrap();
+        symlink(&rollout, fd_dir.join("4")).unwrap();
+
+        assert_eq!(find_open_in(&tmp.path().join("proc"), 42), Some(rollout));
+    }
 
     #[test]
     fn reduces_tool_lifecycle() {

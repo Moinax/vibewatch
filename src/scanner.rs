@@ -193,7 +193,14 @@ pub async fn run_scanner(
             .into_iter()
             .filter(|s| s.agent == AgentKind::Codex)
         {
-            if session.transcript_path.is_none() {
+            // The open fd is authoritative and is checked every tick because a
+            // long-lived Codex process rotates rollout files without changing
+            // PID. It also disambiguates several Codex processes sharing cwd.
+            // Fall back to the cwd search during the short window before Codex
+            // opens its writer, or on platforms without procfs fd links.
+            if let Some(path) = crate::codex_rollout::find_open_for_pid(session.pid) {
+                session.transcript_path = Some(path);
+            } else if session.transcript_path.is_none() {
                 let cwd = session
                     .cwd
                     .clone()
