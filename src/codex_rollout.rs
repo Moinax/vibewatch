@@ -10,7 +10,6 @@
 use crate::session::SessionStatus;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::io::{BufRead, Read, Seek};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,28 +73,7 @@ pub fn find_latest_for_cwd(
 }
 
 pub fn parse_file(path: &Path) -> Option<RolloutSnapshot> {
-    const TAIL_BYTES: u64 = 512 * 1024;
-    let mut file = std::fs::File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    let mut first = String::new();
-    std::io::BufReader::new(file.try_clone().ok()?)
-        .read_line(&mut first)
-        .ok()?;
-
-    if len <= TAIL_BYTES {
-        file.seek(std::io::SeekFrom::Start(0)).ok()?;
-        let mut content = String::new();
-        file.read_to_string(&mut content).ok()?;
-        return parse(&content);
-    }
-
-    file.seek(std::io::SeekFrom::Start(len - TAIL_BYTES)).ok()?;
-    let mut tail = String::new();
-    file.read_to_string(&mut tail).ok()?;
-    // The seek probably landed in the middle of a JSON record.
-    let tail = tail.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
-    first.push_str(tail);
-    parse(&first)
+    parse(&crate::transcript::head_and_tail(path)?)
 }
 
 pub fn parse(content: &str) -> Option<RolloutSnapshot> {
@@ -189,24 +167,16 @@ pub fn parse(content: &str) -> Option<RolloutSnapshot> {
     })
 }
 
+/// Codex nests the tool input one level down and sometimes as a JSON *string*;
+/// once unwrapped it is the same object shape Claude Code writes, so the
+/// key probe and truncation are shared.
 fn extract_detail(payload: &Value) -> Option<String> {
     let raw = payload.get("arguments").or_else(|| payload.get("input"))?;
     let value = match raw {
         Value::String(s) => serde_json::from_str::<Value>(s).ok(),
         other => Some(other.clone()),
     }?;
-    [
-        "cmd",
-        "command",
-        "path",
-        "file_path",
-        "query",
-        "message",
-        "task_name",
-    ]
-    .iter()
-    .find_map(|key| value.get(key).and_then(Value::as_str))
-    .map(|s| s.lines().next().unwrap_or(s).chars().take(160).collect())
+    crate::transcript::tool_detail_from_input(&value)
 }
 
 #[cfg(test)]

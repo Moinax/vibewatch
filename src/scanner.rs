@@ -93,7 +93,10 @@ pub async fn run_scanner(
         let found_processes = scan_agent_processes();
         let all_sessions = registry.all();
         let known_pids: HashSet<u32> = all_sessions.iter().map(|s| s.pid).collect();
-        let census = claude_cwd_census(&found_processes);
+        // Built on the first Claude Code process this tick has never seen. In
+        // steady state that is none of them, and a readlink per live agent every
+        // three seconds is not worth paying for an answer nobody reads.
+        let mut census: Option<HashMap<u32, PathBuf>> = None;
 
         for (kind, pid) in &found_processes {
             if known_pids.contains(pid) {
@@ -108,7 +111,8 @@ pub async fn run_scanner(
             session.session_name = info.session_name;
             session.terminal = Some(detect_terminal(*pid));
             if *kind == AgentKind::ClaudeCode {
-                hydrate_from_transcript(&mut session, &census);
+                let census = census.get_or_insert_with(|| claude_cwd_census(&found_processes));
+                hydrate_from_transcript(&mut session, census);
             }
             registry.register(session);
         }
@@ -199,10 +203,7 @@ pub async fn run_scanner(
                     session.transcript_path = crate::codex_rollout::find_latest_for_cwd(
                         &home.join(".codex/sessions"),
                         &cwd,
-                        process_started_at(session.pid)
-                            .unwrap_or(std::time::UNIX_EPOCH)
-                            .checked_sub(std::time::Duration::from_secs(5))
-                            .unwrap_or(std::time::UNIX_EPOCH),
+                        transcript_floor(session.pid),
                     );
                 }
             }
@@ -276,20 +277,39 @@ fn process_started_at(pid: u32) -> Option<std::time::SystemTime> {
     )
 }
 
-/// How many live Claude Code processes share each cwd. Two agents in one
+/// The cwd of every live Claude Code process. Resolved once for the whole tick
+/// because the answer is needed twice: to find a process's project directory,
+/// and to tell whether another live agent shares it — two agents in one
 /// directory write to the same project directory, and nothing in a transcript
 /// says which process wrote it.
-fn claude_cwd_census(found: &[(AgentKind, u32)]) -> HashMap<PathBuf, usize> {
-    let mut census: HashMap<PathBuf, usize> = HashMap::new();
-    for (kind, pid) in found {
-        if *kind != AgentKind::ClaudeCode {
-            continue;
-        }
-        if let Ok(cwd) = fs::read_link(format!("/proc/{pid}/cwd")) {
-            *census.entry(cwd).or_insert(0) += 1;
-        }
-    }
-    census
+fn claude_cwd_census(found: &[(AgentKind, u32)]) -> HashMap<u32, PathBuf> {
+    found
+        .iter()
+        .filter(|(kind, _)| *kind == AgentKind::ClaudeCode)
+        .filter_map(|(_, pid)| Some((*pid, fs::read_link(format!("/proc/{pid}/cwd")).ok()?)))
+        .collect()
+}
+
+/// Is another live Claude Code process working in the same directory as `pid`?
+/// If so nothing can say which of them wrote the newest transcript there, and
+/// the honest answer is to attach neither.
+fn cwd_is_shared(census: &HashMap<u32, PathBuf>, pid: u32) -> bool {
+    let Some(cwd) = census.get(&pid) else {
+        return false;
+    };
+    census.iter().any(|(other, dir)| *other != pid && dir == cwd)
+}
+
+/// The oldest transcript mtime that can belong to `pid`, with a few seconds of
+/// slack for the gap between exec and the first write.
+///
+/// This is what keeps a long-dead session's transcript — there are dozens per
+/// project — from being pinned on a process that has written nothing yet.
+fn transcript_floor(pid: u32) -> std::time::SystemTime {
+    process_started_at(pid)
+        .unwrap_or(std::time::UNIX_EPOCH)
+        .checked_sub(std::time::Duration::from_secs(5))
+        .unwrap_or(std::time::UNIX_EPOCH)
 }
 
 /// Re-derive a freshly discovered Claude Code session's state from its
@@ -310,11 +330,11 @@ fn claude_cwd_census(found: &[(AgentKind, u32)]) -> HashMap<PathBuf, usize> {
 /// says nothing. The one case that gets a log line is two agents sharing a
 /// directory: that one we could have guessed at and chose not to, since the
 /// wrong row lit up is worse than no row lit up.
-fn hydrate_from_transcript(session: &mut Session, census: &HashMap<PathBuf, usize>) {
-    let Ok(cwd) = fs::read_link(format!("/proc/{}/cwd", session.pid)) else {
+fn hydrate_from_transcript(session: &mut Session, census: &HashMap<u32, PathBuf>) {
+    let Some(cwd) = census.get(&session.pid) else {
         return;
     };
-    if census.get(&cwd).copied().unwrap_or(0) > 1 {
+    if cwd_is_shared(census, session.pid) {
         eprintln!(
             "vibewatch: {} shares {} with another live agent — leaving its state to the hooks",
             session.id,
@@ -325,14 +345,10 @@ fn hydrate_from_transcript(session: &mut Session, census: &HashMap<PathBuf, usiz
     let Some(home) = dirs::home_dir() else {
         return;
     };
-    let not_before = process_started_at(session.pid)
-        .unwrap_or(std::time::UNIX_EPOCH)
-        .checked_sub(std::time::Duration::from_secs(5))
-        .unwrap_or(std::time::UNIX_EPOCH);
     let Some(path) = crate::transcript::find_claude_transcript_for_cwd(
         &home.join(".claude/projects"),
-        &cwd,
-        not_before,
+        cwd,
+        transcript_floor(session.pid),
     ) else {
         return;
     };
@@ -385,16 +401,26 @@ mod tests {
     }
 
     #[test]
-    fn census_counts_claude_pids_per_cwd_only() {
+    fn the_census_resolves_live_claude_pids_and_skips_the_rest() {
         let me = std::process::id();
         let cwd = std::fs::read_link(format!("/proc/{me}/cwd")).expect("own cwd resolves");
         let census = claude_cwd_census(&[
             (AgentKind::ClaudeCode, me),
-            (AgentKind::ClaudeCode, me),
             (AgentKind::Codex, me),
             (AgentKind::ClaudeCode, u32::MAX), // no such process
         ]);
-        assert_eq!(census.get(&cwd).copied(), Some(2));
+        assert_eq!(census.get(&me), Some(&cwd));
+        assert_eq!(census.len(), 1, "a pid with no /proc entry contributes none");
+    }
+
+    #[test]
+    fn a_directory_is_shared_only_when_another_live_agent_is_in_it() {
+        let mine = PathBuf::from("/home/dev/api");
+        let theirs = PathBuf::from("/home/dev/web");
+        let census = HashMap::from([(1, mine.clone()), (2, theirs), (3, mine)]);
+        assert!(cwd_is_shared(&census, 1), "pid 3 is in the same directory");
+        assert!(!cwd_is_shared(&census, 2), "alone in its own");
+        assert!(!cwd_is_shared(&census, 9), "a pid the census never resolved");
     }
 
     #[test]

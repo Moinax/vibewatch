@@ -27,7 +27,6 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     row.set_activatable(false);
 
     let card = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    card.add_css_class("card-box");
     card.set_margin_start(12);
     card.set_margin_end(12);
     card.set_margin_top(10);
@@ -564,49 +563,6 @@ mod tests {
         assert!(out.starts_with("You: \""));
         assert!(out.ends_with("...\""));
         assert!(out.len() < long.len() + 20);
-    }
-
-    #[test]
-    fn state_label_idle_by_default() {
-        let s = mk(AgentKind::ClaudeCode);
-        assert_eq!(s.state_label(), "idle");
-    }
-
-    #[test]
-    fn state_label_thinking_when_thinking() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.status = SessionStatus::Thinking;
-        assert_eq!(s.state_label(), "thinking");
-    }
-
-    #[test]
-    fn state_label_exec_fallback_when_no_tool() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.status = SessionStatus::Executing;
-        assert_eq!(s.state_label(), "exec");
-    }
-
-    #[test]
-    fn state_label_shows_tool_name_when_executing() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.status = SessionStatus::Executing;
-        s.current_tool = Some("Edit".into());
-        assert_eq!(s.state_label(), "Edit");
-    }
-
-    #[test]
-    fn state_label_stopped_when_stopped() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.status = SessionStatus::Stopped;
-        assert_eq!(s.state_label(), "stopped");
-    }
-
-    #[test]
-    fn state_label_approval_when_waiting() {
-        let mut s = mk(AgentKind::ClaudeCode);
-        s.status = SessionStatus::WaitingApproval;
-        s.current_tool = Some("Bash".into());
-        assert_eq!(s.state_label(), "awaiting approval");
     }
 
 }

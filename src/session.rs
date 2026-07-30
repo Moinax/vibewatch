@@ -40,7 +40,9 @@ pub const ICON_TOOL_DEFAULT: &str = "\u{f120}"; // fa-terminal
 /// to the terminal, which is the honest default for "running something".
 pub fn tool_icon(tool: &str) -> &'static str {
     match tool {
-        "Bash" | "BashOutput" | "KillShell" => "\u{f120}", // fa-terminal
+        // The fallback icon *is* the terminal, so the shell tools name it
+        // rather than repeat the codepoint and drift from it.
+        "Bash" | "BashOutput" | "KillShell" => ICON_TOOL_DEFAULT,
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => "\u{f03eb}", // md-pencil
         "Read" | "NotebookRead" => "\u{f09ee}",            // md-file_document_outline
         "Grep" | "Glob" | "LS" => "\u{f0349}",             // md-magnify
@@ -487,6 +489,19 @@ impl Session {
         self.title_when_named = agent_title;
     }
 
+    /// Offer the agent's own title, freshly read from the transcript, as the
+    /// session name. It takes the name unless one pushed in from outside is
+    /// being held over that same title — see [`Self::agent_title_wins`].
+    ///
+    /// The one way to apply a title: the check has side effects, so a caller
+    /// that ran it and then forgot to assign would silently spend the hold and
+    /// keep the stale name. Nobody sees the predicate alone.
+    pub fn offer_agent_title(&mut self, agent_title: &str) {
+        if self.agent_title_wins(agent_title) {
+            self.session_name = Some(agent_title.to_string());
+        }
+    }
+
     /// Should `agent_title`, freshly read from the transcript, become the
     /// session name? Always, unless a name from outside is being held over that
     /// same title — an unchanged title has nothing new to say, and it is read
@@ -497,7 +512,10 @@ impl Session {
     /// record something: the first sighting of a title gets banked so the change
     /// that frees the name is the *next* one and not everything it missed, and a
     /// title that has genuinely moved spends the hold for good.
-    pub fn agent_title_wins(&mut self, agent_title: &str) -> bool {
+    ///
+    /// Private on purpose — [`Self::offer_agent_title`] is the only caller that
+    /// can be trusted to honour the answer.
+    fn agent_title_wins(&mut self, agent_title: &str) -> bool {
         if !self.name_from_outside {
             return true;
         }
@@ -802,9 +820,7 @@ impl SessionRegistry {
     pub fn apply_agent_title(&self, id: &str, agent_title: &str) -> bool {
         let mut map = self.sessions.write().unwrap();
         if let Some(session) = map.get_mut(id) {
-            if session.agent_title_wins(agent_title) {
-                session.session_name = Some(agent_title.to_string());
-            }
+            session.offer_agent_title(agent_title);
             true
         } else {
             false
@@ -1467,6 +1483,28 @@ mod tests {
         idle.status = SessionStatus::Idle;
         assert_eq!(running.state_label(), idle.state_label());
         assert_eq!(running.indicator_glyph(), idle.indicator_glyph());
+    }
+
+    /// The vocabulary both surfaces read from, word by word. It lived beside the
+    /// panel row while the row owned it; the word is shared now, so the test is.
+    #[test]
+    fn every_state_has_the_word_both_surfaces_show() {
+        let mut s = Session::new("s".into(), AgentKind::ClaudeCode, 1);
+        assert_eq!(s.state_label(), "idle");
+
+        s.status = SessionStatus::Thinking;
+        assert_eq!(s.state_label(), "thinking");
+
+        s.status = SessionStatus::Executing;
+        assert_eq!(s.state_label(), "exec", "no tool named yet");
+        s.current_tool = Some("Edit".into());
+        assert_eq!(s.state_label(), "Edit", "the tool is the word once known");
+
+        s.status = SessionStatus::WaitingApproval;
+        assert_eq!(s.state_label(), "awaiting approval");
+
+        s.status = SessionStatus::Stopped;
+        assert_eq!(s.state_label(), "stopped");
     }
 
     #[test]

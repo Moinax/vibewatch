@@ -92,7 +92,6 @@ fn brand_mark() -> Option<gtk::Image> {
     .ok()?;
     let image = gtk::Image::from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)));
     image.set_pixel_size(16);
-    image.add_css_class("panel-mark");
     Some(image)
 }
 

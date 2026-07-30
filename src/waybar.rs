@@ -63,8 +63,9 @@ const NAME_SEP: &str = "\u{2502}";
 /// swayosd and leaves this alone), so switching to Latte left the bar wearing
 /// Mocha pastels: a `#a6e3a1` green on a `#eff1f5` ground, washed out to
 /// near-invisible, until the daemon happened to be restarted by hand.
+static DARK: OnceLock<AtomicBool> = OnceLock::new();
+
 fn dark_flag() -> &'static AtomicBool {
-    static DARK: OnceLock<AtomicBool> = OnceLock::new();
     DARK.get_or_init(|| AtomicBool::new(detect_dark_mode()))
 }
 
@@ -75,8 +76,15 @@ fn dark_flag() -> &'static AtomicBool {
 /// A store per *switch*, deliberately: re-running `detect_dark_mode` inside
 /// `active_palette` would fork `gsettings` once per emission, and an emission is
 /// per subscriber per update across a ~15-pane desktop.
+///
+/// Seeds the flag rather than storing through `dark_flag`, which would fork
+/// `gsettings` for a first value this call already knows better than — and the
+/// panel's first call happens during window construction, on the GTK main
+/// thread. In the daemon the subprocess is never spawned at all.
 pub fn set_dark_mode(dark: bool) {
-    dark_flag().store(dark, Ordering::Relaxed);
+    if DARK.set(AtomicBool::new(dark)).is_err() {
+        dark_flag().store(dark, Ordering::Relaxed);
+    }
 }
 
 fn active_palette() -> &'static Palette {
@@ -212,14 +220,13 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
         // Shape here too, so the recess never holds a bare number. Taken from a
         // session rather than hardcoded: they are all idle or scan-only by
         // definition of `at_rest`, and both wear the same ring.
-        let state = match active.first() {
-            None => String::new(),
-            Some(s) => tint(
+        let state = active.first().map_or(String::new(), |s| {
+            tint(
                 palette.dim,
                 &format!("{} {} idle", s.indicator_glyph(), count),
-            ),
-        };
-        let text = if state.is_empty() {
+            )
+        });
+        let text = if count == 0 {
             name.clone()
         } else {
             format!("{} {}", name, state)

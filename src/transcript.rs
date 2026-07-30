@@ -178,8 +178,7 @@ pub(crate) fn read_last_assistant_line_in(
                     resolved
                 }
             };
-            let content = std::fs::read_to_string(&path).ok()?;
-            parse_claude(&content)
+            parse_claude(&head_and_tail(&path)?)
         }
         AgentKind::Codex => {
             let path = match cached_path {
@@ -190,8 +189,7 @@ pub(crate) fn read_last_assistant_line_in(
                     resolved
                 }
             };
-            let content = std::fs::read_to_string(&path).ok()?;
-            parse_codex(&content)
+            parse_codex(&head_and_tail(&path)?)
         }
     }
 }
@@ -302,7 +300,7 @@ pub fn reduce_claude(content: &str) -> Option<ClaudeSnapshot> {
                                 SessionStatus::Executing
                             };
                             current_tool = Some(name.to_owned());
-                            tool_detail = extract_detail(block.get("input"));
+                            tool_detail = block.get("input").and_then(tool_detail_from_input);
                         }
                         // Text with nothing outstanding is the turn ending. With a
                         // tool still pending it is the preamble to that tool call,
@@ -360,49 +358,79 @@ pub fn reduce_claude(content: &str) -> Option<ClaudeSnapshot> {
 /// One line of context for the tool a session is sitting in, pulled from its
 /// input. `AskUserQuestion` is asked first because the question itself is the
 /// only useful thing about it.
-fn extract_detail(input: Option<&Value>) -> Option<String> {
-    let input = input?;
+///
+/// Shared with the Codex reducer — see [`tool_detail_from_input`] for why the
+/// key list is a union rather than one list per agent.
+pub fn tool_detail_from_input(input: &Value) -> Option<String> {
+    /// Keys that carry the interesting argument, most specific first. One list
+    /// across both agents: the names barely overlap (`cmd` is Codex's, `pattern`
+    /// is Claude's), and a tool whose input happens to answer to another agent's
+    /// key gives a better detail than no detail at all.
+    const KEYS: &[&str] = &[
+        "cmd",
+        "command",
+        "file_path",
+        "path",
+        "pattern",
+        "query",
+        "prompt",
+        "description",
+        "message",
+        "task_name",
+    ];
+    // Each key is asked for a *string*, so a tool whose `command` is an array
+    // falls through to the next key rather than giving up on the whole input.
     let raw = input
         .get("questions")
         .and_then(Value::as_array)
         .and_then(|qs| qs.first())
         .and_then(|q| q.get("question"))
+        .and_then(Value::as_str)
         .or_else(|| {
-            ["command", "file_path", "path", "pattern", "query", "prompt", "description"]
-                .iter()
-                .find_map(|key| input.get(key))
-        })
-        .and_then(Value::as_str)?;
+            KEYS.iter()
+                .find_map(|key| input.get(key).and_then(Value::as_str))
+        })?;
     Some(raw.lines().next().unwrap_or(raw).chars().take(160).collect())
 }
 
-/// Reduce the transcript at `path`, reading only its tail on large files.
+/// The head and tail of `path` as one string, skipping the middle on a large
+/// file. `None` if it cannot be opened or read.
 ///
-/// The first line is kept whatever the size: it carries the `sessionId` on a
+/// Every reader here folds a JSONL record stream and only cares about how it
+/// ends, so the middle of a multi-megabyte transcript is pure read-and-discard.
+/// The first line is kept whatever the size: it carries the session id on a
 /// transcript whose later records have scrolled out of the window.
-pub fn snapshot_claude_file(path: &Path) -> Option<ClaudeSnapshot> {
+///
+/// The partial record the seek lands in is dropped, so the result is always a
+/// sequence of whole lines — with a gap in it, which every caller tolerates
+/// because it parses line by line and skips what does not parse.
+pub fn head_and_tail(path: &Path) -> Option<String> {
     const TAIL_BYTES: u64 = 512 * 1024;
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
+
+    if len <= TAIL_BYTES {
+        let mut content = String::new();
+        file.read_to_string(&mut content).ok()?;
+        return Some(content);
+    }
+
     let mut first = String::new();
     std::io::BufReader::new(file.try_clone().ok()?)
         .read_line(&mut first)
         .ok()?;
-
-    if len <= TAIL_BYTES {
-        file.seek(std::io::SeekFrom::Start(0)).ok()?;
-        let mut content = String::new();
-        file.read_to_string(&mut content).ok()?;
-        return reduce_claude(&content);
-    }
-
     file.seek(std::io::SeekFrom::Start(len - TAIL_BYTES)).ok()?;
     let mut tail = String::new();
     file.read_to_string(&mut tail).ok()?;
     // The seek probably landed in the middle of a record.
-    let tail = tail.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
-    first.push_str(tail);
-    reduce_claude(&first)
+    first.push_str(tail.split_once('\n').map(|(_, rest)| rest).unwrap_or(""));
+    Some(first)
+}
+
+/// Reduce the transcript at `path`, reading only its head and tail on large
+/// files.
+pub fn snapshot_claude_file(path: &Path) -> Option<ClaudeSnapshot> {
+    reduce_claude(&head_and_tail(path)?)
 }
 
 /// Claude Code's project directory name for `cwd`: the path with every

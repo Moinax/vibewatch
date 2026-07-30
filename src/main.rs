@@ -728,9 +728,7 @@ async fn handle_connection(
                     // Same rule as the scan tick: the agent's title only takes
                     // the name if it has moved since a hand rename banked it.
                     if let Some(title) = session::read_transcript_name(&session_id) {
-                        if session.agent_title_wins(&title) {
-                            session.session_name = Some(title);
-                        }
+                        session.offer_agent_title(&title);
                     }
                     session.touch();
                     log_transition(&session.id, prev, session.status, "UserPromptSubmit");
@@ -1225,7 +1223,6 @@ fn emit_offline(part: ipc::StatusPart) {
     let _ = std::io::stdout().flush();
 }
 
-/// Toggle the panel by sending a TogglePanel IPC event to the daemon.
 /// Push a name in for one session. Silent on success, and never fatal: this
 /// runs from a hook on somebody's turn end, so a daemon that is not up must
 /// cost a warning and nothing else.
@@ -1239,6 +1236,7 @@ async fn run_rename(session_id: String, name: String) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Toggle the panel by sending a TogglePanel IPC event to the daemon.
 async fn run_toggle_panel() -> anyhow::Result<()> {
     let config = Config::load()?;
     let socket_path = config.socket_path();
