@@ -59,6 +59,11 @@ thread_local! {
     /// daemon builds exactly one panel — the second `activate` is refused in
     /// `run_daemon_with_panel`. Everything here runs on the GTK main thread.
     static ALIVE_SINCE: Cell<Instant> = Cell::new(Instant::now());
+
+    /// Set when the drawer starts opening, cleared by the rebuild that honours
+    /// it. The scroll offset the poll loop carries across rebuilds belongs to
+    /// the open it was taken in; a fresh open has to start at the first agent.
+    static SCROLL_TO_TOP: Cell<bool> = const { Cell::new(true) };
 }
 
 /// Restart the auto-close countdown.
@@ -303,7 +308,16 @@ pub fn build_window(
             // would be impossible — any agent's state change snaps you back
             // to the top. `Adjustment::set_value` clamps for us if the list
             // got shorter in the meantime.
-            let offset = scroller_ref.vadjustment().value();
+            //
+            // Except on the first rebuild of a fresh open: the offset still
+            // sitting in the adjustment is where the previous open was left,
+            // and honouring it would raise the drawer part-way down the list,
+            // with the top card cut in half.
+            let offset = if SCROLL_TO_TOP.replace(false) {
+                0.0
+            } else {
+                scroller_ref.vadjustment().value()
+            };
             rebuild_list(&list_ref, &sessions);
             // Cap right here, not in the idle pass below: the pass bails out
             // while the drawer is sliding, and the slide's own sizing callback
@@ -316,13 +330,17 @@ pub fn build_window(
             let rev = rev_ref.clone();
             let scroller = scroller_ref.clone();
             gtk::glib::idle_add_local_once(move || {
+                // Ahead of the transition check below: where the list is
+                // scrolled to is independent of how tall the window is, and a
+                // rebuild that lands mid-slide must still land on the offset it
+                // was asked for — that is every fresh open's first rebuild.
+                scroller.vadjustment().set_value(offset);
                 // While the drawer is sliding, the tick callback owns sizing —
                 // re-pinning to full height here would flash a black strip for
                 // one frame. Skip; the next data change resizes once settled.
                 if rev.is_child_revealed() != rev.reveals_child() {
                     return;
                 }
-                scroller.vadjustment().set_value(offset);
                 let (_, natural) = content.preferred_size();
                 let h = natural.height().min(panel_height_cap(&win)).max(1);
                 // set_default_size is the knob that actually shrinks a GTK
@@ -472,6 +490,12 @@ pub fn show(win: &adw::ApplicationWindow) {
     // Also covers the already-open case, which the poll loop's visibility
     // edge never sees: a second pop-up has to buy the drawer more time.
     keep_alive();
+    // Only when the drawer is down or on its way down. An announce that lands
+    // on an open panel leaves the view where the reader put it; a real open
+    // starts at the top, whatever the last open was scrolled to.
+    if !rev.reveals_child() {
+        SCROLL_TO_TOP.with(|c| c.set(true));
+    }
     win.set_visible(true);
     win.present();
     rev.set_reveal_child(true);
