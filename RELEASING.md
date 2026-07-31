@@ -8,7 +8,6 @@ release is just **a version bump + a git tag + a GitHub Release page**.
 
 ```sh
 cargo install cargo-release   # the version-bump/tag/push driver
-gh auth login                 # so the script can create the Release page
 ```
 
 ## Cut a release
@@ -20,10 +19,20 @@ scripts/release.sh major   # 0.2.0 -> 1.0.0  (breaking changes)
 ```
 
 The script (via `cargo-release` + `release.toml`) bumps `Cargo.toml`, commits
-`chore(release): vX.Y.Z`, creates and pushes the `vX.Y.Z` tag, then publishes a
-GitHub Release with notes generated from the commits since the last tag. Use
-[conventional commit](https://www.conventionalcommits.org/) prefixes
+`chore(release): vX.Y.Z`, then creates and pushes the `vX.Y.Z` tag.
+
+Pushing the tag triggers the **Release** workflow, and that is what publishes
+the page: it checks the tag matches `Cargo.toml`, runs fmt/clippy/tests, builds
+the release binary, and attaches the tarball plus its `.sha256` to a Release
+whose notes are generated from the commits since the last tag. So the page
+appearing means the tag was verified — nothing publishes ahead of the checks.
+Use [conventional commit](https://www.conventionalcommits.org/) prefixes
 (`fix:`, `feat:`, …) so those notes read well.
+
+If the job fails after the build, its `dist/*` artifacts are still on the run —
+`gh run download <run-id>` and `gh release upload <tag> …` finishes the job by
+hand. Re-running the job is safe too: the publish step creates the page or
+uploads to the existing one.
 
 ## How updates reach machines
 

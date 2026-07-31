@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Cut a vibewatch release in one command: bump the version, commit, tag vX.Y.Z,
-# push, and publish a GitHub Release with auto-generated notes.
+# and push. The GitHub Release page is published by the `Release` workflow the
+# tag triggers, once it has verified the tag and built the binary — publishing
+# from here as well would race that job for the page, and would announce the
+# release before anything had checked it.
 #
 # Usage: scripts/release.sh <patch|minor|major|x.y.z>
 #
-# Prereqs (one-time): cargo install cargo-release && gh auth login
+# Prereqs (one-time): cargo install cargo-release
 set -euo pipefail
 
 level="${1:-}"
@@ -26,13 +29,7 @@ cargo release "$level" --execute --no-confirm
 version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
 tag="v${version}"
 
-# Publish the GitHub Release page from the freshly pushed tag (optional but nice).
+echo "Pushed $tag — the Release workflow now verifies it and publishes the page."
 if command -v gh >/dev/null 2>&1; then
-    gh release create "$tag" --title "$tag" --generate-notes
-    echo "Published GitHub Release $tag"
-else
-    echo "gh not found — tag $tag pushed, but no GitHub Release page created." >&2
-    echo "Install gh and run: gh release create $tag --generate-notes" >&2
+    echo "Watch it: gh run watch \$(gh run list --workflow Release --limit 1 --json databaseId --jq '.[0].databaseId')"
 fi
-
-echo "Released $tag"

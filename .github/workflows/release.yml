@@ -21,12 +21,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
 
+      # `git` is load-bearing twice over, and the container has none of its own:
+      # without it `actions/checkout` silently falls back to the REST API
+      # tarball, which leaves no `.git` — so `gh` cannot resolve the repo (the
+      # publish step below dies on it) and `build.rs` stamps the binary
+      # `unknown` instead of its commit.
       - name: Install system dependencies
         run: |
           dnf install --assumeyes \
             alsa-lib-devel \
             gcc \
             gh \
+            git \
             gtk4-devel \
             gtk4-layer-shell-devel \
             libadwaita-devel \
@@ -76,11 +82,20 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+      # Create-or-upload rather than plain create: the page may already exist
+      # (a re-run of this job, or one made by hand), and the point of the step
+      # is that the tag ends up carrying these verified artifacts either way.
       - name: Publish GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            dist/* \
-            --generate-notes \
-            --title "${GITHUB_REF_NAME}"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              dist/* \
+              --generate-notes \
+              --title "${GITHUB_REF_NAME}"
+          fi
