@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -60,15 +60,25 @@ thread_local! {
     /// `run_daemon_with_panel`. Everything here runs on the GTK main thread.
     static ALIVE_SINCE: Cell<Instant> = Cell::new(Instant::now());
 
-    /// Set when the drawer starts opening, cleared by the rebuild that honours
-    /// it. The scroll offset the poll loop carries across rebuilds belongs to
-    /// the open it was taken in; a fresh open has to start at the first agent.
-    static SCROLL_TO_TOP: Cell<bool> = const { Cell::new(true) };
+    /// The list scroller, so [`show`] can put the list back at the top itself.
+    /// Same one-panel-per-process justification as `ALIVE_SINCE` above.
+    static LIST_SCROLLER: RefCell<Option<gtk::ScrolledWindow>> = const { RefCell::new(None) };
 }
 
 /// Restart the auto-close countdown.
 fn keep_alive() {
     ALIVE_SINCE.with(|c| c.set(Instant::now()));
+}
+
+/// Put the agent list back at the first row. Called from the reveal edge rather
+/// than left to the poll loop, which only rebuilds when the fleet's fingerprint
+/// changes — not something an open can count on.
+fn scroll_list_to_top() {
+    LIST_SCROLLER.with_borrow(|scroller| {
+        if let Some(scroller) = scroller {
+            scroller.vadjustment().set_value(0.0);
+        }
+    });
 }
 
 /// How long the panel has been up with nothing asking it to stay.
@@ -232,6 +242,7 @@ pub fn build_window(
     scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroller.set_propagate_natural_height(true);
     scroller.set_child(Some(&session_list));
+    LIST_SCROLLER.with_borrow_mut(|slot| *slot = Some(scroller.clone()));
 
     main_box.append(&scroller);
 
@@ -281,8 +292,7 @@ pub fn build_window(
     let rev_ref = revealer.clone();
     // `None` means "rebuild on next tick" — used when the window was just
     // shown so we always repaint from a fresh registry read.
-    let last_fingerprint: Rc<std::cell::RefCell<Option<u64>>> =
-        Rc::new(std::cell::RefCell::new(None));
+    let last_fingerprint: Rc<RefCell<Option<u64>>> = Rc::new(RefCell::new(None));
     let was_visible = Rc::new(Cell::new(false));
     let auto_close_delay = Duration::from_millis(panel_cfg.auto_close_ms);
     let max_visible = panel_cfg.max_visible;
@@ -308,16 +318,7 @@ pub fn build_window(
             // would be impossible — any agent's state change snaps you back
             // to the top. `Adjustment::set_value` clamps for us if the list
             // got shorter in the meantime.
-            //
-            // Except on the first rebuild of a fresh open: the offset still
-            // sitting in the adjustment is where the previous open was left,
-            // and honouring it would raise the drawer part-way down the list,
-            // with the top card cut in half.
-            let offset = if SCROLL_TO_TOP.replace(false) {
-                0.0
-            } else {
-                scroller_ref.vadjustment().value()
-            };
+            let offset = scroller_ref.vadjustment().value();
             rebuild_list(&list_ref, &sessions);
             // Cap right here, not in the idle pass below: the pass bails out
             // while the drawer is sliding, and the slide's own sizing callback
@@ -333,7 +334,7 @@ pub fn build_window(
                 // Ahead of the transition check below: where the list is
                 // scrolled to is independent of how tall the window is, and a
                 // rebuild that lands mid-slide must still land on the offset it
-                // was asked for — that is every fresh open's first rebuild.
+                // was asked for.
                 scroller.vadjustment().set_value(offset);
                 // While the drawer is sliding, the tick callback owns sizing —
                 // re-pinning to full height here would flash a black strip for
@@ -490,11 +491,12 @@ pub fn show(win: &adw::ApplicationWindow) {
     // Also covers the already-open case, which the poll loop's visibility
     // edge never sees: a second pop-up has to buy the drawer more time.
     keep_alive();
-    // Only when the drawer is down or on its way down. An announce that lands
-    // on an open panel leaves the view where the reader put it; a real open
-    // starts at the top, whatever the last open was scrolled to.
+    // Before the surface is mapped, so the drawer slides down already at the
+    // top — no frame of the previous open's offset. Only when the drawer is
+    // down or on its way down: an announce that lands on an open panel leaves
+    // the view where the reader put it.
     if !rev.reveals_child() {
-        SCROLL_TO_TOP.with(|c| c.set(true));
+        scroll_list_to_top();
     }
     win.set_visible(true);
     win.present();
