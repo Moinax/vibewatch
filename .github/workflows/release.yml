@@ -18,14 +18,11 @@ jobs:
     container: fedora:42
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
-
-      # `git` is load-bearing twice over, and the container has none of its own:
-      # without it `actions/checkout` silently falls back to the REST API
-      # tarball, which leaves no `.git` — so `gh` cannot resolve the repo (the
-      # publish step below dies on it) and `build.rs` stamps the binary
-      # `unknown` instead of its commit.
+      # Ahead of the checkout on purpose: `actions/checkout` clones with `git`
+      # when it finds one and silently falls back to a REST API tarball when it
+      # does not, and the container brings no git of its own. `build.rs` reads
+      # the commit from `GITHUB_SHA` when there is no `.git`, so this only buys a
+      # real repository rather than being the thing that makes the stamp work.
       - name: Install system dependencies
         run: |
           dnf install --assumeyes \
@@ -37,6 +34,9 @@ jobs:
             gtk4-layer-shell-devel \
             libadwaita-devel \
             pkgconf-pkg-config
+
+      - name: Check out repository
+        uses: actions/checkout@v5
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@master
@@ -61,6 +61,22 @@ jobs:
 
       - name: Build release binary
         run: cargo build --locked --release
+
+      # The stamp is what `vibewatch --version` reports, and the only way to
+      # tell which build a machine is running. It degrades to `unknown` rather
+      # than failing the build, so nothing upstream of here notices — v0.7.3 and
+      # v0.7.4 both shipped that way. Refuse to publish one that does.
+      - name: Verify the binary knows its commit
+        shell: bash
+        run: |
+          stamp="$(target/release/vibewatch --version)"
+          echo "$stamp"
+          # Only the commit is asserted: the version half is already proven by
+          # the tag check above, and matching the whole line would make a release
+          # fail on a `--version` reformat. Substring, not equality, because
+          # `--short=8` grows past 8 chars when 8 would be ambiguous.
+          [[ "$stamp" == *"(${GITHUB_SHA:0:8}"* ]] ||
+            { echo "::error::version stamp is not this commit"; exit 1; }
 
       - name: Package release
         shell: bash
