@@ -622,7 +622,7 @@ async fn handle_connection(
                 cwd,
                 session_name,
             } => {
-                if session::inspect_pid_cmdline(pid).programmatic {
+                if session::is_programmatic_pid(pid) {
                     continue;
                 }
                 let kind = parse_agent_kind(&agent);

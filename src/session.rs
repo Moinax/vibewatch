@@ -103,27 +103,23 @@ pub fn is_agent_pid_alive_with_comm(comm: &str, kind: AgentKind) -> bool {
         .any(|expected| comm == *expected)
 }
 
-/// Everything we need to derive from a running agent's `/proc/<pid>/cmdline`
-/// in a single read — whether it's a programmatic (non-interactive)
-/// invocation, and the `--resume` / `--continue` / `-c` session name if any.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct PidCmdlineInfo {
-    /// True for third-party tools (T3 Chat, editors, automation) that drive
-    /// `claude` as a stream-JSON subprocess — not tied to a terminal the
-    /// user is interacting with, so the panel shouldn't track them.
-    pub programmatic: bool,
-    pub session_name: Option<String>,
-}
-
-pub fn inspect_pid_cmdline(pid: u32) -> PidCmdlineInfo {
+/// True for third-party tools (T3 Chat, editors, automation) that drive `claude`
+/// as a stream-JSON subprocess — not tied to a terminal the user is interacting
+/// with, so the panel shouldn't track them.
+///
+/// This is the *only* thing worth deriving from an agent's argv. It used to also
+/// yield a session name, read from the argument of `--resume` / `--continue` /
+/// `-c` — but those carry a session **id**, not a name, and `-c`/`--continue`
+/// take no argument at all, so it could even pick up the prompt. A muxer
+/// resuming an agent (`claude --resume 9c0a87c8-…`) therefore put a raw UUID in
+/// `session_name`, and since `display_name` prefers that over everything else,
+/// no later tick could correct it. Names come from the agent's own transcript
+/// title now — see `read_transcript_name_at` and the scan tick that offers it.
+pub fn is_programmatic_pid(pid: u32) -> bool {
     let Ok(raw) = std::fs::read_to_string(format!("/proc/{}/cmdline", pid)) else {
-        return PidCmdlineInfo::default();
+        return false;
     };
-    let args: Vec<&str> = raw.split('\0').collect();
-    PidCmdlineInfo {
-        programmatic: is_programmatic_args(&args),
-        session_name: session_name_from_args(&args),
-    }
+    is_programmatic_args(&raw.split('\0').collect::<Vec<_>>())
 }
 
 fn is_programmatic_args(args: &[&str]) -> bool {
@@ -132,18 +128,6 @@ fn is_programmatic_args(args: &[&str]) -> bool {
     }
     args.windows(2)
         .any(|w| w[0] == "--output-format" && w[1] == "stream-json")
-}
-
-fn session_name_from_args(args: &[&str]) -> Option<String> {
-    args.windows(2).find_map(|w| {
-        if matches!(w[0], "--resume" | "--continue" | "-c") {
-            let name = w[1].trim();
-            if !name.is_empty() && !name.starts_with('-') {
-                return Some(name.to_string());
-            }
-        }
-        None
-    })
 }
 
 /// Kind of AI agent being monitored.
@@ -991,26 +975,46 @@ pub fn is_agent_pid_alive(pid: u32, kind: AgentKind) -> bool {
     is_agent_pid_alive_with_comm(&comm, kind)
 }
 
-/// Read the session name from a Claude Code transcript (last custom-title entry).
-pub fn read_transcript_name(session_id: &str) -> Option<String> {
+/// Locate a Claude Code transcript by session id, by sweeping the project dirs.
+///
+/// Worth avoiding when the caller already knows the path: there are hundreds of
+/// project directories, so this is a `stat` per directory per call.
+pub fn claude_transcript_path(session_id: &str) -> Option<std::path::PathBuf> {
     let claude_projects = dirs::home_dir()?.join(".claude/projects");
     for project in std::fs::read_dir(&claude_projects).ok()?.flatten() {
         let transcript = project.path().join(format!("{}.jsonl", session_id));
         if transcript.exists() {
-            let content = std::fs::read_to_string(&transcript).ok()?;
-            for line in content.lines().rev() {
-                if line.contains("\"custom-title\"") {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(title) = val.get("customTitle").and_then(|v| v.as_str()) {
-                            return Some(title.to_string());
-                        }
-                    }
-                }
-            }
-            return None;
+            return Some(transcript);
         }
     }
     None
+}
+
+/// Read the session name from a Claude Code transcript (last custom-title entry).
+///
+/// Reads the whole file, because the title cannot be found any other way: it is
+/// written when Claude titles or retitles the session, which for a long session
+/// may be near the beginning and never again. Tailing would be cheaper and
+/// wrong. Transcripts reach tens of megabytes, so callers on a timer must not
+/// call this unconditionally — gate it on the file's mtime having moved (a new
+/// title appends a record, so mtime is an exact change signal).
+pub fn read_transcript_name_at(transcript: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(transcript).ok()?;
+    for line in content.lines().rev() {
+        if line.contains("\"custom-title\"") {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(title) = val.get("customTitle").and_then(|v| v.as_str()) {
+                    return Some(title.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The same, for a caller that has only the session id.
+pub fn read_transcript_name(session_id: &str) -> Option<String> {
+    read_transcript_name_at(&claude_transcript_path(session_id)?)
 }
 
 /// Get the parent PID by parsing /proc/{pid}/stat.
@@ -1122,6 +1126,60 @@ fn herdr_pane_from_environ(raw: &[u8]) -> Option<HerdrPane> {
         pane_id: pane_id.filter(|s| !s.is_empty())?,
         socket_path: socket_path.filter(|s| !s.is_empty())?,
     })
+}
+
+/// The name herdr has for a pane, asked of the herdr server itself.
+///
+/// The last resort for naming an agent whose transcript we cannot identify. That
+/// happens whenever two live agents share a working directory — a normal thing
+/// to do, and what herdr's own agent-tab keybind is for — because the transcript
+/// is then found by cwd and there is no way to tell which of them owns which
+/// file. Neither the process argv, its open fds nor the transcript records carry
+/// a session id to disambiguate with (checked: Claude appends and closes, so
+/// there is no fd to key on, and the records hold no pid or tty).
+///
+/// The muxer, on the other hand, knows exactly: the pane id comes from the
+/// agent's own environment, so it is per-process by construction. And the title
+/// herdr keeps there is already the settled name — its own hook maintains it
+/// against the agent's title and honours a tab the user renamed by hand.
+///
+/// Only ever called for a session that has no name at all, so the cost is a
+/// handful of round trips just after the daemon starts and nothing in steady
+/// state. Blocking, like every other read on the scan tick, but on a local
+/// socket and time-boxed hard: a wedged herdr server must not stall the tick.
+pub fn herdr_pane_title(pane: &HerdrPane) -> Option<String> {
+    use std::io::{BufRead, BufReader, Write};
+    let timeout = std::time::Duration::from_millis(250);
+    let mut stream = std::os::unix::net::UnixStream::connect(&pane.socket_path).ok()?;
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
+    let request = serde_json::json!({
+        "id": "vibewatch-pane-title",
+        "method": "pane.get",
+        "params": { "pane_id": pane.pane_id },
+    });
+    // The protocol is one JSON object per line, answered by one line.
+    stream.write_all(request.to_string().as_bytes()).ok()?;
+    stream.write_all(b"\n").ok()?;
+    stream.flush().ok()?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).ok()?;
+    herdr_pane_title_from_response(&line)
+}
+
+/// The pane title out of a `pane.get` response, kept apart from the socket so
+/// the parsing is testable. `title` is herdr's reported-metadata slot, which is
+/// the one that carries the task; a pane that has never been told a title has
+/// none, and its label is the provider — never a name worth showing.
+fn herdr_pane_title_from_response(line: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let title = value
+        .get("result")?
+        .get("pane")?
+        .get("title")?
+        .as_str()?
+        .trim();
+    (!title.is_empty()).then(|| title.to_string())
 }
 
 /// Herdr session name derived from an API socket path. Named sessions live
@@ -1292,27 +1350,6 @@ mod tests {
     #[test]
     fn programmatic_args_ignore_plain_interactive() {
         assert!(!is_programmatic_args(&["claude", "--resume", "work"]));
-    }
-
-    #[test]
-    fn session_name_from_args_reads_resume() {
-        assert_eq!(
-            session_name_from_args(&["claude", "--resume", "my-session"]),
-            Some("my-session".into()),
-        );
-    }
-
-    #[test]
-    fn session_name_from_args_skips_when_flag_value_is_another_flag() {
-        assert_eq!(
-            session_name_from_args(&["claude", "--continue", "--verbose"]),
-            None,
-        );
-    }
-
-    #[test]
-    fn session_name_from_args_returns_none_without_resume() {
-        assert_eq!(session_name_from_args(&["claude", "--verbose"]), None);
     }
 
     #[test]
@@ -1653,6 +1690,33 @@ mod tests {
                 .session_name
                 .as_deref(),
             Some("vibewatch stale")
+        );
+    }
+
+    /// The Claude half of the case above, which used to be unreachable: a muxer
+    /// hook names a session by the id Claude knows it as, but the scanner had
+    /// found the process first and keyed it `scan-claude-<pid>`. Hydration
+    /// leaving `agent_session_id` unset meant every such rename was dropped as
+    /// "no session found", so a resumed or idle agent could not be named at all.
+    #[test]
+    fn scanner_found_claude_session_accepts_a_name_addressed_to_its_session_id() {
+        let registry = SessionRegistry::new();
+        let mut session = Session::new("scan-claude-77".into(), AgentKind::ClaudeCode, 77);
+        session.agent_session_id = Some("9c0a87c8-84d5-4aef-b107-7571c26ef8e3".into());
+        registry.register(session);
+
+        assert!(registry.set_name_from_outside(
+            "9c0a87c8-84d5-4aef-b107-7571c26ef8e3",
+            "back-office.SHAPE-3064".into(),
+            None,
+        ));
+        assert_eq!(
+            registry
+                .get("scan-claude-77")
+                .unwrap()
+                .session_name
+                .as_deref(),
+            Some("back-office.SHAPE-3064")
         );
     }
 
@@ -2303,6 +2367,39 @@ mod tests {
     #[test]
     fn herdr_pane_of_is_none_for_init() {
         assert_eq!(herdr_pane_of(1), None);
+    }
+
+    /// A real `pane.get` reply, trimmed. The title is the reported-metadata slot
+    /// that carries the task, not the label — that one holds the provider.
+    #[test]
+    fn herdr_pane_title_reads_the_reported_title() {
+        let line = r#"{"id":"1","result":{"type":"pane_info","pane":{"pane_id":"wA:p1","label":"claude","agent":"claude","title":"dotfiles in labs","tokens":{"task":"dotfiles in labs"}}}}"#;
+        assert_eq!(
+            herdr_pane_title_from_response(line),
+            Some("dotfiles in labs".into())
+        );
+    }
+
+    /// A pane nobody has reported a title for has no name worth showing — its
+    /// label is the provider, and falling back to that would relabel every
+    /// unnamed agent "claude".
+    #[test]
+    fn herdr_pane_title_is_none_without_a_reported_title() {
+        let line = r#"{"id":"1","result":{"type":"pane_info","pane":{"pane_id":"wA:p6","label":"claude"}}}"#;
+        assert_eq!(herdr_pane_title_from_response(line), None);
+
+        let blank = r#"{"id":"1","result":{"type":"pane_info","pane":{"title":"   "}}}"#;
+        assert_eq!(herdr_pane_title_from_response(blank), None);
+    }
+
+    /// The server answers errors on the same channel, and a dead socket answers
+    /// nothing at all; neither may become a session name.
+    #[test]
+    fn herdr_pane_title_is_none_for_an_error_or_garbage() {
+        let err = r#"{"id":"1","error":{"code":"not_found","message":"no such pane"}}"#;
+        assert_eq!(herdr_pane_title_from_response(err), None);
+        assert_eq!(herdr_pane_title_from_response(""), None);
+        assert_eq!(herdr_pane_title_from_response("not json"), None);
     }
 
     #[test]

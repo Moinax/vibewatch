@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use crate::compositor::Compositor;
 use crate::config::Config;
 use crate::session::{
-    detect_terminal, inspect_pid_cmdline, normalize_comm, AgentKind, Session, SessionRegistry,
+    detect_terminal, is_programmatic_pid, normalize_comm, AgentKind, Session, SessionRegistry,
     CLAUDE_CODE_COMMS, CODEX_COMMS,
 };
 
@@ -80,6 +80,13 @@ pub async fn run_scanner(
     status_notify: std::sync::Arc<tokio::sync::Notify>,
     codex_finished: std::sync::Arc<dyn Fn(String, u64) + Send + Sync>,
 ) {
+    // Transcript mtime per session, as of the last time its title was read.
+    // Reading a title means reading a whole transcript (see
+    // `read_transcript_name_at` for why it cannot be tailed) and those reach
+    // tens of megabytes, so on a three-second tick it has to be skipped unless
+    // the file actually moved. Lives across ticks, and is pruned with the
+    // sessions it keys on.
+    let mut title_mtime: HashMap<String, std::time::SystemTime> = HashMap::new();
     loop {
         // Remove sessions whose PID is no longer alive
         registry.cleanup_dead();
@@ -102,13 +109,11 @@ pub async fn run_scanner(
             if known_pids.contains(pid) {
                 continue;
             }
-            let info = inspect_pid_cmdline(*pid);
-            if info.programmatic {
+            if is_programmatic_pid(*pid) {
                 continue;
             }
             let id = format!("scan-{}-{}", agent_str(kind), pid);
             let mut session = Session::new(id, *kind, *pid);
-            session.session_name = info.session_name;
             session.terminal = Some(detect_terminal(*pid));
             if *kind == AgentKind::ClaudeCode {
                 let census = census.get_or_insert_with(|| claude_cwd_census(&found_processes));
@@ -172,17 +177,23 @@ pub async fn run_scanner(
             }
         }
 
-        // --- Refresh session names for hook-registered sessions (handles /rename) ---
+        // --- Refresh session names from the agent's own title (handles /rename) ---
+        // Scanner-discovered sessions count too, keyed by the transcript id
+        // hydration found for them: an agent the scanner saw before any hook
+        // fired — a muxer resuming one, or any agent idle since the daemon
+        // started — otherwise never gets a name of its own and shows the folder
+        // it runs in for as long as it stays quiet.
+        let live_ids: HashSet<String> = registry.all().iter().map(|s| s.id.clone()).collect();
+        title_mtime.retain(|id, _| live_ids.contains(id));
         for session in registry.all() {
-            // Only refresh hook sessions (UUID ids), not scanner sessions
-            if !session.id.starts_with("scan-") && !session.id.starts_with("window-") {
-                if let Some(title) = crate::session::read_transcript_name(&session.id) {
-                    // Not an unconditional overwrite: a name pushed in from
-                    // outside holds until this title *moves*, or this tick —
-                    // which runs every couple of seconds — would undo every
-                    // hand rename before the user let go of the keyboard.
-                    registry.apply_agent_title(&session.id, &title);
-                }
+            if let Some(title) = transcript_title_if_changed(&session, &mut title_mtime)
+                .or_else(|| muxer_name(&session))
+            {
+                // Not an unconditional overwrite: a name pushed in from
+                // outside holds until this title *moves*, or this tick —
+                // which runs every couple of seconds — would undo every
+                // hand rename before the user let go of the keyboard.
+                registry.apply_agent_title(&session.id, &title);
             }
         }
 
@@ -311,6 +322,65 @@ fn cwd_is_shared(census: &HashMap<u32, PathBuf>, pid: u32) -> bool {
         .any(|(other, dir)| *other != pid && dir == cwd)
 }
 
+/// A session's own title, read only when its transcript has moved since the last
+/// look. `None` for an agent with no Claude transcript, and for one whose
+/// transcript is unchanged — the name it already carries is still that title, so
+/// there is nothing to re-apply.
+///
+/// The gate is the point: reading a title means reading a whole transcript (see
+/// `read_transcript_name_at`), which runs to tens of megabytes on a long
+/// session, and this is a three-second tick over every session. An `mtime` stat
+/// is a few microseconds, and a new title appends a record, so it is an exact
+/// change signal rather than a heuristic.
+///
+/// Scanner-discovered sessions are included, keyed by the transcript id
+/// hydration recorded for them. They used to be skipped outright, so an agent
+/// the scanner saw before any hook fired — a muxer resuming one, or any agent
+/// idle since the daemon started — never picked up a name of its own. They are
+/// also the population that makes the gate matter, being the quiet ones.
+fn transcript_title_if_changed(
+    session: &Session,
+    seen: &mut HashMap<String, std::time::SystemTime>,
+) -> Option<String> {
+    if session.agent != AgentKind::ClaudeCode {
+        return None; // read_transcript_name_at only knows Claude's layout
+    }
+    // Hydration caches the path for a scanner session; a hook session is keyed
+    // by the id Claude knows it as, so its path can be resolved from that.
+    // `window-` sessions are GUI agents and have no transcript at all.
+    let path = match session.transcript_path.clone() {
+        Some(path) => path,
+        None if session.id.starts_with("scan-") || session.id.starts_with("window-") => {
+            return None
+        }
+        None => crate::session::claude_transcript_path(&session.id)?,
+    };
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+    if seen.get(&session.id) == Some(&mtime) {
+        return None;
+    }
+    seen.insert(session.id.clone(), mtime);
+    crate::session::read_transcript_name_at(&path)
+}
+
+/// The name the muxer hosting this agent has for it — the fallback for a session
+/// whose transcript could not be identified, which is what happens whenever two
+/// live agents share a working directory. `herdr_pane_title` owns why the muxer
+/// is the only thing that can answer that, and why it is authoritative.
+///
+/// Deliberately gated on the session having no name at all: it is a round trip
+/// per call, and this loop runs every three seconds against every session. Once
+/// a name has landed, herdr's own hook pushes any later change in (`vibewatch
+/// rename`), so re-asking would buy nothing. A daemon restart drops the name and
+/// this fills it straight back in, which the push cannot do for an idle agent.
+fn muxer_name(session: &Session) -> Option<String> {
+    if session.session_name.is_some() {
+        return None;
+    }
+    let pane = crate::session::herdr_pane_of(session.pid)?;
+    crate::session::herdr_pane_title(&pane)
+}
+
 /// The oldest transcript mtime that can belong to `pid`, with a few seconds of
 /// slack for the gap between exec and the first write.
 ///
@@ -371,6 +441,13 @@ fn hydrate_from_transcript(session: &mut Session, census: &HashMap<u32, PathBuf>
     session.current_tool = snapshot.current_tool;
     session.tool_detail = snapshot.tool_detail;
     session.transcript_path = Some(path);
+    // The agent's own session id, which a `scan-` session is not keyed by. The
+    // Codex path records it for the same reason. Two things need it: the name
+    // refresh below, so a scanner-discovered agent tracks its own title, and
+    // `set_name_from_outside`, whose fallback matches on this — without it every
+    // `vibewatch rename <session-id>` from a multiplexer hook was dropped as
+    // "no session found" for any agent the scanner found first.
+    session.agent_session_id = Some(snapshot.session_id.clone());
     // Caching the path is what makes the text readable at all: the reader
     // resolves by session id, which a `scan-` session does not have.
     if let Some(text) = crate::transcript::read_last_assistant_line(
@@ -397,6 +474,76 @@ mod tests {
         let results = scan_agent_processes();
         // The result may be empty in test environments; we just verify it doesn't crash
         let _ = results;
+    }
+
+    /// The gate that keeps a multi-megabyte transcript read off a three-second
+    /// tick: the first look reads, an unchanged file is skipped, and a file that
+    /// moved is read again.
+    #[test]
+    fn transcript_title_is_read_once_per_change() {
+        let dir = std::env::temp_dir().join(format!("vibewatch-title-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"custom-title\",\"customTitle\":\"first\"}\n",
+        )
+        .unwrap();
+
+        let mut session = Session::new("scan-claude-77".into(), AgentKind::ClaudeCode, 77);
+        session.transcript_path = Some(path.clone());
+        let mut seen = HashMap::new();
+
+        assert_eq!(
+            transcript_title_if_changed(&session, &mut seen).as_deref(),
+            Some("first")
+        );
+        assert_eq!(
+            transcript_title_if_changed(&session, &mut seen),
+            None,
+            "an unchanged transcript must not be re-read"
+        );
+
+        // A retitle appends, which moves mtime. Retried rather than slept on:
+        // the clock is nanosecond-resolution here, but a coarse filesystem could
+        // land the rewrite in the same tick and make the assertion vacuous.
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        for _ in 0..50 {
+            std::fs::write(
+                &path,
+                "{\"type\":\"custom-title\",\"customTitle\":\"second\"}\n",
+            )
+            .unwrap();
+            if std::fs::metadata(&path).unwrap().modified().unwrap() != before {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            transcript_title_if_changed(&session, &mut seen).as_deref(),
+            Some("second"),
+            "a transcript that moved must be read again"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A Codex thread is not a Claude transcript and a GUI agent has none, so
+    /// neither may reach the reader — which would otherwise sweep every project
+    /// directory to find nothing.
+    #[test]
+    fn transcript_title_skips_agents_with_no_claude_transcript() {
+        let mut seen = HashMap::new();
+        let mut codex = Session::new("scan-codex-42".into(), AgentKind::Codex, 42);
+        codex.agent_session_id = Some("thread-abc".into());
+        assert_eq!(transcript_title_if_changed(&codex, &mut seen), None);
+
+        let window = Session::new("window-cursor-3".into(), AgentKind::ClaudeCode, 3);
+        assert_eq!(transcript_title_if_changed(&window, &mut seen), None);
+
+        // A scanner session whose transcript hydration never located: nothing to
+        // read, and the muxer fallback is what names it.
+        let scan = Session::new("scan-claude-78".into(), AgentKind::ClaudeCode, 78);
+        assert_eq!(transcript_title_if_changed(&scan, &mut seen), None);
     }
 
     #[test]
