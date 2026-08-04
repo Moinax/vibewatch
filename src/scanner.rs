@@ -5,8 +5,7 @@ use std::path::PathBuf;
 use crate::compositor::Compositor;
 use crate::config::Config;
 use crate::session::{
-    detect_terminal, is_programmatic_pid, normalize_comm, AgentKind, Session, SessionRegistry,
-    CLAUDE_CODE_COMMS, CODEX_COMMS,
+    detect_terminal, identify_agent_pid, is_programmatic_pid, AgentKind, Session, SessionRegistry,
 };
 
 /// Map an AgentKind to its short string identifier.
@@ -34,6 +33,9 @@ fn is_codex_finish_transition(
 
 /// Scan /proc for running CLI agent processes.
 /// Returns a list of (AgentKind, pid) tuples for recognised agents.
+///
+/// What counts as an agent is [`identify_agent_pid`]'s call, shared with the
+/// registry's liveness check so discovery and reaping cannot disagree.
 pub fn scan_agent_processes() -> Vec<(AgentKind, u32)> {
     let mut results = Vec::new();
 
@@ -52,15 +54,8 @@ pub fn scan_agent_processes() -> Vec<(AgentKind, u32)> {
             Err(_) => continue,
         };
 
-        let comm = match fs::read_to_string(format!("/proc/{}/comm", pid)) {
-            Ok(c) => normalize_comm(&c),
-            Err(_) => continue,
-        };
-
-        if CLAUDE_CODE_COMMS.iter().any(|n| comm == *n) {
-            results.push((AgentKind::ClaudeCode, pid));
-        } else if CODEX_COMMS.iter().any(|n| comm == *n) {
-            results.push((AgentKind::Codex, pid));
+        if let Some(kind) = identify_agent_pid(pid) {
+            results.push((kind, pid));
         }
     }
 

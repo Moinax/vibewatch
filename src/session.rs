@@ -70,8 +70,13 @@ pub fn spawns_subagent(tool: &str) -> bool {
 }
 
 /// `/proc/<pid>/comm` values we accept as "this PID is still Claude Code".
-/// Used by the scanner for discovery and by the registry for liveness checks,
-/// so a rename here updates both paths in lockstep.
+/// Consulted through [`identify_agent_pid`], which the scanner's discovery and
+/// the registry's liveness check both go through, so a rename here updates both
+/// paths in lockstep.
+///
+/// Not the whole answer on its own: a Claude Code process the CLI's own daemon
+/// hosts wears the *version* as its comm, not `claude` — see
+/// [`is_claude_launcher_pid`].
 pub const CLAUDE_CODE_COMMS: &[&str] = &["claude"];
 
 /// `/proc/<pid>/comm` values we accept as "this PID is still Codex".
@@ -95,12 +100,103 @@ pub fn normalize_comm(comm: &str) -> String {
     comm.trim().to_lowercase()
 }
 
-/// Pure helper: does a `comm` string identify the given `AgentKind`?
+/// Is `pid` running Claude Code's versioned launcher, whatever comm it reports?
+///
+/// A pane's `claude` reports `comm = claude`, but every process the CLI's own
+/// daemon hosts — which is what a **background job** is — reports the version
+/// (`2.1.220`), because that is the basename of the file being executed. Both
+/// run the very same binary, so the exe is the mark they have in common and the
+/// only reliable one. Without this, a background agent's session was reaped by
+/// `cleanup_dead` seconds after its `SessionStart` and every hook it fired
+/// afterwards — including the `Stop` that ends its turn and the rename a muxer
+/// pushes in — was dropped as "no session found".
+///
+/// Costs a readlink, so a caller sweeping all of `/proc` must gate it on
+/// something cheaper: see [`comm_looks_like_version`].
+fn is_claude_launcher_pid(pid: u32) -> bool {
+    let Ok(exe) = std::fs::read_link(format!("/proc/{}/exe", pid)) else {
+        return false;
+    };
+    is_claude_launcher_exe(&exe)
+}
+
+/// Pure helper: does an exe path name a versioned Claude Code launcher —
+/// `…/claude/versions/<version>`? Matched on the trailing components rather
+/// than against `$HOME`, so an install outside the home directory still counts.
+fn is_claude_launcher_exe(exe: &std::path::Path) -> bool {
+    exe.parent()
+        .is_some_and(|dir| dir.ends_with("claude/versions"))
+}
+
+/// Could this comm be a versioned Claude Code launcher (`2.1.220`)? The cheap
+/// pre-filter for the `/proc` sweep: a readlink per process every scan tick is
+/// not worth paying, and a comm that starts with a digit and carries a dot is
+/// nothing else on a normal system. Deliberately loose — [`is_claude_launcher_pid`]
+/// is the actual test, and a pre-release suffix (`2.2.0-rc1`) must still reach it.
+fn comm_looks_like_version(comm: &str) -> bool {
+    comm.starts_with(|c: char| c.is_ascii_digit()) && comm.contains('.')
+}
+
+/// A process's raw argv, NUL-separated as `/proc` stores it. Several facts are
+/// derived from a command line — whether it hosts sessions, drives one
+/// programmatically, or forked one — and this is the one place that reads it, so
+/// the handling of a process that vanished mid-read cannot drift between them.
+fn proc_cmdline(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{}/cmdline", pid)).ok()
+}
+
+/// True for the Claude Code processes that *host* sessions instead of being one:
+/// the CLI's `claude daemon`, and the PTY hosts and pre-warmed spares it spawns
+/// to run background jobs. They share the launcher with a real session (and the
+/// daemon even reports `comm = claude`), so without this the panel grows rows
+/// nobody is driving — one of which then absorbs the renames meant for the
+/// background session, by holding its id in `agent_session_id`. The daemon
+/// outlives every session it hosts, so a PID recycled into it would also pin the
+/// dead row that held that PID forever.
+fn is_session_host_args(args: &[&str]) -> bool {
+    // The PTY host repeats the hosted session's whole argv after a `--`, so it
+    // is recognised by its own flag rather than by anything positional.
+    if args
+        .iter()
+        .any(|a| *a == "--bg-pty-host" || *a == "--bg-spare")
+    {
+        return true;
+    }
+    args.get(1) == Some(&"daemon")
+}
+
+/// The session a Claude Code process was forked from, read from its argv.
+///
+/// A background job is launched as a fork of the pane's session
+/// (`--fork-session --resume <…>/<parent-id>.jsonl`), and the pane hands its turn
+/// over mid-flight: it fires no `Stop` for the turn it gave away. See
+/// [`SessionRegistry::hand_off`] for what that costs and who repairs it.
+pub fn fork_parent_session_id(pid: u32) -> Option<String> {
+    let raw = proc_cmdline(pid)?;
+    fork_parent_from_args(&raw.split('\0').collect::<Vec<_>>())
+}
+
+fn fork_parent_from_args(args: &[&str]) -> Option<String> {
+    if !args.contains(&"--fork-session") {
+        return None;
+    }
+    let resumed = args.windows(2).find(|w| w[0] == "--resume").map(|w| w[1])?;
+    // A transcript path is what a fork carries, but `--resume` also takes a bare
+    // session id, and the stem of one is itself.
+    Some(
+        std::path::Path::new(resumed)
+            .file_stem()?
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// Pure helper: does a `comm` string identify the given `AgentKind`? Normalises
+/// what it is given, so a caller holding an already-normalised comm can pass it
+/// straight in.
 pub fn is_agent_pid_alive_with_comm(comm: &str, kind: AgentKind) -> bool {
     let comm = normalize_comm(comm);
-    expected_comms_for(kind)
-        .iter()
-        .any(|expected| comm == *expected)
+    expected_comms_for(kind).contains(&comm.as_str())
 }
 
 /// True for third-party tools (T3 Chat, editors, automation) that drive `claude`
@@ -116,7 +212,7 @@ pub fn is_agent_pid_alive_with_comm(comm: &str, kind: AgentKind) -> bool {
 /// no later tick could correct it. Names come from the agent's own transcript
 /// title now — see `read_transcript_name_at` and the scan tick that offers it.
 pub fn is_programmatic_pid(pid: u32) -> bool {
-    let Ok(raw) = std::fs::read_to_string(format!("/proc/{}/cmdline", pid)) else {
+    let Some(raw) = proc_cmdline(pid) else {
         return false;
     };
     is_programmatic_args(&raw.split('\0').collect::<Vec<_>>())
@@ -803,16 +899,7 @@ impl SessionRegistry {
         agent_title: Option<String>,
     ) -> bool {
         let mut map = self.sessions.write().unwrap();
-        if let Some(session) = map.get_mut(id) {
-            session.set_name_from_outside(name, agent_title);
-            return true;
-        }
-
-        let scanner_id = map
-            .iter()
-            .find(|(_, session)| session.agent_session_id.as_deref() == Some(id))
-            .map(|(id, _)| id.clone());
-        let Some(session) = scanner_id.and_then(|id| map.get_mut(&id)) else {
+        let Some(session) = resolve_mut(&mut map, id) else {
             return false;
         };
         session.set_name_from_outside(name, agent_title);
@@ -832,6 +919,29 @@ impl SessionRegistry {
         } else {
             false
         }
+    }
+
+    /// Quiet a session that handed its running turn to a fork of itself — a
+    /// background job. It will never fire the `Stop` that ends that turn, so
+    /// nothing else can ever move it off `Thinking`, and `cleanup_dead` cannot
+    /// help either: the pane is still there, alive and idle, with the agent's
+    /// comm. Left alone it sits at `Thinking` for the rest of the daemon's
+    /// life, and since working outranks idle everywhere, it holds the bar
+    /// against every session that is actually working.
+    ///
+    /// Not a finish — nothing completed here, the work moved — so no
+    /// `finished_at`, no `done`, and no chime: the row just goes quiet. Returns
+    /// false if the session is unknown, which is the normal case for a fork of
+    /// something this daemon never saw start.
+    pub fn hand_off(&self, id: &str) -> bool {
+        let mut map = self.sessions.write().unwrap();
+        let Some(session) = resolve_mut(&mut map, id) else {
+            return false;
+        };
+        session.status = SessionStatus::Idle;
+        session.current_tool = None;
+        session.tool_detail = None;
+        true
     }
 
     /// Remove a session by id. Returns the removed session if it existed.
@@ -939,6 +1049,25 @@ impl SessionRegistry {
     }
 }
 
+/// Resolve an id the *agent* knows itself by to the row that holds it.
+///
+/// The map is keyed by whatever id we saw first, which for a session the scanner
+/// found before any hook is `scan-claude-<pid>`, with the agent's own id banked
+/// in `agent_session_id`. A lookup by key alone therefore misses exactly the
+/// sessions that were discovered rather than announced — which is how every
+/// `vibewatch rename <session-id>` from a multiplexer hook used to be dropped as
+/// "no session found".
+fn resolve_mut<'a>(map: &'a mut HashMap<String, Session>, id: &str) -> Option<&'a mut Session> {
+    let key = if map.contains_key(id) {
+        id.to_string()
+    } else {
+        map.iter()
+            .find(|(_, session)| session.agent_session_id.as_deref() == Some(id))
+            .map(|(key, _)| key.clone())?
+    };
+    map.get_mut(&key)
+}
+
 /// Rank a CLI session for `dedupe_cli_pids`: higher is kept. A real hook
 /// session (UUID id) outranks a `scan-<pid>` placeholder because it carries the
 /// richer hook-driven state; within the same tier the most recently active
@@ -962,17 +1091,85 @@ fn cli_keep_score(session: &Session) -> (u8, u64) {
     (tier, recency)
 }
 
-/// Check whether a PID is still occupied by a process of the given `AgentKind`,
-/// using `/proc/<pid>/comm`. Returns false when `/proc/<pid>/comm` can't be
-/// read (the process has exited, the PID slot is empty, or we lack
-/// permission) and when the comm name doesn't match the expected comms for
-/// that kind — which is how we distinguish a live Claude session from a
-/// PID that has been recycled by an unrelated process.
-pub fn is_agent_pid_alive(pid: u32, kind: AgentKind) -> bool {
-    let Ok(comm) = std::fs::read_to_string(format!("/proc/{}/comm", pid)) else {
+/// Which CLI agent, if any, is `pid` running right now?
+///
+/// The single answer to that question: the scanner discovers agents through it
+/// and the registry checks liveness through it, so the two cannot disagree — a
+/// mark only one of them knew would have the scanner register a process on every
+/// tick that `cleanup_dead` reaps on the next.
+///
+/// Returns `None` when `/proc/<pid>/comm` can't be read (the process has exited,
+/// the PID slot is empty, or we lack permission) and when nothing about the
+/// process identifies an agent — which is how we distinguish a live session from
+/// a PID that has been recycled by something unrelated. A process that looks like
+/// an agent is still turned down if it is a fork on its way to being a tool
+/// ([`argv0_names_agent`]), or — Claude Code only — if it merely *hosts* sessions
+/// ([`is_session_host_args`]). Window-backed kinds are never returned: their PIDs
+/// belong to GUI apps, and the compositor scan owns their liveness.
+pub fn identify_agent_pid(pid: u32) -> Option<AgentKind> {
+    let comm = normalize_comm(&std::fs::read_to_string(format!("/proc/{}/comm", pid)).ok()?);
+
+    let kind = if is_agent_pid_alive_with_comm(&comm, AgentKind::ClaudeCode)
+        // A daemon-hosted session wears the version as its comm rather than
+        // `claude`, so the exe is the one mark it shares with a pane's. Gated on
+        // the cheap comm test: a readlink per process per sweep is not worth it.
+        || (comm_looks_like_version(&comm) && is_claude_launcher_pid(pid))
+    {
+        AgentKind::ClaudeCode
+    } else if is_agent_pid_alive_with_comm(&comm, AgentKind::Codex) {
+        AgentKind::Codex
+    } else {
+        return None;
+    };
+
+    // One read settles what is left, for either kind: a fork still on its way to
+    // becoming a tool is not a session, and neither is a process that only hosts
+    // them. Only a candidate pays for the read.
+    let raw = proc_cmdline(pid)?;
+    let args: Vec<&str> = raw.split('\0').collect();
+    if !argv0_names_agent(&args, kind) {
+        return None;
+    }
+    // Claude Code is the only one of the two that runs sessions for others.
+    if kind == AgentKind::ClaudeCode && is_session_host_args(&args) {
+        return None;
+    }
+    Some(kind)
+}
+
+/// Does a process's own `argv[0]` still name `kind` — one of its comms, or (for
+/// Claude Code) the versioned launcher a daemon-hosted session runs?
+///
+/// Both comm and exe describe the *file* a process last executed, and a child
+/// forked to run a tool inherits both from its parent until its own `execve`
+/// lands. Read inside that window, a `ugrep` reports `comm = 2.1.220` and the
+/// launcher as its exe, and the scan tick filed it as a session — a row for a
+/// grep, flickering in the panel until the next tick reaped it. `execve` replaces
+/// argv too, but from the *caller's* side, so argv[0] is the first of the three to
+/// tell the truth. Every agent that runs tools has the same window, which is why
+/// this is asked of the kind rather than of Claude Code alone.
+///
+/// Narrows the window rather than closing it: a fork read before it execs looks
+/// exactly like its parent by every mark there is. What survives that is
+/// short-lived by construction and `cleanup_dead` takes it on the next tick.
+fn argv0_names_agent(args: &[&str], kind: AgentKind) -> bool {
+    let Some(argv0) = args.first() else {
         return false;
     };
-    is_agent_pid_alive_with_comm(&comm, kind)
+    let argv0 = std::path::Path::new(argv0);
+    // The same marks as the comm test, applied to the name the caller chose: a
+    // session is launched through the agent's name on `$PATH` (`claude`, `codex`),
+    // and a Claude background job directly through the versioned launcher.
+    argv0
+        .file_name()
+        .is_some_and(|name| is_agent_pid_alive_with_comm(&name.to_string_lossy(), kind))
+        || (kind == AgentKind::ClaudeCode && is_claude_launcher_exe(argv0))
+}
+
+/// Check whether a PID is still occupied by a process of the given `AgentKind`.
+/// See [`identify_agent_pid`] for what counts as occupied.
+pub fn is_agent_pid_alive(pid: u32, kind: AgentKind) -> bool {
+    identify_agent_pid(pid) == Some(kind)
 }
 
 /// Locate a Claude Code transcript by session id, by sweeping the project dirs.
@@ -1350,6 +1547,176 @@ mod tests {
     #[test]
     fn programmatic_args_ignore_plain_interactive() {
         assert!(!is_programmatic_args(&["claude", "--resume", "work"]));
+    }
+
+    #[test]
+    fn claude_launcher_exe_matches_versioned_install() {
+        assert!(is_claude_launcher_exe(std::path::Path::new(
+            "/home/u/.local/share/claude/versions/2.1.220"
+        )));
+        // Not home-scoped: an install anywhere counts.
+        assert!(is_claude_launcher_exe(std::path::Path::new(
+            "/opt/claude/versions/2.2.0-rc1"
+        )));
+    }
+
+    #[test]
+    fn claude_launcher_exe_rejects_other_binaries() {
+        // A pane's claude is found by comm, so the launcher check needn't match
+        // it — and must not match a `versions` directory belonging to anything
+        // else.
+        assert!(!is_claude_launcher_exe(std::path::Path::new(
+            "/usr/bin/claude"
+        )));
+        assert!(!is_claude_launcher_exe(std::path::Path::new(
+            "/home/u/.local/share/codex/versions/1.0.0"
+        )));
+        assert!(!is_claude_launcher_exe(std::path::Path::new("2.1.220")));
+    }
+
+    #[test]
+    fn comm_version_gate_admits_versions_and_nothing_else() {
+        assert!(comm_looks_like_version("2.1.220"));
+        assert!(comm_looks_like_version("2.2.0-rc1"));
+        assert!(!comm_looks_like_version("claude"));
+        assert!(!comm_looks_like_version("node"));
+        // A single component is not a version, and would let bare numbers in.
+        assert!(!comm_looks_like_version("2"));
+    }
+
+    #[test]
+    fn session_host_args_detect_the_daemon_and_its_pty_hosts() {
+        assert!(is_session_host_args(&[
+            "claude",
+            "daemon",
+            "run",
+            "--origin",
+            "transient"
+        ]));
+        assert!(is_session_host_args(&[
+            "claude",
+            "bg-spare",
+            "--bg-spare",
+            "/tmp/claim.sock"
+        ]));
+        // The PTY host repeats the hosted session's argv after `--`, so it looks
+        // like a real session on everything but its own flag.
+        assert!(is_session_host_args(&[
+            "claude",
+            "bg-pty-host",
+            "--bg-pty-host",
+            "/tmp/pty.sock",
+            "--",
+            "/home/u/.local/share/claude/versions/2.1.220",
+            "--session-id",
+            "abc",
+        ]));
+    }
+
+    #[test]
+    fn session_host_args_ignore_real_sessions() {
+        assert!(!is_session_host_args(&["claude", "-n", "hunk issue"]));
+        assert!(!is_session_host_args(&[
+            "/home/u/.local/share/claude/versions/2.1.220",
+            "--session-id",
+            "abc",
+            "--fork-session",
+            "--resume",
+            "/home/u/.claude/projects/-p/parent.jsonl",
+        ]));
+    }
+
+    #[test]
+    fn argv0_accepts_the_ways_a_session_is_actually_launched() {
+        // A pane, through a `claude` on $PATH.
+        assert!(argv0_names_agent(
+            &["/home/u/.local/bin/claude", "-n", "hunk issue"],
+            AgentKind::ClaudeCode
+        ));
+        // A background job, straight through the versioned launcher.
+        assert!(argv0_names_agent(
+            &[
+                "/home/u/.local/share/claude/versions/2.1.220",
+                "--session-id",
+                "abc",
+            ],
+            AgentKind::ClaudeCode
+        ));
+        // The PTY host is turned down by `is_session_host_args`, not by this —
+        // its argv[0] is a plain `claude`.
+        assert!(argv0_names_agent(
+            &["claude", "bg-pty-host"],
+            AgentKind::ClaudeCode
+        ));
+        // Codex names itself and nothing else, resumed or fresh.
+        assert!(argv0_names_agent(
+            &["codex", "resume", "019fb51a-ff37-7371-a34c-40f791ec0417"],
+            AgentKind::Codex
+        ));
+        assert!(argv0_names_agent(&["codex"], AgentKind::Codex));
+    }
+
+    #[test]
+    fn argv0_rejects_a_fork_on_its_way_to_a_tool() {
+        // Observed live: a `ugrep` forked from a background job still reports the
+        // launcher as its comm and exe until its own execve lands, and argv is
+        // the only one of the three already telling the truth.
+        assert!(!argv0_names_agent(
+            &["ugrep", "-G", "--ignore-files", "pattern"],
+            AgentKind::ClaudeCode
+        ));
+        assert!(!argv0_names_agent(
+            &["/usr/bin/rg", "pattern"],
+            AgentKind::Codex
+        ));
+        assert!(!argv0_names_agent(&[], AgentKind::ClaudeCode));
+        assert!(!argv0_names_agent(&[""], AgentKind::Codex));
+    }
+
+    #[test]
+    fn argv0_does_not_let_one_agent_pass_as_another() {
+        // The launcher exemption is Claude Code's alone: nothing about a versioned
+        // path says Codex, and Codex has no such layout to be confused with.
+        assert!(!argv0_names_agent(
+            &["/home/u/.local/share/claude/versions/2.1.220"],
+            AgentKind::Codex
+        ));
+        assert!(!argv0_names_agent(&["codex"], AgentKind::ClaudeCode));
+        assert!(!argv0_names_agent(&["claude"], AgentKind::Codex));
+    }
+
+    #[test]
+    fn fork_parent_reads_the_resumed_transcript() {
+        assert_eq!(
+            fork_parent_from_args(&[
+                "/home/u/.local/share/claude/versions/2.1.220",
+                "--session-id",
+                "new-id",
+                "--fork-session",
+                "--resume",
+                "/home/u/.claude/projects/-home-u-proj/parent-id.jsonl",
+                "--reply-on-resume",
+            ])
+            .as_deref(),
+            Some("parent-id")
+        );
+    }
+
+    #[test]
+    fn fork_parent_accepts_a_bare_session_id() {
+        assert_eq!(
+            fork_parent_from_args(&["claude", "--fork-session", "--resume", "parent-id"])
+                .as_deref(),
+            Some("parent-id")
+        );
+    }
+
+    #[test]
+    fn fork_parent_ignores_a_plain_resume() {
+        // Resuming in place is not a fork: the session that fires the hooks is
+        // the one being resumed, and there is no parent to quiet.
+        assert!(fork_parent_from_args(&["claude", "--resume", "parent-id"]).is_none());
+        assert!(fork_parent_from_args(&["claude", "--fork-session"]).is_none());
     }
 
     #[test]
@@ -1973,6 +2340,50 @@ mod tests {
         assert_eq!(adopted.status, SessionStatus::Thinking);
         assert!(registry.get("old-uuid-111").is_none());
         assert!(registry.get("new-uuid-222").is_some());
+    }
+
+    #[test]
+    fn registry_hand_off_quiets_the_session_that_forked() {
+        let registry = SessionRegistry::new();
+        let mut pane = Session::new("parent-id".into(), AgentKind::ClaudeCode, 317109);
+        pane.status = SessionStatus::Executing;
+        pane.current_tool = Some("Bash".into());
+        pane.tool_detail = Some("cargo test".into());
+        pane.session_name = Some("hunk issue".into());
+        registry.register(pane);
+
+        assert!(registry.hand_off("parent-id"));
+        let quiet = registry.get("parent-id").expect("row stays");
+        assert_eq!(quiet.status, SessionStatus::Idle);
+        assert!(quiet.current_tool.is_none());
+        assert!(quiet.tool_detail.is_none());
+        // The work moved, nothing finished: no `done`, and the name is still the
+        // user's.
+        assert!(quiet.finished_at.is_none());
+        assert_eq!(quiet.session_name.as_deref(), Some("hunk issue"));
+    }
+
+    #[test]
+    fn registry_hand_off_finds_a_pane_the_scanner_discovered() {
+        // The pane was found by the scan tick, so it is keyed `scan-claude-<pid>`
+        // and knows its own id only as `agent_session_id` — which is the id the
+        // fork's argv names. Resolving by key alone would leave exactly this pane
+        // stuck at Thinking.
+        let registry = SessionRegistry::new();
+        let mut pane = Session::new("scan-claude-317109".into(), AgentKind::ClaudeCode, 317109);
+        pane.agent_session_id = Some("parent-id".into());
+        pane.status = SessionStatus::Thinking;
+        registry.register(pane);
+
+        assert!(registry.hand_off("parent-id"));
+        let quiet = registry.get("scan-claude-317109").expect("row stays");
+        assert_eq!(quiet.status, SessionStatus::Idle);
+    }
+
+    #[test]
+    fn registry_hand_off_is_false_for_an_unknown_parent() {
+        let registry = SessionRegistry::new();
+        assert!(!registry.hand_off("never-seen"));
     }
 
     #[test]

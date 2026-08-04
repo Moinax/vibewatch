@@ -626,11 +626,22 @@ async fn handle_connection(
                     continue;
                 }
                 let kind = parse_agent_kind(&agent);
-                let mut session = Session::new(session_id, kind, pid);
+                let mut session = Session::new(session_id.clone(), kind, pid);
                 session.cwd = cwd;
                 session.session_name = session_name;
                 session.terminal = Some(session::detect_terminal(pid));
                 registry.register(session);
+                // A background job starts as a fork of the session that launched
+                // it, and takes over a turn already in flight. The pane it came
+                // from never ends that turn, so quiet it here — this is the one
+                // moment anything knows the two are the same piece of work.
+                if let Some(parent) =
+                    session::fork_parent_session_id(pid).filter(|parent| *parent != session_id)
+                {
+                    if registry.hand_off(&parent) {
+                        eprintln!("vibewatch: {parent} handed its turn to {session_id}");
+                    }
+                }
                 status_notify.notify_waiters();
             }
             InboundEvent::PreToolUse {
