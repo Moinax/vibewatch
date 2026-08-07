@@ -1,2 +1,5 @@
 /target
 /.worktrees
+# machine-specific (shared target-dir across worktrees); worktrunk's
+# copy-ignored carries it into new worktrees precisely because it is ignored
+/.cargo/
