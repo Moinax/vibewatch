@@ -25,6 +25,11 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     row.add_css_class("session-row");
     row.add_css_class(status_class);
     row.set_activatable(false);
+    // Nothing in the panel is reachable by keyboard — the layer surface is
+    // mapped with `KeyboardMode::None` precisely so it never takes focus away
+    // from the terminal. A row that still accepts focus only leaves one behind
+    // on every click, for the scroller to chase afterwards.
+    row.set_focusable(false);
 
     let card = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     card.set_margin_start(12);
@@ -177,6 +182,7 @@ fn build_choice_bar(request_id: String, choices: &[crate::session::ApprovalChoic
         label.set_xalign(0.5);
 
         let button = gtk::Button::new();
+        button.set_focusable(false); // mouse-only surface, same as the row
         button.set_child(Some(&label));
         button.add_css_class(choice.css_class());
         button.set_hexpand(true);

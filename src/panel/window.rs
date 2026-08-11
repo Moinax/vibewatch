@@ -63,6 +63,18 @@ thread_local! {
     /// The list scroller, so [`show`] can put the list back at the top itself.
     /// Same one-panel-per-process justification as `ALIVE_SINCE` above.
     static LIST_SCROLLER: RefCell<Option<gtk::ScrolledWindow>> = const { RefCell::new(None) };
+
+    /// Which open the panel is in. Bumped by every reveal that starts from a
+    /// lowered drawer.
+    ///
+    /// The poll loop carries the list's offset across a rebuild, but it applies
+    /// it from an idle callback — and an idle runs after anything the daemon
+    /// hands the main context, [`show`] included. So a rebuild that starts a
+    /// moment before an open lands its restore a moment after, putting back the
+    /// offset the open had just cleared. Stamping each restore with the open it
+    /// was taken in lets the stale one be dropped, rather than leaving the two
+    /// to race.
+    static OPEN_GENERATION: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Restart the auto-close countdown.
@@ -70,10 +82,17 @@ fn keep_alive() {
     ALIVE_SINCE.with(|c| c.set(Instant::now()));
 }
 
-/// Put the agent list back at the first row. Called from the reveal edge rather
-/// than left to the poll loop, which only rebuilds when the fleet's fingerprint
-/// changes — not something an open can count on.
+/// The open the panel is currently in.
+fn open_generation() -> u64 {
+    OPEN_GENERATION.with(|c| c.get())
+}
+
+/// Put the agent list back at the first row, and declare a new open: every
+/// offset captured under the previous one is now stale. Called from the reveal
+/// edge rather than left to the poll loop, which only rebuilds when the fleet's
+/// fingerprint changes — not something an open can count on.
 fn scroll_list_to_top() {
+    OPEN_GENERATION.with(|c| c.set(c.get().wrapping_add(1)));
     LIST_SCROLLER.with_borrow(|scroller| {
         if let Some(scroller) = scroller {
             scroller.vadjustment().set_value(0.0);
@@ -242,6 +261,14 @@ pub fn build_window(
     scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
     scroller.set_propagate_natural_height(true);
     scroller.set_child(Some(&session_list));
+    // `set_child` wrapped the list in a viewport, and a viewport scrolls itself
+    // to whatever takes focus. That is a keyboard affordance on a surface that
+    // has no keyboard — the layer shell is mapped with `KeyboardMode::None` —
+    // so all it can do here is move the list on its own, behind the open's own
+    // idea of where the list should be.
+    if let Some(viewport) = scroller.child().and_downcast::<gtk::Viewport>() {
+        viewport.set_scroll_to_focus(false);
+    }
     LIST_SCROLLER.with_borrow_mut(|slot| *slot = Some(scroller.clone()));
 
     main_box.append(&scroller);
@@ -319,6 +346,7 @@ pub fn build_window(
             // to the top. `Adjustment::set_value` clamps for us if the list
             // got shorter in the meantime.
             let offset = scroller_ref.vadjustment().value();
+            let captured_in = open_generation();
             rebuild_list(&list_ref, &sessions);
             // Cap right here, not in the idle pass below: the pass bails out
             // while the drawer is sliding, and the slide's own sizing callback
@@ -334,8 +362,11 @@ pub fn build_window(
                 // Ahead of the transition check below: where the list is
                 // scrolled to is independent of how tall the window is, and a
                 // rebuild that lands mid-slide must still land on the offset it
-                // was asked for.
-                scroller.vadjustment().set_value(offset);
+                // was asked for — unless an open has begun since it was taken,
+                // which has already put the list at the top and owns it now.
+                if captured_in == open_generation() {
+                    scroller.vadjustment().set_value(offset);
+                }
                 // While the drawer is sliding, the tick callback owns sizing —
                 // re-pinning to full height here would flash a black strip for
                 // one frame. Skip; the next data change resizes once settled.
