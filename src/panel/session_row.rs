@@ -310,20 +310,62 @@ fn focus_herdr_pane(pid: u32) {
 }
 
 fn focus_hyprland(window_id: Option<&str>, pid: u32) {
+    let candidates = if pid == 0 {
+        Vec::new()
+    } else {
+        crate::session::window_candidate_pids(pid)
+    };
+
+    // Asking for the window that is already focused is not free. Hyprland's
+    // focus dispatcher lets focus fall to nothing before taking it back, so the
+    // whole output redraws through an unfocused frame — every window dims and
+    // undims where `inactive_opacity` is set, and every terminal repaints on the
+    // focus-out/focus-in pair. That is the entire visible cost of clicking a
+    // card for an agent whose window you are already looking at, and it buys
+    // nothing: selecting the pane inside the multiplexer is the real work, and
+    // `focus_herdr_pane` has already done it.
+    if hypr_already_focused(window_id, &candidates) {
+        return;
+    }
+
     if let Some(wid) = window_id {
         if hypr_focus(&format!("address:{wid}")) {
             return;
         }
     }
 
-    if pid == 0 {
-        return;
-    }
-    for cand in crate::session::window_candidate_pids(pid) {
+    for cand in candidates {
         if hypr_focus(&format!("pid:{cand}")) {
             return;
         }
     }
+}
+
+/// Whether the window this click is headed for is the one Hyprland already has
+/// focused — by address when the session carries one, and otherwise by the same
+/// process candidates the dispatch below would select on.
+fn hypr_already_focused(window_id: Option<&str>, candidates: &[u32]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct ActiveWindow {
+        address: String,
+        pid: i64,
+    }
+
+    let Ok(out) = std::process::Command::new("hyprctl")
+        .args(["-j", "activewindow"])
+        .output()
+    else {
+        return false;
+    };
+    // `{}` when nothing is focused: no window to match, so nothing to skip.
+    let Ok(active) = serde_json::from_slice::<ActiveWindow>(&out.stdout) else {
+        return false;
+    };
+
+    if window_id.is_some_and(|wid| wid == active.address) {
+        return true;
+    }
+    u32::try_from(active.pid).is_ok_and(|pid| candidates.contains(&pid))
 }
 
 /// Focus a Hyprland window by `selector` (`address:0x…` or `pid:N`).
