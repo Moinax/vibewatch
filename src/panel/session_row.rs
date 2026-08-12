@@ -10,16 +10,15 @@ use crate::session::{describe_tool, prettify_tool_name, Session, SessionStatus};
 /// Active (executing/thinking/approval): name + badges + description + action line
 /// Idle (compact): name + badges only
 pub fn build_row(session: &Session) -> gtk::ListBoxRow {
-    // A session that just finished takes its own class for the whole card
-    // instead of the flat `idle` one, so the row that made the chime is
-    // obvious the moment the drawer slides open. It reverts when the click
-    // acknowledges the finish, or when that agent picks the work back up —
-    // never on a timer, so a chime you were away for is still marked.
-    let status_class = if session.just_finished() {
-        "just-finished"
-    } else {
-        session.status.css_class()
-    };
+    // The card's whole vocabulary, `just-finished` included: a session that
+    // finished takes its own class instead of the flat `idle` one, so the row
+    // that made the chime is obvious the moment the drawer slides open. It
+    // reverts when the click acknowledges the finish, or when that agent picks
+    // the work back up — never on a timer, so a chime you were away for is
+    // still marked. `state_kind` also splits the three blocked states apart,
+    // which is why this is no longer `status.css_class()`: that one cannot see
+    // `current_tool` and so cannot tell a question from a permission gate.
+    let status_class = session.state_kind().css_class();
 
     let row = gtk::ListBoxRow::new();
     row.add_css_class("session-row");

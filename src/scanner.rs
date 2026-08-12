@@ -247,6 +247,10 @@ pub async fn run_scanner(
             let finished_turn = is_codex_finish_transition(session.status, snapshot.status);
             session.cwd = snapshot.cwd;
             session.status = snapshot.status;
+            // Codex has no permission gate of its own, so its rollout never
+            // yields a blocked status — clearing rather than carrying, so a
+            // stale ask from an earlier state cannot survive the re-derive.
+            session.blocked_on = None;
             session.current_tool = snapshot.current_tool;
             session.tool_detail = snapshot.tool_detail;
             if snapshot.last_tool.is_some() {
@@ -537,6 +541,8 @@ fn hydrate_from_transcript(session: &mut Session, census: &HashMap<u32, PathBuf>
         return;
     };
     session.status = snapshot.status;
+    // Travels with the status it qualifies, never re-derived downstream.
+    session.blocked_on = snapshot.blocked_on;
     session.current_tool = snapshot.current_tool;
     session.tool_detail = snapshot.tool_detail;
     // The count of sub-agents holding the turn open is hook-fed and died with

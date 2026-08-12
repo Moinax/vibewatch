@@ -2,22 +2,42 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 use crate::ipc::{StatusPart, StatusResponse};
-use crate::session::{Session, SessionStatus};
+use crate::session::{Session, SessionStatus, StateKind};
 
-/// Per-status colors the waybar uses for the inline Pango-colored state word
-/// (mirrors tokens from assets/palette-*.css).
+/// The state colours the bar tints its inline Pango word with — one field per
+/// [`StateKind`], mirroring the same six rules in `assets/style.css` so the
+/// pill and the panel row agree on what a colour means.
+///
+/// Named for the *state*, not the hue, and that is the whole point: the hexes
+/// are Catppuccin tokens (`palette-*.css`) but which token goes where is the
+/// vocabulary, and a field called `green` invites the next state that wants
+/// green to take it. Warm = act, blue = busy, green = resolved, grey = nothing.
+/// The reasoning behind that assignment is on [`StateKind`].
 struct Palette {
-    green: &'static str,
-    sapphire: &'static str,
+    /// Sapphire. Thinking and executing both, the way T3Code paints Working
+    /// and Connecting one colour: the machine is busy, there is nothing here
+    /// for you, look away. Which tool is running is on the glyph beside it.
+    working: &'static str,
+    /// Peach — the loudest hue in the set, and the furthest from `working`,
+    /// because a permission gate is the one state that stops all progress
+    /// until you look. Also what `contrib/waybar-style.css` has always
+    /// suggested for the `.attention` chip.
+    approval: &'static str,
+    /// Lavender. Blocked on you like `approval`, but on an answer rather than
+    /// a yes/no — a different ask, so a different colour, off the warm end
+    /// since nothing is gated on a permission you might refuse.
+    input: &'static str,
+    /// Mauve. A plan wants a verdict — an ask that is neither a gate nor a
+    /// question, and the one T3Code found worth its own hue too.
+    plan: &'static str,
+    /// Green. The turn is over and it went fine; the traffic-light reading of
+    /// green is *resolved*, which is the one thing a finish is. This used to be
+    /// peach, which said "warning" about an outcome that is good news, and it
+    /// cost the vocabulary its only calm-but-visible colour.
+    done: &'static str,
+    /// Grey. Asleep, stopped, or seen by the scan and never heard from — the
+    /// states T3Code gives no pill at all.
     dim: &'static str,
-    /// Teal accent on the attention-state pill — complementary-ish contrast
-    /// with the magenta `.attention` background (set by the user's waybar
-    /// CSS), and distinct from the sapphire used for `thinking`.
-    attention_text: &'static str,
-    /// The just-finished hue, the same peach the panel tints a finished card
-    /// with (`palette-*.css`). A finish is otherwise indistinguishable from
-    /// idle in the bar, which is how the chime you were away for left no trace.
-    peach: &'static str,
     /// The `+n` badge. Full-strength ink, not `dim`: the badge is the only place
     /// the fleet size appears, and at `dim` it read as decoration next to the
     /// name rather than as a number worth counting.
@@ -25,20 +45,22 @@ struct Palette {
 }
 
 const MOCHA: Palette = Palette {
-    green: "#a6e3a1",
-    sapphire: "#74c7ec",
+    working: "#74c7ec",  // sapphire
+    approval: "#fab387", // peach
+    input: "#b4befe",    // lavender
+    plan: "#cba6f7",     // mauve
+    done: "#a6e3a1",     // green
     dim: "#6c7086",
-    attention_text: "#94e2d5",
-    peach: "#fab387",
     badge: "#cdd6f4",
 };
 
 const LATTE: Palette = Palette {
-    green: "#40a02b",
-    sapphire: "#209fb5",
+    working: "#209fb5",  // sapphire
+    approval: "#fe640b", // peach
+    input: "#7287fd",    // lavender
+    plan: "#8839ef",     // mauve
+    done: "#40a02b",     // green
     dim: "#8c8fa1",
-    attention_text: "#179299",
-    peach: "#fe640b",
     badge: "#4c4f69",
 };
 
@@ -105,12 +127,16 @@ fn detect_dark_mode() -> bool {
         .unwrap_or(true)
 }
 
-fn color_for_status(status: SessionStatus, palette: &Palette) -> &'static str {
-    match status {
-        SessionStatus::Executing | SessionStatus::Running => palette.green,
-        SessionStatus::Thinking => palette.sapphire,
-        SessionStatus::WaitingApproval => palette.attention_text,
-        SessionStatus::Idle | SessionStatus::Stopped => palette.dim,
+/// One arm per [`StateKind`], exhaustively — the bar has no opinion of its own
+/// about what a session is, it only knows which ink each state gets.
+fn color_for_state(kind: StateKind, palette: &Palette) -> &'static str {
+    match kind {
+        StateKind::Working => palette.working,
+        StateKind::PendingApproval => palette.approval,
+        StateKind::AwaitingInput => palette.input,
+        StateKind::PlanReady => palette.plan,
+        StateKind::Done => palette.done,
+        StateKind::Resting => palette.dim,
     }
 }
 
@@ -172,16 +198,13 @@ fn tint(color: &str, raw: &str) -> String {
 /// word — which is the point of having shapes at all: the state should not be
 /// readable by hue alone, and the bar was the half of the UI where it still was.
 ///
-/// A just-finished turn is `Idle` as far as `status` is concerned, so the peach
-/// has to be asked about separately or the finish reads as "nothing happening".
+/// Both halves come from the session: `state_label` for the word,
+/// `state_kind` for the ink. Neither is decided here, which is what keeps the
+/// bar from saying `awaiting answer` in the colour the panel reserves for a
+/// permission gate.
 fn headline_status(session: &Session, palette: &Palette) -> String {
-    let color = if session.just_finished() {
-        palette.peach
-    } else {
-        color_for_status(session.status, palette)
-    };
     tint(
-        color,
+        color_for_state(session.state_kind(), palette),
         &format!("{} {}", session.indicator_glyph(), session.state_label()),
     )
 }
@@ -194,17 +217,15 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
 
     let count = active.len();
 
-    let class = if sessions
-        .iter()
-        .any(|s| s.status == SessionStatus::WaitingApproval)
-    {
+    // `attention` is any of the three blocked states, not just the permission
+    // gate: they differ in what they ask for, never in whether they are waiting
+    // on you, and the chip is the one place that distinction does not fit.
+    let class = if sessions.iter().any(|s| s.state_kind().needs_user()) {
         "attention".to_string()
-    } else if sessions.iter().any(|s| {
-        matches!(
-            s.status,
-            SessionStatus::Thinking | SessionStatus::Executing | SessionStatus::Running
-        )
-    }) {
+    } else if sessions
+        .iter()
+        .any(|s| s.state_kind() == StateKind::Working)
+    {
         "active".to_string()
     } else {
         "idle".to_string()
@@ -409,7 +430,7 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "vibewatch {} <span foreground=\"#a6e3a1\">\u{f120} exec</span>  \
+                "vibewatch {} <span foreground=\"#74c7ec\">\u{f120} exec</span>  \
                  <span foreground=\"#cdd6f4\">+1</span>",
                 SEP_DARK
             )
@@ -434,7 +455,7 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "vibewatch {} <span foreground=\"#fab387\">\u{2714} done</span>  \
+                "vibewatch {} <span foreground=\"#a6e3a1\">\u{2714} done</span>  \
                  <span foreground=\"#cdd6f4\">+1</span>",
                 SEP_DARK
             )
@@ -475,7 +496,7 @@ mod tests {
         ];
         let s = dark(&sessions);
         assert_eq!(s.name, "vibewatch");
-        assert_eq!(s.state, "<span foreground=\"#a6e3a1\">\u{f120} exec</span>");
+        assert_eq!(s.state, "<span foreground=\"#74c7ec\">\u{f120} exec</span>");
         assert_eq!(s.count, "<span foreground=\"#cdd6f4\">+1</span>");
         assert!(!payload_part(&s, StatusPart::Count).contains("empty"));
         for piece in [&s.name, &s.state, &s.count] {
@@ -546,10 +567,138 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "dotfiles {} <span foreground=\"#94e2d5\">\u{f128} awaiting approval</span>",
+                "dotfiles {} <span foreground=\"#fab387\">\u{f128} awaiting approval</span>",
                 SEP_DARK
             )
         );
+    }
+
+    /// The three blocked states are one status and three asks, told apart by
+    /// `current_tool`. Each gets its own word *and* its own ink, and the pair
+    /// has to stay in step — a question tinted like a permission gate is worse
+    /// than no colour at all, because it reads as one.
+    #[test]
+    fn the_three_asks_each_get_their_own_word_and_ink() {
+        // Through `Ask::from_tool`, the way every producer of the status
+        // reaches its ask — the bar is fed the answer, it does not derive one.
+        for (tool, word, ink) in [
+            ("Bash", "awaiting approval", MOCHA.approval),
+            ("AskUserQuestion", "awaiting answer", MOCHA.input),
+            ("ExitPlanMode", "plan ready", MOCHA.plan),
+        ] {
+            let mut session = make_named(
+                "dotfiles",
+                AgentKind::ClaudeCode,
+                SessionStatus::WaitingApproval,
+            );
+            session.blocked_on = Some(crate::session::Ask::from_tool(tool));
+            // Deliberately disagreeing with the ask: a stale `current_tool` is
+            // the norm by the time a gate is answered, and nothing may read it.
+            session.current_tool = Some("Read".to_string());
+            let status = dark(&[session]);
+            assert!(
+                status
+                    .text
+                    .contains(&format!("<span foreground=\"{ink}\">")),
+                "{tool:?} should be tinted {ink}, got {:?}",
+                status.text
+            );
+            assert!(
+                status.text.contains(word),
+                "{tool:?} should read {word:?}, got {:?}",
+                status.text
+            );
+            // All three are blocked on the user, whatever they are asking for.
+            assert_eq!(status.class, "attention", "{tool:?} must raise attention");
+        }
+    }
+
+    /// `Running` is the scanner's "alive, nothing reported yet". It says `idle`,
+    /// wears the idle glyph and bands with the idle ones — and used to be the
+    /// one surface that painted it green anyway, so a session nothing had ever
+    /// been heard from lit the bar up as if it were working.
+    #[test]
+    fn a_scan_only_session_is_not_painted_as_busy() {
+        let sessions = vec![
+            make_named("dotfiles", AgentKind::ClaudeCode, SessionStatus::Running),
+            make_named("vibewatch", AgentKind::Codex, SessionStatus::Idle),
+        ];
+        let status = dark(&sessions);
+        assert_eq!(status.class, "idle");
+        assert!(
+            !status.text.contains(MOCHA.working),
+            "a scan-only fleet must not wear the working ink: {:?}",
+            status.text
+        );
+    }
+
+    /// The bar's hexes are the panel's tokens, spelled out.
+    ///
+    /// They have to be: the bar tints inline with Pango, which cannot see a GTK
+    /// `@define-color`, so the same six colours exist twice — once here, once in
+    /// `assets/palette-*.css` — and nothing but this test can notice when an
+    /// edit to one leaves the other behind. The failure it guards is silent and
+    /// wrong in the worst way: a panel row and the bar pill describing the same
+    /// session in two different colours.
+    #[test]
+    fn the_bar_and_the_panel_are_painted_from_the_same_tokens() {
+        const MOCHA_CSS: &str = include_str!("../assets/palette-mocha.css");
+        const LATTE_CSS: &str = include_str!("../assets/palette-latte.css");
+
+        /// The hex `@define-color <token>` binds in `css`.
+        fn token(css: &str, name: &str) -> String {
+            let needle = format!("@define-color {name} ");
+            let line = css
+                .lines()
+                .find(|l| l.starts_with(&needle))
+                .unwrap_or_else(|| panic!("no @define-color {name} in the palette"));
+            line.split('#')
+                .nth(1)
+                .map(|hex| format!("#{}", hex.trim().trim_end_matches(';')))
+                .expect("a @define-color with no hex")
+        }
+
+        for (flavour, css, palette) in [("mocha", MOCHA_CSS, &MOCHA), ("latte", LATTE_CSS, &LATTE)]
+        {
+            for (field, ink, name) in [
+                ("working", palette.working, "cat_sapphire"),
+                ("approval", palette.approval, "cat_peach"),
+                ("input", palette.input, "cat_lavender"),
+                ("plan", palette.plan, "cat_mauve"),
+                ("done", palette.done, "cat_green"),
+                ("dim", palette.dim, "cat_text_time"),
+                ("badge", palette.badge, "cat_text"),
+            ] {
+                assert_eq!(
+                    ink,
+                    token(css, name),
+                    "{flavour}: Palette::{field} has drifted from {name}"
+                );
+            }
+        }
+    }
+
+    /// Six states, six colours, in both flavours: a vocabulary where two states
+    /// share ink is a vocabulary with five words in it. Distinctness is the one
+    /// property the palette has to hold on its own — everything else about it is
+    /// taste.
+    #[test]
+    fn every_state_gets_ink_of_its_own() {
+        for (flavour, palette) in [("mocha", &MOCHA), ("latte", &LATTE)] {
+            let inks = [
+                StateKind::Working,
+                StateKind::PendingApproval,
+                StateKind::AwaitingInput,
+                StateKind::PlanReady,
+                StateKind::Done,
+                StateKind::Resting,
+            ]
+            .map(|kind| color_for_state(kind, palette));
+            let mut seen = inks.to_vec();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), inks.len(), "{flavour} reuses a state colour");
+        }
     }
 
     #[test]
@@ -687,14 +836,14 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "dotfiles {} <span foreground=\"#a6e3a1\">\u{f120} A&amp;B&lt;x&gt;</span>",
+                "dotfiles {} <span foreground=\"#74c7ec\">\u{f120} A&amp;B&lt;x&gt;</span>",
                 SEP_DARK
             )
         );
     }
 
     #[test]
-    fn test_executing_tool_detail_green_span() {
+    fn the_tool_detail_never_reaches_the_bar() {
         let mut session = make_named("dotfiles", AgentKind::ClaudeCode, SessionStatus::Executing);
         session.current_tool = Some("Bash".to_string());
         session.tool_detail = Some("npm test".to_string());
@@ -702,7 +851,7 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "dotfiles {} <span foreground=\"#a6e3a1\">\u{f120} Bash</span>",
+                "dotfiles {} <span foreground=\"#74c7ec\">\u{f120} Bash</span>",
                 SEP_DARK
             )
         );

@@ -23,6 +23,10 @@ fn sessions_fingerprint(sessions: &[Session]) -> u64 {
     for s in sessions {
         s.id.hash(&mut h);
         s.status.hash(&mut h);
+        // Not derivable from `status`, which says "blocked" for all three asks
+        // while the row paints a different colour and word for each. Without
+        // this a T3 thread going from a question to a plan repaints nothing.
+        s.blocked_on.hash(&mut h);
         s.current_tool.hash(&mut h);
         s.tool_detail.hash(&mut h);
         s.last_tool.hash(&mut h);

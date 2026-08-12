@@ -320,6 +320,10 @@ pub enum SessionStatus {
 }
 
 impl SessionStatus {
+    /// The raw status, spelled for a log line. Not what a surface paints —
+    /// that is [`StateKind`], which folds these six into the vocabulary the UI
+    /// actually distinguishes. Kept separate because the daemon's diagnostics
+    /// want to say `running` and `idle` apart even where the UI does not.
     pub fn css_class(&self) -> &'static str {
         match self {
             SessionStatus::Thinking => "thinking",
@@ -328,6 +332,112 @@ impl SessionStatus {
             SessionStatus::Idle => "idle",
             SessionStatus::Running => "running",
             SessionStatus::Stopped => "stopped",
+        }
+    }
+}
+
+/// What a surface says about a session — the vocabulary the panel and the bar
+/// both paint from, and the only thing either of them is allowed to colour by.
+///
+/// Modelled on T3Code's thread-status pill (`resolveThreadStatusPill`), which
+/// this deliberately mirrors: it is the same problem — a list of agents, each
+/// either working, blocked on you, or finished — solved by a project with far
+/// more users watching it than this one has. Two things came from there:
+///
+/// 1. **What needs you is split by *what* it needs.** An approval gate, a
+///    question and a plan awaiting a verdict are three different asks, and a
+///    single "waiting" state made them one. Every one of those distinctions was
+///    already in the data (`current_tool`), just not on screen.
+/// 2. **The hues follow the ask, not the activity.** Warm means *act*, blue
+///    means *the machine is busy, ignore me*, green means *resolved*. Which is
+///    why `Working` collapses thinking and executing onto one colour: the
+///    difference between them is real but it is never the user's business, so it
+///    is carried by the indicator glyph (see [`Session::indicator_glyph`]) —
+///    where a distinction that costs nothing belongs — instead of by a hue the
+///    vocabulary needs for something louder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateKind {
+    /// The agent is doing something and nobody is waiting on you.
+    Working,
+    /// Blocked on a tool-approval gate — Bash, an edit, a fetch.
+    PendingApproval,
+    /// Blocked on an answer to a question the agent asked.
+    AwaitingInput,
+    /// A plan is on the table and wants a verdict.
+    PlanReady,
+    /// The turn ended and the finish has not been acknowledged yet.
+    Done,
+    /// Nothing to say: asleep, or seen by the scan and never heard from.
+    Resting,
+}
+
+/// What a blocked session is blocked *on* — the three ways an agent can be
+/// waiting, which [`StateKind`] turns into three colours and three words.
+///
+/// Its own type rather than three booleans because they are exclusive: an agent
+/// asks for one thing at a time, and the surfaces have to name which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ask {
+    /// A permission gate — a tool wants a yes or a no.
+    Approval,
+    /// A question, wanting one of the options picked.
+    Input,
+    /// A plan, wanting a verdict.
+    Plan,
+}
+
+impl Ask {
+    /// The ask a blocking tool stands for.
+    ///
+    /// `Approval` is the default and the honest one: only these two tools block
+    /// by their own nature, and every *other* tool can still be held at a
+    /// permission gate — a Bash call waiting on a yes is indistinguishable from
+    /// one still running, so the gate is what the caller knows, not the tool.
+    ///
+    /// Called at the moment a session is put into `WaitingApproval`, never
+    /// afterwards: by then `current_tool` has moved on and answers confidently
+    /// about a gate that has already been answered.
+    pub fn from_tool(tool: &str) -> Ask {
+        match tool {
+            TOOL_ASK_USER_QUESTION => Ask::Input,
+            TOOL_EXIT_PLAN_MODE => Ask::Plan,
+            _ => Ask::Approval,
+        }
+    }
+
+    pub fn state_kind(&self) -> StateKind {
+        match self {
+            Ask::Approval => StateKind::PendingApproval,
+            Ask::Input => StateKind::AwaitingInput,
+            Ask::Plan => StateKind::PlanReady,
+        }
+    }
+}
+
+impl StateKind {
+    /// True when the session is blocked on the user. The three asks differ in
+    /// hue and wording but not in urgency, and anything ranking states —
+    /// [`Session::activity_band`], the bar's `attention` class — wants the
+    /// question asked once rather than three times.
+    pub fn needs_user(&self) -> bool {
+        matches!(
+            self,
+            StateKind::PendingApproval | StateKind::AwaitingInput | StateKind::PlanReady
+        )
+    }
+
+    /// The panel's CSS class. `waiting-approval` and `just-finished` keep the
+    /// names they had before the vocabulary grew, so a user stylesheet that
+    /// targeted them still lands.
+    pub fn css_class(&self) -> &'static str {
+        match self {
+            StateKind::Working => "working",
+            StateKind::PendingApproval => "waiting-approval",
+            StateKind::AwaitingInput => "awaiting-input",
+            StateKind::PlanReady => "plan-ready",
+            StateKind::Done => "just-finished",
+            StateKind::Resting => "idle",
         }
     }
 }
@@ -516,6 +626,14 @@ pub struct Session {
     /// the widget. `None` at all other times.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_approval: Option<PendingApproval>,
+    /// Which of the three asks is blocking, when someone other than our own
+    /// hooks knows. Only T3 Code sets it: it hosts the permission prompt for
+    /// the agents it runs, so `current_tool` — which is how [`state_kind`]
+    /// tells the asks apart everywhere else — never sees the gate at all.
+    ///
+    /// [`state_kind`]: Session::state_kind
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_on: Option<Ask>,
     /// Unix epoch seconds of the last `Stop` — the moment the agent finished
     /// its turn — for as long as the user hasn't acknowledged it. Drives
     /// [`Session::just_finished`]; cleared by [`Session::acknowledge`] when
@@ -590,6 +708,7 @@ impl Session {
             transcript_path: None,
             agent_session_id: None,
             pending_approval: None,
+            blocked_on: None,
             finished_at: None,
             finish_seq: 0,
             pending_agents: 0,
@@ -772,6 +891,44 @@ impl Session {
         self.inline_status()
     }
 
+    /// Which of the six things a surface can say this session is — see
+    /// [`StateKind`]. The colour twin of [`state_label`](Self::state_label),
+    /// and shaped like it on purpose: both fold `just_finished` in ahead of
+    /// `status`, and both read the same `current_tool` to tell the three
+    /// blocked states apart. Kept as one function so the panel and the bar
+    /// cannot end up disagreeing about what a session *is* — which is exactly
+    /// how the word drifted before `state_label` existed.
+    ///
+    /// A just-finished turn is `Idle` as far as `status` goes, so `Done` has to
+    /// be asked about first or a finish reads as nothing happening.
+    pub fn state_kind(&self) -> StateKind {
+        if self.just_finished() {
+            return StateKind::Done;
+        }
+        match self.status {
+            // `blocked_on` and nothing else. Whoever raised this status knew
+            // what the ask was — the hook carries the tool, T3 carries its own
+            // three counters, the transcript fold carries the `tool_use` it
+            // stopped on — so all four say so in the same breath (see
+            // [`Ask::from_tool`]). Guessing here instead, from `current_tool`,
+            // is what made this wrong twice: for a T3 thread the field holds
+            // whatever the agent last ran rather than the gate, and on any
+            // session the guess outlives the answer by a tick and reports
+            // `plan ready` about a plan that was just approved.
+            SessionStatus::WaitingApproval => self
+                .blocked_on
+                .map_or(StateKind::PendingApproval, |ask| ask.state_kind()),
+            SessionStatus::Thinking | SessionStatus::Executing => StateKind::Working,
+            // `Running` is the scan's "alive, nothing reported yet". It says
+            // "idle" in `inline_status`, wears the idle glyph and bands with the
+            // idle ones — it was green only in the bar, so a session nothing had
+            // ever been heard from lit up as busy.
+            SessionStatus::Idle | SessionStatus::Running | SessionStatus::Stopped => {
+                StateKind::Resting
+            }
+        }
+    }
+
     /// The row's indicator: an icon per state, so the state survives being read
     /// by someone who cannot tell teal from green, and so a finish is
     /// recognisable at a glance rather than by hue alone. While executing it
@@ -809,15 +966,16 @@ impl Session {
                 .as_deref()
                 .map(prettify_tool_name)
                 .unwrap_or_else(|| "exec".to_string()),
-            SessionStatus::WaitingApproval => {
-                // AskUserQuestion waits for an answer (the user picks an
-                // option), not an approval gate like Bash or ExitPlanMode.
-                if self.current_tool.as_deref() == Some(TOOL_ASK_USER_QUESTION) {
-                    "awaiting answer".to_string()
-                } else {
-                    "awaiting approval".to_string()
-                }
-            }
+            // Three different asks, so three different words — the split lives
+            // in `state_kind`, which the colour reads too, so the word and the
+            // hue cannot disagree about which ask this is. A question wants an
+            // option picked, a plan wants a verdict, and everything else is a
+            // permission gate.
+            SessionStatus::WaitingApproval => match self.state_kind() {
+                StateKind::AwaitingInput => "awaiting answer".to_string(),
+                StateKind::PlanReady => "plan ready".to_string(),
+                _ => "awaiting approval".to_string(),
+            },
             SessionStatus::Thinking => "thinking".to_string(),
             SessionStatus::Running => "idle".to_string(),
             SessionStatus::Idle => "idle".to_string(),
@@ -843,13 +1001,21 @@ impl Session {
     /// state — it reads as `idle` everywhere else in the UI, so it bands with
     /// `Idle`. Band 1 is transient: a freshly finished agent sits there until
     /// the click acknowledging it drops it back into the idle band.
+    ///
+    /// Bands 0–2 are read off [`state_kind`](Self::state_kind) rather than
+    /// re-matched on `status`: "blocked on the user" and "just finished" are
+    /// questions it already answers, and answering them twice is how the bar's
+    /// attention chip — which does go through `needs_user` — could come to
+    /// disagree with the order the panel lists them in. Only the idle/gone
+    /// split at the bottom needs the raw status, since `Resting` deliberately
+    /// folds `Stopped` in with the sleeping ones.
     pub fn activity_band(&self) -> u8 {
-        match self.status {
-            SessionStatus::WaitingApproval => 0,
-            _ if self.just_finished() => 1,
-            SessionStatus::Executing | SessionStatus::Thinking => 2,
-            SessionStatus::Idle | SessionStatus::Running => 3,
-            SessionStatus::Stopped => 4,
+        match self.state_kind() {
+            k if k.needs_user() => 0,
+            StateKind::Done => 1,
+            StateKind::Working => 2,
+            _ if self.status == SessionStatus::Stopped => 4,
+            _ => 3,
         }
     }
 
@@ -990,7 +1156,13 @@ impl SessionRegistry {
         // this is the only thing that can say a T3 thread is blocked on its
         // user. Clearing it is left to the agent's next hook, which always comes
         // once the answer lands: the tool runs, or the turn ends.
-        if thread.blocked {
+        //
+        // The ask itself *is* assigned unconditionally, including back to
+        // `None`: it is only ever read while the status says blocked, so it
+        // cannot lower anything, and leaving a stale one behind is how a thread
+        // would keep claiming to want a plan approved after the plan was.
+        session.blocked_on = thread.blocked;
+        if thread.blocked.is_some() {
             session.status = SessionStatus::WaitingApproval;
         }
         first_pairing
@@ -2889,7 +3061,7 @@ mod tests {
             title: "Connect vibewatch to T3".into(),
             provider_session_id: Some("s1".into()),
             cwd: None,
-            blocked: false,
+            blocked: None,
         };
 
         assert!(
@@ -2923,7 +3095,7 @@ mod tests {
             title: "Ship it".into(),
             provider_session_id: Some("s1".into()),
             cwd: None,
-            blocked: true,
+            blocked: Some(Ask::Approval),
         };
 
         registry.apply_t3_thread("s1", &thread);
@@ -2931,6 +3103,61 @@ mod tests {
             registry.get("s1").unwrap().status,
             SessionStatus::WaitingApproval
         );
+    }
+
+    /// Which of the three asks T3 is holding a thread for reaches the panel,
+    /// and outranks `current_tool` while it does. That last part is the whole
+    /// reason the field exists: a T3-hosted agent's last tool is stale by
+    /// definition — T3 hosts the prompt, so our hooks never see the gate — and
+    /// `state_kind` would otherwise read a leftover `ExitPlanMode` and call a
+    /// permission request a plan.
+    #[test]
+    fn t3s_own_ask_reaches_the_panel_and_outranks_a_stale_tool() {
+        for (ask, expected) in [
+            (Ask::Approval, StateKind::PendingApproval),
+            (Ask::Input, StateKind::AwaitingInput),
+            (Ask::Plan, StateKind::PlanReady),
+        ] {
+            let registry = SessionRegistry::new();
+            let mut session = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
+            session.status = SessionStatus::Executing;
+            // The lie the ask has to survive.
+            session.current_tool = Some(TOOL_EXIT_PLAN_MODE.to_string());
+            registry.register(session);
+            let thread = crate::t3::Thread {
+                thread_id: "th-1".into(),
+                title: "Ship it".into(),
+                provider_session_id: Some("s1".into()),
+                cwd: None,
+                blocked: Some(ask),
+            };
+
+            registry.apply_t3_thread("s1", &thread);
+            assert_eq!(registry.get("s1").unwrap().state_kind(), expected);
+        }
+    }
+
+    /// A thread that stops asking stops claiming to ask. The status is raised
+    /// only and cleared by the agent's next hook, but the *ask* is rewritten
+    /// every tick — otherwise an approved plan leaves `plan ready` behind, and
+    /// the next gate on that session inherits it.
+    #[test]
+    fn an_answered_ask_does_not_outlive_the_answer() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("s1".into(), AgentKind::ClaudeCode, 42));
+        let mut thread = crate::t3::Thread {
+            thread_id: "th-1".into(),
+            title: "Ship it".into(),
+            provider_session_id: Some("s1".into()),
+            cwd: None,
+            blocked: Some(Ask::Plan),
+        };
+        registry.apply_t3_thread("s1", &thread);
+        assert_eq!(registry.get("s1").unwrap().blocked_on, Some(Ask::Plan));
+
+        thread.blocked = None;
+        registry.apply_t3_thread("s1", &thread);
+        assert_eq!(registry.get("s1").unwrap().blocked_on, None);
     }
 
     /// The badge is worth setting on its own, for the session whose thread
@@ -2961,7 +3188,7 @@ mod tests {
             title: "T3's idea of it".into(),
             provider_session_id: Some("s1".into()),
             cwd: None,
-            blocked: false,
+            blocked: None,
         };
 
         registry.apply_t3_thread("s1", &thread);

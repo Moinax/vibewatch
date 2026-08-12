@@ -119,7 +119,7 @@ window_class = "jetbrains-webstorm"
 
 [T3 Code](https://t3.codes) runs each of its threads as a headless `claude` or `codex` of its own, driven over stdio from the app's server process. vibewatch picks those up like any other session — same states, same chime, same waybar line — with two differences:
 
-- The row is named after the **T3 thread**, not the agent's transcript title, and carries a `T3 Code` badge where a terminal name would be. When T3 says a thread is waiting on you (a permission request, a question, a plan to approve), the row goes to `awaiting approval`, since for these agents T3 owns the prompt rather than Claude.
+- The row is named after the **T3 thread**, not the agent's transcript title, and carries a `T3 Code` badge where a terminal name would be. When T3 says a thread is waiting on you, the row says which of the three it is — `awaiting approval`, `awaiting answer` or `plan ready` — read from the three counters T3's own sidebar ranks by. For these agents T3 owns the prompt rather than Claude, so its answer is the only one there is: our hooks never see the gate, and the agent's last tool is stale by the time it matters.
 - Clicking the row raises the **T3 Code window**. Selecting the thread inside it needs `deep_link` above *and* a T3 build that answers `t3code://threads/<environment>/<thread>` — as of T3 Code 0.0.33 nothing does (the scheme is claimed by the app's OAuth callbacks, and a second launch only reveals the window), so it stays off and the click lands you in the app on whichever thread was last open.
 
 Thread titles and ids are read from T3's own state database, opened read-only. Without the `t3` cargo feature that read is skipped and the sessions simply wear the agent's own title; `enabled = false` drops them from the panel altogether, back to treating every headless agent as a script's.
@@ -146,18 +146,38 @@ The daemon emits the line as a JSON object with these relevant fields:
 
 The **status word** is colored by the daemon using the [Catppuccin](https://catppuccin.com/) palette (Mocha when the system is in dark mode, Latte otherwise). The daemon follows the scheme live: GTK's style manager hears the portal's changes and pushes the flavour into the bar's payload at the same moment it swaps the panel's own palette. Short-lived CLI invocations have no GTK to ask, so they seed from `gsettings get org.gnome.desktop.interface color-scheme`:
 
-| Status                   | Icon                       | Mocha     | Latte     |
-|--------------------------|----------------------------|-----------|-----------|
-| `thinking`               | `md-thought_bubble`        | `#74c7ec` | `#209fb5` |
-| `executing`              | per tool, see below        | `#a6e3a1` | `#40a02b` |
-| `done` (just finished)   | `U+2714`, a heavy check    | `#fab387` | `#fe640b` |
-| `awaiting approval`      | `fa-question`              | *(skipped — handled by `.attention` CSS background)* | |
-| `idle` / `running`       | `md-sleep`, a literal zᶻᶻ  | `#6c7086` | `#8c8fa1` |
-| `stopped`                | `U+00D7`, a multiplication sign | `#6c7086` | `#8c8fa1` |
+| State | Word | Icon | Mocha | Latte |
+|-------|------|------|-------|-------|
+| `working` | `thinking`, or the tool | `md-thought_bubble` / per tool | `#74c7ec` sapphire | `#209fb5` |
+| `waiting-approval` | `awaiting approval` | `fa-question` | `#fab387` peach | `#fe640b` |
+| `awaiting-input` | `awaiting answer` | `fa-question` | `#b4befe` lavender | `#7287fd` |
+| `plan-ready` | `plan ready` | `fa-question` | `#cba6f7` mauve | `#8839ef` |
+| `just-finished` | `done` | `U+2714`, a heavy check | `#a6e3a1` green | `#40a02b` |
+| `idle` | `idle` / `stopped` | `md-sleep`, a literal zᶻᶻ | `#6c7086` grey | `#8c8fa1` |
+
+The assignment is deliberate and borrowed: it is [T3 Code](https://t3.codes)'s
+thread-status vocabulary, which solves the same problem for the same kind of
+list. **Warm means act, blue means the machine is busy, green means resolved,
+grey means nothing to say.** Three consequences worth spelling out, because each
+one replaced an earlier choice here:
+
+- **Thinking and executing are one colour.** The difference between them is real
+  and never the user's business, so the indicator glyph carries it — a
+  distinction that costs nothing — and the hue is freed for something louder.
+- **A finish is green, not peach.** Orange says *warning* about an outcome that
+  is good news, and it cost the set its only calm-but-visible colour.
+- **"Blocked on you" is three states, not one.** A permission gate, a question
+  and a plan awaiting a verdict are three different asks, and which one it is
+  decides what you reach for. `Session::state_kind` splits them from
+  `current_tool`; for a T3-hosted thread, from T3's own three counters.
+
+Only what is blocked on you pulses. A finish gets a tint in the panel and the
+drawer opening, which is enough — it should be findable without competing with
+a row that is actually waiting.
 
 While a tool runs, the icon says what kind of work it is: a terminal for `Bash`, a pencil for `Edit`/`Write`, a document for `Read`, a magnifier for `Grep`/`Glob`, a globe for `WebFetch`, a robot for a sub-agent (`Agent`/`Task`), a checklist for `TodoWrite`, a plug for any MCP tool. Anything else runs *something*, so it falls back to the terminal. The table is `Session::tool_icon`.
 
-The word comes from one place, `Session::state_label`, so the bar and the panel cannot describe the same session differently — they did once, the bar saying `✔ done` while the panel said `finished`. The shape comes from another, `Session::indicator_glyph`, so the state survives being read by someone who cannot tell teal from green.
+The word comes from one place, `Session::state_label`, so the bar and the panel cannot describe the same session differently — they did once, the bar saying `✔ done` while the panel said `finished`. The shape comes from another, `Session::indicator_glyph`, so the state survives being read by someone who cannot tell peach from green.
 
 Word and shape stay separate because the two surfaces have different room for them. The panel has an indicator column and draws the shape there, next to the bare word. The waybar is a single label with no such column, so for the one state whose word would otherwise be a bare `done` in a colour it inlines the mark: `✔ done`. Every other state names a tool or an action and carries itself.
 
@@ -165,7 +185,7 @@ Every icon is checked rendered at 13px, the size the panel's indicator draws at,
 
 These are Nerd Font glyphs, so **the panel needs a Nerd Font in its font stack**, which `assets/style.css` names on `.indicator`. Without one that row draws tofu; the waybar module already required a Nerd Font for the agent marks, so this only extends the requirement to the panel.
 
-`running` is the scan's "process is alive, nothing reported yet" state. It reads as `idle` in both surfaces, which is why it shares the hollow ring.
+`running` is the scan's "process is alive, nothing reported yet" state. It reads as `idle` in both surfaces — same word, same glyph, and now the same grey. It used to be green in the bar alone, so a session nothing had ever been heard from lit up as busy.
 
 So the inline color always looks "right" on any bar theme without needing user CSS. The one thing you do want to style yourself is the `.attention` state (a session is blocked on a widget click), because its visibility depends on your bar's background.
 
@@ -201,7 +221,7 @@ A reference snippet lives at [`contrib/waybar-style.css`](contrib/waybar-style.c
 @import url("/path/to/contrib/waybar-style.css");
 ```
 
-Or copy the three rules directly and tweak the peach background to match your bar's accent color — e.g. `rgba(255, 100, 255, 0.5)` for a magenta theme. The selector is `#custom-vibewatch.attention`.
+Or copy the rules directly and tweak the `.attention` rim to match your bar's accent color — e.g. `rgba(255, 100, 255, 0.85)` for a magenta theme. The selector is `#custom-vibewatch.attention`. Keep it a rim rather than a fill: the state word arrives already coloured, and a tinted ground swallows the half of the vocabulary that sits near its hue.
 
 ### Agent marks
 

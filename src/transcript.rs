@@ -1,7 +1,7 @@
 //! Per-agent transcript parsing: find the last assistant text line, and reduce
 //! a Claude Code transcript to the live state the hooks would have reported.
 
-use crate::session::{AgentKind, SessionStatus};
+use crate::session::{AgentKind, Ask, SessionStatus};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::io::{BufRead, Read, Seek};
@@ -236,6 +236,10 @@ fn walk_for_suffix(dir: &Path, suffix: &str) -> Option<PathBuf> {
 pub struct ClaudeSnapshot {
     pub session_id: String,
     pub status: SessionStatus,
+    /// What the session is blocked on, when `status` says it is. Derived here
+    /// rather than left for a reader to guess, like every other producer of
+    /// that status — see `Session::state_kind`.
+    pub blocked_on: Option<Ask>,
     pub current_tool: Option<String>,
     pub tool_detail: Option<String>,
 }
@@ -261,6 +265,12 @@ pub fn reduce_claude(content: &str) -> Option<ClaudeSnapshot> {
     Some(ClaudeSnapshot {
         session_id: fold.session_id?,
         status: fold.status,
+        // The fold sets `WaitingApproval` only from `waits_on_the_user`, on the
+        // very `tool_use` it stopped on — so here, and only here, `current_tool`
+        // *is* the blocking tool rather than a leftover. Reading it anywhere
+        // downstream is the guess this field exists to remove.
+        blocked_on: (fold.status == SessionStatus::WaitingApproval)
+            .then(|| Ask::from_tool(fold.current_tool.as_deref().unwrap_or_default())),
         current_tool: fold.current_tool,
         tool_detail: fold.tool_detail,
     })

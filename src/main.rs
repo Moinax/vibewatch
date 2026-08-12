@@ -687,6 +687,12 @@ async fn handle_connection(
                     } else {
                         SessionStatus::Executing
                     };
+                    // Set with the status, never derived from `current_tool`
+                    // later — see `Session::state_kind`. Cleared on the
+                    // executing branch so the next gate cannot inherit this
+                    // one's ask.
+                    session.blocked_on = (session.status == SessionStatus::WaitingApproval)
+                        .then(|| crate::session::Ask::from_tool(&tool));
                     session.current_tool = Some(tool.clone());
                     session.tool_detail = detail;
                     // The tool returns as soon as the sub-agent is spawned, so its
@@ -802,6 +808,9 @@ async fn handle_connection(
                         // Old fire-and-forget caller: just flip status and continue.
                         if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
                             session.status = SessionStatus::WaitingApproval;
+                            session.blocked_on = Some(crate::session::Ask::from_tool(
+                                tool.as_deref().unwrap_or_default(),
+                            ));
                             session.current_tool = tool;
                             session.touch();
                             registry.register(session);
@@ -828,6 +837,7 @@ async fn handle_connection(
                         release_held_approvals(&approval_registry, &session.id).await;
                     }
                     session.status = SessionStatus::WaitingApproval;
+                    session.blocked_on = Some(crate::session::Ask::from_tool(&tool_name));
                     session.current_tool = Some(tool_name.clone());
                     session.tool_detail = detail.clone();
                     session.pending_approval = Some(crate::session::PendingApproval {

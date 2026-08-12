@@ -128,30 +128,55 @@ window.csd,
                                       alpha(@cat_hover_bg, 0.22));
 }
 
-/* Awaiting approval: tint the whole card so the row reads as "attention
-   needed" at a glance, independent of the state-line color. */
+/* Blocked on the user: tint the whole card so the row reads as "attention
+   needed" at a glance, independent of the state-line color. One tint per ask
+   — see `StateKind` — because which of the three it is decides whether you
+   reach for a yes/no, an answer or a verdict, and that is worth knowing from
+   across the room. `working` gets none of this: a busy agent is not an event.  */
 .session-row.waiting-approval {
-    background-image: linear-gradient(alpha(@cat_teal, 0.13),
-                                      alpha(@cat_teal, 0.13));
-}
-
-.session-row.waiting-approval:hover {
-    background-image: linear-gradient(alpha(@cat_teal, 0.20),
-                                      alpha(@cat_teal, 0.20));
-}
-
-/* Just finished: the panel pops itself open on the completion chime, so the
-   agent that made it gets the same "look here" tint as one blocked on you —
-   in peach, a hue no other state uses. Stays lit until the card is clicked
-   (or the agent picks the work back up). */
-.session-row.just-finished {
     background-image: linear-gradient(alpha(@cat_peach, 0.13),
                                       alpha(@cat_peach, 0.13));
 }
 
-.session-row.just-finished:hover {
+.session-row.waiting-approval:hover {
     background-image: linear-gradient(alpha(@cat_peach, 0.20),
                                       alpha(@cat_peach, 0.20));
+}
+
+.session-row.awaiting-input {
+    background-image: linear-gradient(alpha(@cat_lavender, 0.13),
+                                      alpha(@cat_lavender, 0.13));
+}
+
+.session-row.awaiting-input:hover {
+    background-image: linear-gradient(alpha(@cat_lavender, 0.20),
+                                      alpha(@cat_lavender, 0.20));
+}
+
+.session-row.plan-ready {
+    background-image: linear-gradient(alpha(@cat_mauve, 0.13),
+                                      alpha(@cat_mauve, 0.13));
+}
+
+.session-row.plan-ready:hover {
+    background-image: linear-gradient(alpha(@cat_mauve, 0.20),
+                                      alpha(@cat_mauve, 0.20));
+}
+
+/* Just finished: the panel pops itself open on the completion chime, so the
+   agent that made it gets a tint too. In green, and lighter than the three
+   above (0.09, not 0.13): a finish is good news and the bottom of the ranking
+   — it should be findable in the list without competing with a row that is
+   actually blocking. Stays lit until the card is clicked (or the agent picks
+   the work back up). */
+.session-row.just-finished {
+    background-image: linear-gradient(alpha(@cat_green, 0.09),
+                                      alpha(@cat_green, 0.09));
+}
+
+.session-row.just-finished:hover {
+    background-image: linear-gradient(alpha(@cat_green, 0.16),
+                                      alpha(@cat_green, 0.16));
 }
 
 /* ── Indicator ────────────────────────────────────────────────── */
@@ -179,11 +204,10 @@ window.csd,
     margin-top: 1px;
 }
 
-.indicator.executing,
-.indicator.running {
-    color: @cat_green;
-    text-shadow: 0 0 6px alpha(@cat_green, 0.7),
-                 0 0 12px alpha(@cat_green, 0.3);
+.indicator.working {
+    color: @cat_sapphire;
+    text-shadow: 0 0 6px alpha(@cat_sapphire, 0.7),
+                 0 0 12px alpha(@cat_sapphire, 0.3);
 }
 
 /* The attention dot breathes so a blocked agent pulls the eye even in a
@@ -194,10 +218,14 @@ window.csd,
     100% { opacity: 1; }
 }
 
-/* Both attention states breathe: one is blocked on you, the other just
-   finished and is why the drawer popped open. Only the hue differs. */
+/* Only what is blocked on you breathes. `just-finished` used to pulse
+   alongside them, which put the calmest state in the vocabulary and the three
+   loudest on the same animation — the drawer popping open is already the
+   finish's "look here", and it does not have to keep shouting once you are
+   looking at it. */
 .indicator.waiting-approval,
-.indicator.just-finished {
+.indicator.awaiting-input,
+.indicator.plan-ready {
     animation-name: vw-attention-pulse;
     animation-duration: 1.4s;
     animation-timing-function: ease-in-out;
@@ -205,25 +233,30 @@ window.csd,
 }
 
 .indicator.waiting-approval {
-    color: @cat_teal;
-    text-shadow: 0 0 6px alpha(@cat_teal, 0.7),
-                 0 0 12px alpha(@cat_teal, 0.3);
-}
-
-.indicator.just-finished {
     color: @cat_peach;
     text-shadow: 0 0 6px alpha(@cat_peach, 0.7),
                  0 0 12px alpha(@cat_peach, 0.3);
 }
 
-.indicator.thinking {
-    color: @cat_sapphire;
-    text-shadow: 0 0 6px alpha(@cat_sapphire, 0.7),
-                 0 0 12px alpha(@cat_sapphire, 0.3);
+.indicator.awaiting-input {
+    color: @cat_lavender;
+    text-shadow: 0 0 6px alpha(@cat_lavender, 0.7),
+                 0 0 12px alpha(@cat_lavender, 0.3);
 }
 
-.indicator.idle,
-.indicator.stopped {
+.indicator.plan-ready {
+    color: @cat_mauve;
+    text-shadow: 0 0 6px alpha(@cat_mauve, 0.7),
+                 0 0 12px alpha(@cat_mauve, 0.3);
+}
+
+.indicator.just-finished {
+    color: @cat_green;
+    text-shadow: 0 0 6px alpha(@cat_green, 0.7),
+                 0 0 12px alpha(@cat_green, 0.3);
+}
+
+.indicator.idle {
     color: @cat_text_dim;
 }
 
@@ -247,9 +280,14 @@ window.csd,
     letter-spacing: 0.3px;
 }
 
+/* Neutral, where it used to be lavender: lavender now means `awaiting-input`,
+   and both badges sit on the same card as the action line that would be
+   wearing it. Which agent this is — Claude, Codex — is identity, not state,
+   and the state vocabulary has to own its hues outright or it stops being a
+   vocabulary. The mark in `.logo-*` already tells the two apart in colour. */
 .agent-badge {
-    color: @cat_lavender;
-    background-color: alpha(@cat_lavender, 0.10);
+    color: @cat_text_muted;
+    background-color: alpha(@cat_border, 0.12);
 }
 
 .terminal-badge {
@@ -278,32 +316,36 @@ window.csd,
     letter-spacing: 0.1px;
 }
 
-.action-line.executing {
-    color: @cat_green;
-}
-
-.action-line.thinking {
+.action-line.working {
     color: @cat_sapphire;
 }
 
+/* The three asks carry the extra weight and the glow: they are the only lines
+   in the panel that want reading before anything else on the row. */
 .action-line.waiting-approval {
-    color: @cat_teal;
-    font-weight: 700;
-    text-shadow: 0 0 4px alpha(@cat_teal, 0.35);
-}
-
-.action-line.just-finished {
     color: @cat_peach;
     font-weight: 700;
     text-shadow: 0 0 4px alpha(@cat_peach, 0.35);
 }
 
-.action-line.running {
+.action-line.awaiting-input {
+    color: @cat_lavender;
+    font-weight: 700;
+    text-shadow: 0 0 4px alpha(@cat_lavender, 0.35);
+}
+
+.action-line.plan-ready {
+    color: @cat_mauve;
+    font-weight: 700;
+    text-shadow: 0 0 4px alpha(@cat_mauve, 0.35);
+}
+
+/* Plain weight, no glow: a finish is worth seeing, not worth interrupting for. */
+.action-line.just-finished {
     color: @cat_green;
 }
 
-.action-line.idle,
-.action-line.stopped {
+.action-line.idle {
     color: @cat_text_dim;
 }
 
@@ -318,23 +360,32 @@ window.csd,
     text-transform: uppercase;
 }
 
-.status-badge.executing {
-    color: @cat_green;
-    background-color: alpha(@cat_green, 0.12);
-}
-
-.status-badge.thinking {
+.status-badge.working {
     color: @cat_sapphire;
     background-color: alpha(@cat_sapphire, 0.10);
 }
 
 .status-badge.waiting-approval {
-    color: @cat_teal;
-    background-color: alpha(@cat_teal, 0.12);
+    color: @cat_peach;
+    background-color: alpha(@cat_peach, 0.12);
 }
 
-.status-badge.idle,
-.status-badge.running {
+.status-badge.awaiting-input {
+    color: @cat_lavender;
+    background-color: alpha(@cat_lavender, 0.12);
+}
+
+.status-badge.plan-ready {
+    color: @cat_mauve;
+    background-color: alpha(@cat_mauve, 0.12);
+}
+
+.status-badge.just-finished {
+    color: @cat_green;
+    background-color: alpha(@cat_green, 0.12);
+}
+
+.status-badge.idle {
     color: @cat_text_muted;
     background-color: alpha(@cat_border, 0.10);
 }

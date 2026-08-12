@@ -23,6 +23,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::session::Ask;
+
 /// A running T3 Code server, as it announces itself on disk.
 ///
 /// T3 keeps one state directory per build channel — `userdata` for the release
@@ -105,9 +107,12 @@ pub struct Thread {
     pub provider_session_id: Option<String>,
     /// Where the agent is working — the project directory or its worktree.
     pub cwd: Option<String>,
-    /// T3 is holding this thread for the user: a permission request, a question,
-    /// or a plan waiting to be approved.
-    pub blocked: bool,
+    /// What T3 is holding this thread for, if anything. Kept as the three asks
+    /// T3 itself keeps apart rather than collapsed to a bool: its sidebar
+    /// paints "Pending Approval", "Awaiting Input" and "Plan Ready" as three
+    /// different states, the projection stores them as three counters, and a
+    /// sum threw all of that away one column before vibewatch could use it.
+    pub blocked: Option<Ask>,
 }
 
 /// Every thread T3 has a provider runtime for, newest first.
@@ -162,9 +167,9 @@ fn read_threads(base_dir: &Path) -> rusqlite::Result<Vec<Thread>> {
                 t.title,
                 json_extract(r.resume_cursor_json, '$.resume'),
                 json_extract(r.runtime_payload_json, '$.cwd'),
-                COALESCE(t.pending_approval_count, 0)
-                  + COALESCE(t.pending_user_input_count, 0)
-                  + COALESCE(t.has_actionable_proposed_plan, 0)
+                COALESCE(t.pending_approval_count, 0),
+                COALESCE(t.pending_user_input_count, 0),
+                COALESCE(t.has_actionable_proposed_plan, 0)
            FROM provider_session_runtime r
            JOIN projection_threads t USING (thread_id)
           WHERE t.deleted_at IS NULL
@@ -177,10 +182,27 @@ fn read_threads(base_dir: &Path) -> rusqlite::Result<Vec<Thread>> {
             title: row.get(1)?,
             provider_session_id: row.get(2)?,
             cwd: row.get(3)?,
-            blocked: row.get::<_, i64>(4)? > 0,
+            blocked: ask_from_counts(row.get(4)?, row.get(5)?, row.get(6)?),
         })
     })?;
     rows.collect()
+}
+
+/// Which ask wins when a thread has more than one outstanding. Approval, then
+/// input, then plan — T3's own order in `resolveThreadStatusPill`, and the right
+/// one on its own terms: a permission gate has stopped the agent dead, a
+/// question has stopped this turn, and a plan is only an invitation.
+#[cfg(feature = "t3")]
+fn ask_from_counts(approvals: i64, inputs: i64, plan: i64) -> Option<Ask> {
+    if approvals > 0 {
+        Some(Ask::Approval)
+    } else if inputs > 0 {
+        Some(Ask::Input)
+    } else if plan > 0 {
+        Some(Ask::Plan)
+    } else {
+        None
+    }
 }
 
 /// Log a state database read that failed, once per distinct message.
@@ -311,13 +333,29 @@ mod tests {
         assert!(!looks_like_t3_server(u32::MAX));
     }
 
+    /// The three counters are independent — a thread can have a plan on the
+    /// table *and* a tool waiting on a yes — so the mapping has to rank them,
+    /// and it ranks them T3's way: the gate that has stopped the agent dead
+    /// comes before the question that stopped the turn, which comes before the
+    /// plan that is only an invitation.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn the_ask_that_blocks_hardest_wins() {
+        assert_eq!(ask_from_counts(0, 0, 0), None);
+        assert_eq!(ask_from_counts(1, 0, 0), Some(Ask::Approval));
+        assert_eq!(ask_from_counts(0, 2, 0), Some(Ask::Input));
+        assert_eq!(ask_from_counts(0, 0, 1), Some(Ask::Plan));
+        assert_eq!(ask_from_counts(1, 1, 1), Some(Ask::Approval));
+        assert_eq!(ask_from_counts(0, 1, 1), Some(Ask::Input));
+    }
+
     fn thread(id: &str, session: Option<&str>, cwd: Option<&str>) -> Thread {
         Thread {
             thread_id: id.into(),
             title: format!("thread {id}"),
             provider_session_id: session.map(Into::into),
             cwd: cwd.map(Into::into),
-            blocked: false,
+            blocked: None,
         }
     }
 
