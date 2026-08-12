@@ -292,6 +292,18 @@ impl AgentKind {
         }
     }
 
+    /// This agent's mark, the same file the waybar pill paints through
+    /// `logo_class`. Embedded rather than read from `~/.config/vibewatch/logos/`
+    /// so the panel does not depend on `vibewatch install` having run.
+    pub fn logo_svg(&self) -> &'static [u8] {
+        match self {
+            AgentKind::ClaudeCode => include_bytes!("../assets/logos/claude.svg"),
+            AgentKind::Codex => include_bytes!("../assets/logos/codex.svg"),
+            AgentKind::Cursor => include_bytes!("../assets/logos/cursor.svg"),
+            AgentKind::WebStorm => include_bytes!("../assets/logos/webstorm.svg"),
+        }
+    }
+
     /// True when liveness is tracked by the compositor scan rather than by
     /// `/proc/<pid>/comm`. Window-backed agents' PIDs belong to GUI apps
     /// whose comm isn't in our agent-comm list, so `cleanup_dead` must
@@ -2002,6 +2014,21 @@ mod tests {
         assert_eq!(AgentKind::Codex.display_name(), "Codex");
         assert_eq!(AgentKind::Cursor.display_name(), "Cursor");
         assert_eq!(AgentKind::WebStorm.display_name(), "WebStorm");
+    }
+
+    /// The panel rows paint these, so a renamed or emptied asset has to fail
+    /// here rather than silently drop every row back to its text pill.
+    #[test]
+    fn every_agent_carries_a_mark() {
+        for kind in [
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::WebStorm,
+        ] {
+            let svg = kind.logo_svg();
+            assert!(svg.starts_with(b"<svg"), "{kind:?} has no SVG mark",);
+        }
     }
 
     #[test]

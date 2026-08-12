@@ -280,15 +280,10 @@ window.csd,
     letter-spacing: 0.3px;
 }
 
-/* Neutral, where it used to be lavender: lavender now means `awaiting-input`,
-   and both badges sit on the same card as the action line that would be
-   wearing it. Which agent this is — Claude, Codex — is identity, not state,
-   and the state vocabulary has to own its hues outright or it stops being a
-   vocabulary. The mark in `.logo-*` already tells the two apart in colour. */
-.agent-badge {
-    color: @cat_text_muted;
-    background-color: alpha(@cat_border, 0.12);
-}
+/* No `.agent-badge`: which agent this is now arrives as the same mark the
+   waybar pill wears, and a mark needs no chip. It was neutral anyway — identity
+   is not state, and the state vocabulary has to own its hues outright or it
+   stops being a vocabulary. */
 
 .terminal-badge {
     color: @cat_blue;

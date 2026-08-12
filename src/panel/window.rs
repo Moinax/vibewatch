@@ -110,27 +110,10 @@ fn alive_elapsed() -> Duration {
 }
 
 /// vibewatch's own mark, beside the panel title — the same file the waybar pill
-/// paints, embedded rather than read from `~/.config/vibewatch/logos/` so the
-/// panel does not depend on `vibewatch install` having run.
-///
-/// `None` when the SVG cannot be decoded, which means no gdk-pixbuf SVG loader
-/// (librsvg) on the system. The header then simply has no mark: a missing
-/// decoration must never be the reason a panel fails to build.
+/// paints. `None` when there is no SVG loader, and the header then simply has
+/// no mark; see [`super::svg_mark`].
 fn brand_mark() -> Option<gtk::Image> {
-    const MARK: &[u8] = include_bytes!("../../assets/logos/vibewatch.svg");
-    let stream = gtk::gio::MemoryInputStream::from_bytes(&gtk::glib::Bytes::from_static(MARK));
-    // Rasterised at 2x the display size so it stays clean on a HiDPI output.
-    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
-        &stream,
-        32,
-        32,
-        true,
-        gtk::gio::Cancellable::NONE,
-    )
-    .ok()?;
-    let image = gtk::Image::from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)));
-    image.set_pixel_size(16);
-    Some(image)
+    super::svg_mark(include_bytes!("../../assets/logos/vibewatch.svg"), 16)
 }
 
 /// Set the mute button's icon and tooltip to match the current state.

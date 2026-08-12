@@ -58,10 +58,17 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     name_label.set_max_width_chars(1);
     header.append(&name_label);
 
-    let agent_badge = gtk::Label::new(Some(session.agent.short_name()));
-    agent_badge.add_css_class("pill-badge");
-    agent_badge.add_css_class("agent-badge");
-    header.append(&agent_badge);
+    // The agent's mark rather than its name, so the row says who is working in
+    // the same alphabet the waybar pill does. When the SVG cannot be painted —
+    // no librsvg on the system — a robot stands in for the brand: the fallback
+    // has to be a glyph rather than another image, since the missing loader is
+    // exactly what broke the first one. The tooltip names the agent either way.
+    let agent_mark: gtk::Widget = match super::svg_mark(session.agent.logo_svg(), 14) {
+        Some(mark) => mark.upcast(),
+        None => gtk::Label::new(Some("\u{1F916}")).upcast(),
+    };
+    agent_mark.set_tooltip_text(Some(session.agent.display_name()));
+    header.append(&agent_mark);
 
     let terminal = session.terminal.as_deref().unwrap_or("Term");
     let term_badge = gtk::Label::new(Some(terminal));

@@ -1,12 +1,34 @@
 pub mod session_row;
 pub mod window;
 
+use gtk4 as gtk;
 use libadwaita as adw;
 
 use crate::config::PanelConfig;
 use crate::session::SessionRegistry;
 
 pub use window::{show, toggle};
+
+/// Rasterise one of the embedded SVG marks to a `px`-wide image.
+///
+/// `None` when the SVG cannot be decoded, which means no gdk-pixbuf SVG loader
+/// (librsvg) on the system. Every caller then falls back to text: a missing
+/// decoration must never be the reason a panel fails to build.
+pub(crate) fn svg_mark(svg: &'static [u8], px: i32) -> Option<gtk::Image> {
+    let stream = gtk::gio::MemoryInputStream::from_bytes(&gtk::glib::Bytes::from_static(svg));
+    // Rasterised at 2x the display size so it stays clean on a HiDPI output.
+    let pixbuf = gtk::gdk_pixbuf::Pixbuf::from_stream_at_scale(
+        &stream,
+        px * 2,
+        px * 2,
+        true,
+        gtk::gio::Cancellable::NONE,
+    )
+    .ok()?;
+    let image = gtk::Image::from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)));
+    image.set_pixel_size(px);
+    Some(image)
+}
 
 /// Pin GSK to the software renderer unless the user asked for another one.
 ///
