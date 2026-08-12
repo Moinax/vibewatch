@@ -257,6 +257,29 @@ fn waits_on_the_user(tool: &str) -> bool {
 /// and a turn is a run of records (thinking, text, several tool calls) whose
 /// meaning depends on what came before it in the turn.
 pub fn reduce_claude(content: &str) -> Option<ClaudeSnapshot> {
+    let fold = fold_claude(content, true);
+    Some(ClaudeSnapshot {
+        session_id: fold.session_id?,
+        status: fold.status,
+        current_tool: fold.current_tool,
+        tool_detail: fold.tool_detail,
+    })
+}
+
+/// What [`fold_claude`] accumulates: [`ClaudeSnapshot`] minus the demand that a
+/// session id was ever seen, which a sub-agent's transcript cannot meet.
+struct ClaudeFold {
+    session_id: Option<String>,
+    status: SessionStatus,
+    current_tool: Option<String>,
+    tool_detail: Option<String>,
+}
+
+/// The fold behind [`reduce_claude`], with the sidechain rule as a switch: in a
+/// parent's transcript a sidechain record is someone else's work and must be
+/// skipped, but a sub-agent's own file marks *every* record `isSidechain` —
+/// skipping them there folds the whole file away.
+fn fold_claude(content: &str, skip_sidechain: bool) -> ClaudeFold {
     let mut session_id: Option<String> = None;
     let mut status = SessionStatus::Idle;
     let mut current_tool: Option<String> = None;
@@ -276,7 +299,7 @@ pub fn reduce_claude(content: &str) -> Option<ClaudeSnapshot> {
         }
         // A sub-agent's turns are recorded in its parent's transcript. That is
         // the sub-agent's work, not what this pane is doing.
-        if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        if skip_sidechain && record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
             continue;
         }
         // Injected context (system reminders and the like) wears the user role
@@ -351,12 +374,64 @@ pub fn reduce_claude(content: &str) -> Option<ClaudeSnapshot> {
         }
     }
 
-    Some(ClaudeSnapshot {
-        session_id: session_id?,
+    ClaudeFold {
+        session_id,
         status,
         current_tool,
         tool_detail,
-    })
+    }
+}
+
+/// Count the sub-agents of the session at `transcript_path` that are still
+/// mid-turn, judged by their own transcripts under
+/// `<session-id>/subagents/agent-*.jsonl`.
+///
+/// This exists for daemon restarts: the count of sub-agents holding a turn open
+/// is hook-fed, and launches that predate the daemon are never re-announced —
+/// only the `SubagentStop` per finished agent arrives, decrementing a count
+/// that was never incremented. Recounting off the durable record instead means
+/// the boot-time answer is right no matter what happened while no daemon was
+/// listening, which no persisted registry could promise.
+///
+/// `not_before` is the same mtime floor the parent transcript passed
+/// ([`find_claude_transcript_for_cwd`]): a resumed session keeps its id, so the
+/// directory can hold agents belonging to an earlier process — including one
+/// that died mid-turn, which would otherwise be counted outstanding forever.
+/// A live one that dies later without reporting is the same case the hooks
+/// already have, bounded by the hold ceiling and reset on the next prompt.
+pub fn count_outstanding_subagents(
+    transcript_path: &Path,
+    not_before: std::time::SystemTime,
+) -> u32 {
+    let Some(stem) = transcript_path.file_stem() else {
+        return 0;
+    };
+    let dir = transcript_path.with_file_name(stem).join("subagents");
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut outstanding = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("agent-") || !name.ends_with(".jsonl") {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if modified < not_before {
+            continue;
+        }
+        let Some(content) = head_and_tail(&entry.path()) else {
+            continue;
+        };
+        if fold_claude(&content, false).status != SessionStatus::Idle {
+            outstanding += 1;
+        }
+    }
+    outstanding
 }
 
 /// One line of context for the tool a session is sitting in, pulled from its
@@ -763,6 +838,52 @@ mod tests {
         assert_eq!(
             reduce_claude(&jsonl).unwrap().status,
             SessionStatus::WaitingApproval
+        );
+    }
+
+    /// A sub-agent mid-tool-call, every record marked `isSidechain` the way
+    /// Claude Code writes agent-*.jsonl files, and with no `sessionId` — the
+    /// two traits that make `reduce_claude` itself unusable on them.
+    const RUNNING_SUBAGENT: &str = r#"{"parentUuid":null,"isSidechain":true,"agentId":"a1","type":"user","message":{"role":"user","content":"audit the module"}}
+{"isSidechain":true,"agentId":"a1","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"rg todo"}}]}}
+"#;
+
+    const FINISHED_SUBAGENT: &str = r#"{"parentUuid":null,"isSidechain":true,"agentId":"a2","type":"user","message":{"role":"user","content":"audit the module"}}
+{"isSidechain":true,"agentId":"a2","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"All clear."}]}}
+"#;
+
+    #[test]
+    fn outstanding_subagents_counts_only_midturn_transcripts() {
+        let root = std::env::temp_dir().join(format!("vibewatch-subcount-{}", std::process::id()));
+        let dir = root.join("sess-42/subagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        let transcript = root.join("sess-42.jsonl");
+        std::fs::write(&transcript, "").unwrap();
+        std::fs::write(dir.join("agent-a1.jsonl"), RUNNING_SUBAGENT).unwrap();
+        std::fs::write(dir.join("agent-a2.jsonl"), FINISHED_SUBAGENT).unwrap();
+        // Sidecar metadata next to the transcripts must not be read as one.
+        std::fs::write(dir.join("agent-a1.meta.json"), "{}").unwrap();
+        assert_eq!(
+            count_outstanding_subagents(&transcript, std::time::UNIX_EPOCH),
+            1,
+            "the running agent counts, the finished one and the sidecar don't"
+        );
+        // A resumed session keeps its directory, so files untouched since
+        // before the floor belong to an earlier process and are not counted
+        // even when they ended mid-turn.
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3600);
+        assert_eq!(count_outstanding_subagents(&transcript, future), 0);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn outstanding_subagents_without_a_dir_is_zero() {
+        assert_eq!(
+            count_outstanding_subagents(
+                Path::new("/nonexistent/sess.jsonl"),
+                std::time::UNIX_EPOCH
+            ),
+            0
         );
     }
 

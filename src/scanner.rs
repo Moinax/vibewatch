@@ -435,6 +435,12 @@ fn hydrate_from_transcript(session: &mut Session, census: &HashMap<u32, PathBuf>
     session.status = snapshot.status;
     session.current_tool = snapshot.current_tool;
     session.tool_detail = snapshot.tool_detail;
+    // The count of sub-agents holding the turn open is hook-fed and died with
+    // the previous daemon, so it is recounted off the durable record like the
+    // status above — see `count_outstanding_subagents` for why a persisted
+    // count could not be trusted instead. Later `SubagentStop`s decrement it.
+    session.pending_agents =
+        crate::transcript::count_outstanding_subagents(&path, transcript_floor(session.pid));
     session.transcript_path = Some(path);
     // The agent's own session id, which a `scan-` session is not keyed by. The
     // Codex path records it for the same reason. Two things need it: the name
@@ -452,11 +458,17 @@ fn hydrate_from_transcript(session: &mut Session, census: &HashMap<u32, PathBuf>
     ) {
         session.set_last_agent_text_if_changed(text);
     }
+    let held = if session.pending_agents > 0 {
+        format!(" ({} sub-agent(s) outstanding)", session.pending_agents)
+    } else {
+        String::new()
+    };
     eprintln!(
-        "vibewatch: {} re-derived as {} from transcript of {}",
+        "vibewatch: {} re-derived as {} from transcript of {}{}",
         session.id,
         session.status.css_class(),
-        snapshot.session_id
+        snapshot.session_id,
+        held
     );
 }
 
