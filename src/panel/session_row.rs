@@ -114,13 +114,15 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     let pid = session.pid;
     let window_id = session.window_id.clone();
     let session_id = session.id.clone();
+    let t3_thread_id = session.t3_thread_id.clone();
     let gesture = gtk::GestureClick::new();
     gesture.connect_released(move |gesture, _, _, _| {
         let wid = window_id.clone();
         let p = pid;
         let sid = session_id.clone();
+        let thread = t3_thread_id.clone();
         std::thread::spawn(move || {
-            focus_session(wid.as_deref(), p);
+            focus_session(wid.as_deref(), p, thread.as_deref());
             // Off the GTK thread: the row stops asking for attention, which
             // is also what lets the drawer's auto-close resume for a
             // finished agent. Deliberately not tied to answering an
@@ -284,9 +286,16 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-fn focus_session(window_id: Option<&str>, pid: u32) {
+fn focus_session(window_id: Option<&str>, pid: u32, t3_thread_id: Option<&str>) {
     if pid != 0 {
         focus_herdr_pane(pid);
+    }
+    // Same move as the herdr one above, for the other kind of host: select the
+    // session inside the application that holds it, before the compositor raises
+    // that application's window. Quiet unless it has been turned on — see
+    // `t3::focus_thread` for what is waiting on the other end.
+    if let Some(thread_id) = t3_thread_id {
+        crate::t3::focus_thread(thread_id);
     }
     match crate::compositor::detect_compositor().as_deref() {
         Some("niri") => focus_niri(window_id, pid),

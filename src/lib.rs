@@ -9,5 +9,6 @@ pub mod notify;
 pub mod scanner;
 pub mod session;
 pub mod sound;
+pub mod t3;
 pub mod transcript;
 pub mod waybar;

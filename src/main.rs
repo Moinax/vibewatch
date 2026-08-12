@@ -9,6 +9,7 @@ mod notify;
 mod scanner;
 mod session;
 mod sound;
+mod t3;
 mod transcript;
 mod waybar;
 
@@ -163,6 +164,10 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
     let socket_path = config.socket_path();
     let sound_player = Arc::new(SoundPlayer::new(config.sounds.clone()));
     let timing = AnnounceTiming::from_config(&config);
+    let policy = ConnectionPolicy {
+        timing,
+        t3: config.t3,
+    };
 
     eprintln!(
         "vibewatch: starting daemon (headless), socket at {}",
@@ -246,7 +251,7 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
                         PanelHooks::default(),
                         approval_registry,
                         status_notify,
-                        timing,
+                        policy,
                     )
                     .await;
                 });
@@ -321,6 +326,10 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                 let socket_path = config.socket_path();
                 let sound_player = Arc::new(SoundPlayer::new(config.sounds.clone()));
                 let timing = AnnounceTiming::from_config(&config);
+                let policy = ConnectionPolicy {
+                    timing,
+                    t3: config.t3,
+                };
 
                 eprintln!(
                     "vibewatch: starting daemon, socket at {}",
@@ -418,7 +427,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                                     panel_hooks,
                                     approval_registry,
                                     status_notify,
-                                    timing,
+                                    policy,
                                 )
                                 .await;
                             });
@@ -466,6 +475,16 @@ impl AnnounceTiming {
             hold_ceiling: config.hold_ceiling(),
         }
     }
+}
+
+/// The slice of the config a client connection has to answer from: when a
+/// finished turn is announced, and whether the agents T3 Code runs are sessions
+/// at all. Carried as one value because the hook handler is the only reader of
+/// either and takes enough arguments already.
+#[derive(Clone, Copy)]
+struct ConnectionPolicy {
+    timing: AnnounceTiming,
+    t3: crate::config::T3Config,
 }
 
 /// Announce that an agent finished its turn: the chime, and the panel popping
@@ -603,8 +622,9 @@ async fn handle_connection(
     panel_hooks: PanelHooks,
     approval_registry: crate::approval::ApprovalRegistry,
     status_notify: Arc<tokio::sync::Notify>,
-    timing: AnnounceTiming,
+    policy: ConnectionPolicy,
 ) {
+    let ConnectionPolicy { timing, t3 } = policy;
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
@@ -622,7 +642,12 @@ async fn handle_connection(
                 cwd,
                 session_name,
             } => {
-                if session::is_programmatic_pid(pid) {
+                let hosts = if t3.enabled {
+                    crate::t3::live_runtimes()
+                } else {
+                    Vec::new()
+                };
+                if !session::is_trackable_agent(pid, &hosts) {
                     continue;
                 }
                 let kind = parse_agent_kind(&agent);

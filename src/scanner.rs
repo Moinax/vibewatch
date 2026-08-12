@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::compositor::Compositor;
 use crate::config::Config;
 use crate::session::{
-    detect_terminal, identify_agent_pid, is_programmatic_pid, AgentKind, Session, SessionRegistry,
+    detect_terminal, identify_agent_pid, is_trackable_agent, AgentKind, Session, SessionRegistry,
 };
 
 /// Map an AgentKind to its short string identifier.
@@ -91,6 +91,16 @@ pub async fn run_scanner(
         // alive). Keep one session per live CLI PID.
         registry.dedupe_cli_pids();
 
+        // Every T3 Code server running right now, resolved once per tick: the
+        // registration loop below asks it whether a headless agent is one of
+        // T3's threads, and the enrichment pass at the end reads their state
+        // databases for the names those threads carry.
+        let t3_runtimes = if config.t3.enabled {
+            crate::t3::live_runtimes()
+        } else {
+            Vec::new()
+        };
+
         // --- CLI agent scanning ---
         let found_processes = scan_agent_processes();
         let all_sessions = registry.all();
@@ -104,7 +114,7 @@ pub async fn run_scanner(
             if known_pids.contains(pid) {
                 continue;
             }
-            if is_programmatic_pid(*pid) {
+            if !is_trackable_agent(*pid, &t3_runtimes) {
                 continue;
             }
             let id = format!("scan-{}-{}", agent_str(kind), pid);
@@ -171,6 +181,12 @@ pub async fn run_scanner(
                 }
             }
         }
+
+        // Name the sessions T3 Code is hosting after its threads. Ahead of the
+        // title refresh below, which the T3 rows then sit out: two titles for
+        // one session would otherwise take turns overwriting each other every
+        // tick, and the thread's is the one the user chose.
+        apply_t3_threads(&registry, &t3_runtimes);
 
         // --- Refresh session names from the agent's own title (handles /rename) ---
         // Scanner-discovered sessions count too, keyed by the transcript id
@@ -270,6 +286,46 @@ pub async fn run_scanner(
     }
 }
 
+/// Give every session T3 Code is running the thread it belongs to: its title,
+/// its id, and T3's own account of whether it is blocked on the user.
+///
+/// One pass over the sessions, asking each which server fathered it, and each
+/// profile that turns out to be hosting one for its threads — once, however many
+/// sessions it hosts. A machine where T3 is closed pays one `/proc` read per
+/// session and stops; one where it is open but idle never opens the database.
+fn apply_t3_threads(registry: &SessionRegistry, runtimes: &[crate::t3::Runtime]) {
+    if runtimes.is_empty() {
+        return;
+    }
+    let mut by_profile: HashMap<&Path, Vec<crate::t3::Thread>> = HashMap::new();
+    for session in registry.all() {
+        let Some(runtime) = crate::t3::hosted_by(session.pid, runtimes) else {
+            continue;
+        };
+        registry.set_t3_host(&session.id);
+        let threads = by_profile
+            .entry(runtime.base_dir.as_path())
+            .or_insert_with(|| crate::t3::threads(&runtime.base_dir));
+        // A hook session is keyed by the id the agent knows itself by; a
+        // scanner one keeps that id aside and is keyed by its pid.
+        let agent_session_id = session
+            .agent_session_id
+            .as_deref()
+            .unwrap_or(session.id.as_str());
+        let Some(thread) =
+            crate::t3::match_thread(threads, agent_session_id, session.cwd.as_deref())
+        else {
+            continue;
+        };
+        if registry.apply_t3_thread(&session.id, thread) {
+            eprintln!(
+                "vibewatch: {} is T3 thread {} \"{}\"",
+                session.id, thread.thread_id, thread.title
+            );
+        }
+    }
+}
+
 /// Linux process start time as wall-clock time. `/proc/<pid>/stat` stores
 /// clock ticks since boot (USER_HZ is 100 on Linux), while `/proc/stat`
 /// exposes the boot epoch. This prevents a newly launched Codex process from
@@ -279,17 +335,29 @@ fn process_started_at(pid: u32) -> Option<std::time::SystemTime> {
     let rest = &stat[stat.rfind(')')? + 2..];
     // Field 22 overall; `rest` begins at field 3, so starttime is index 19.
     let ticks: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
-    let proc_stat = std::fs::read_to_string("/proc/stat").ok()?;
-    let boot_epoch: u64 = proc_stat
-        .lines()
-        .find_map(|line| line.strip_prefix("btime "))?
-        .parse()
-        .ok()?;
     Some(
         std::time::UNIX_EPOCH
-            + std::time::Duration::from_secs(boot_epoch)
+            + std::time::Duration::from_secs(boot_epoch()?)
             + std::time::Duration::from_millis(ticks.saturating_mul(10)),
     )
+}
+
+/// The moment this machine booted, in Unix seconds.
+///
+/// Read once and kept: it cannot change while the daemon runs, and `/proc/stat`
+/// is not a cheap file — the kernel synthesises it by summing per-CPU counters,
+/// so it runs to several kilobytes on a many-core machine, all of it parsed to
+/// reach one line.
+fn boot_epoch() -> Option<u64> {
+    static BOOT_EPOCH: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *BOOT_EPOCH.get_or_init(|| {
+        std::fs::read_to_string("/proc/stat")
+            .ok()?
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))?
+            .parse()
+            .ok()
+    })
 }
 
 /// The cwd of every live Claude Code process. Resolved once for the whole tick
@@ -340,6 +408,9 @@ fn transcript_title_if_changed(
     if session.agent != AgentKind::ClaudeCode {
         return None; // read_transcript_name_at only knows Claude's layout
     }
+    if session.t3_thread_id.is_some() {
+        return None; // named after its T3 thread, which outranks the transcript
+    }
     // Hydration caches the path for a scanner session; a hook session is keyed
     // by the id Claude knows it as, so its path can be resolved from that.
     // `window-` sessions are GUI agents and have no transcript at all.
@@ -388,6 +459,43 @@ fn transcript_floor(pid: u32) -> std::time::SystemTime {
         .unwrap_or(std::time::UNIX_EPOCH)
 }
 
+/// The transcript belonging to a freshly discovered process.
+///
+/// Two ways to find one, and the order matters. A process launched with an
+/// explicit `--session-id` — which is how a host like T3 Code runs a thread —
+/// names its transcript outright, so it is found by name and nothing else is
+/// consulted. Otherwise it is the newest transcript in the process's own
+/// directory that is not older than the process, which is a guess: a good one
+/// while the process is alone in that directory, and no better than a coin toss
+/// once it is not. That second case is the one the directory check refuses, and
+/// the reason the stated id is tried first — a shared worktree is exactly where
+/// hosted sessions pile up, and there the guess was never needed.
+fn transcript_for(
+    session: &Session,
+    cwd: &Path,
+    census: &HashMap<u32, PathBuf>,
+    floor: std::time::SystemTime,
+) -> Option<PathBuf> {
+    if let Some(path) = crate::session::claude_session_id_arg(session.pid)
+        .and_then(|id| crate::session::claude_transcript_path(&id))
+    {
+        return Some(path);
+    }
+    if cwd_is_shared(census, session.pid) {
+        eprintln!(
+            "vibewatch: {} shares {} with another live agent — leaving its state to the hooks",
+            session.id,
+            cwd.display()
+        );
+        return None;
+    }
+    crate::transcript::find_claude_transcript_for_cwd(
+        &dirs::home_dir()?.join(".claude/projects"),
+        cwd,
+        floor,
+    )
+}
+
 /// Re-derive a freshly discovered Claude Code session's state from its
 /// transcript.
 ///
@@ -410,28 +518,24 @@ fn hydrate_from_transcript(session: &mut Session, census: &HashMap<u32, PathBuf>
     let Some(cwd) = census.get(&session.pid) else {
         return;
     };
-    if cwd_is_shared(census, session.pid) {
-        eprintln!(
-            "vibewatch: {} shares {} with another live agent — leaving its state to the hooks",
-            session.id,
-            cwd.display()
-        );
-        return;
-    }
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
-    let Some(path) = crate::transcript::find_claude_transcript_for_cwd(
-        &home.join(".claude/projects"),
-        cwd,
-        transcript_floor(session.pid),
-    ) else {
+    // Ahead of everything else, and kept whatever the rest of this finds: where
+    // a process is working is a fact read off `/proc`, not something derived
+    // from a record that may not exist yet. Every session found in a directory
+    // it shares used to end up with no directory at all — the one case where the
+    // fallbacks that need one, the folder name and the T3 thread lookup, are the
+    // only things left.
+    session.cwd = Some(cwd.to_string_lossy().into_owned());
+    // Resolved once and passed down: it costs a `/proc/<pid>/stat` read, and
+    // both the transcript search and the sub-agent count below are bounded by
+    // the same moment — the process cannot have written anything before it
+    // started.
+    let floor = transcript_floor(session.pid);
+    let Some(path) = transcript_for(session, cwd, census, floor) else {
         return;
     };
     let Some(snapshot) = crate::transcript::snapshot_claude_file(&path) else {
         return;
     };
-    session.cwd = Some(cwd.to_string_lossy().into_owned());
     session.status = snapshot.status;
     session.current_tool = snapshot.current_tool;
     session.tool_detail = snapshot.tool_detail;
@@ -439,8 +543,7 @@ fn hydrate_from_transcript(session: &mut Session, census: &HashMap<u32, PathBuf>
     // the previous daemon, so it is recounted off the durable record like the
     // status above — see `count_outstanding_subagents` for why a persisted
     // count could not be trusted instead. Later `SubagentStop`s decrement it.
-    session.pending_agents =
-        crate::transcript::count_outstanding_subagents(&path, transcript_floor(session.pid));
+    session.pending_agents = crate::transcript::count_outstanding_subagents(&path, floor);
     session.transcript_path = Some(path);
     // The agent's own session id, which a `scan-` session is not keyed by. The
     // Codex path records it for the same reason. Two things need it: the name
@@ -530,6 +633,31 @@ mod tests {
             transcript_title_if_changed(&session, &mut seen).as_deref(),
             Some("second"),
             "a transcript that moved must be read again"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A session named after its T3 thread must not have that name taken back
+    /// by the transcript on the very next tick — the two would otherwise trade
+    /// the row's name back and forth for as long as the agent was working.
+    #[test]
+    fn a_t3_session_keeps_its_thread_title() {
+        let dir = std::env::temp_dir().join(format!("vibewatch-t3-title-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"custom-title\",\"customTitle\":\"the agent's\"}\n",
+        )
+        .unwrap();
+
+        let mut session = Session::new("scan-claude-77".into(), AgentKind::ClaudeCode, 77);
+        session.transcript_path = Some(path);
+        session.t3_thread_id = Some("th-1".into());
+
+        assert_eq!(
+            transcript_title_if_changed(&session, &mut HashMap::new()),
+            None
         );
         std::fs::remove_dir_all(&dir).ok();
     }

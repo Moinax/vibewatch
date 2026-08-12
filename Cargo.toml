@@ -28,11 +28,18 @@ gtk4-layer-shell = { version = "0.5", optional = true }
 # Audio
 rodio = { version = "0.19", optional = true }
 
+# T3 Code's state database, read read-only for thread titles and ids
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 
 [features]
-default = ["panel", "sound", "hyprland-backend"]
+default = ["panel", "sound", "hyprland-backend", "t3"]
 panel = ["dep:gtk4", "dep:libadwaita", "dep:gtk4-layer-shell"]
 sound = ["dep:rodio"]
 hyprland-backend = ["dep:hyprland"]
+# Read T3 Code's thread titles and ids from its state database. T3 Code
+# sessions are tracked either way; without this they wear the agent's own
+# title instead of the thread's.
+t3 = ["dep:rusqlite"]

@@ -8,6 +8,7 @@ pub struct Config {
     pub general: GeneralConfig,
     pub sounds: SoundConfig,
     pub panel: PanelConfig,
+    pub t3: T3Config,
     pub agents: HashMap<String, AgentConfig>,
 }
 
@@ -87,9 +88,35 @@ pub struct PanelConfig {
     pub max_visible: usize,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct T3Config {
+    /// Track the agents T3 Code runs for its threads.
+    ///
+    /// They are launched the way a script would launch one — headless, on
+    /// stdio — so vibewatch would otherwise filter them out as programmatic.
+    /// Turning this off restores that: T3 threads disappear from the panel.
+    pub enabled: bool,
+    /// On click, ask T3 Code to open the thread as well as raising its window.
+    ///
+    /// Off because nothing on T3's side answers yet — see
+    /// [`crate::t3::focus_thread`]. Turn it on against a build that handles
+    /// `t3code://threads/<environment>/<thread>`.
+    pub deep_link: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
     pub window_class: String,
+}
+
+impl Default for T3Config {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            deep_link: false,
+        }
+    }
 }
 
 impl Default for GeneralConfig {

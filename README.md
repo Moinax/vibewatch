@@ -42,8 +42,11 @@ vibewatch fixes that. One glance at your bar tells you which sessions are runnin
 | Compositors  | Hyprland, Niri                                                              |
 | Bars         | Waybar                                                                      |
 | Agents       | Claude Code (full, incl. approvals), Codex (full), Cursor / WebStorm (presence only) |
+| Hosts        | Terminals, Zellij, herdr, T3 Code                                           |
 
 *"Full" = vibewatch receives granular hook events (tool calls, approvals, session lifecycle). "Presence" = the process is detected but no per-tool state is available.*
+
+*"Hosts" are the places an agent can be running. Whichever it is, the card's badge names it and clicking the card takes you there.*
 
 ## Install
 
@@ -100,12 +103,26 @@ open_on_finish = true  # pop the overlay open when an agent finishes its turn,
 max_visible   = 5      # rows shown before the list scrolls (height is also
                        # capped at a third of the monitor, whichever is smaller)
 
+[t3]
+enabled   = true    # track the agents T3 Code runs for its threads
+deep_link = false   # on click, also ask T3 Code to open the thread — needs a
+                    # T3 build that handles t3code://threads/<env>/<thread>
+
 [agents.cursor]
 window_class = "cursor"
 
 [agents.webstorm]
 window_class = "jetbrains-webstorm"
 ```
+
+## T3 Code
+
+[T3 Code](https://t3.codes) runs each of its threads as a headless `claude` or `codex` of its own, driven over stdio from the app's server process. vibewatch picks those up like any other session — same states, same chime, same waybar line — with two differences:
+
+- The row is named after the **T3 thread**, not the agent's transcript title, and carries a `T3 Code` badge where a terminal name would be. When T3 says a thread is waiting on you (a permission request, a question, a plan to approve), the row goes to `awaiting approval`, since for these agents T3 owns the prompt rather than Claude.
+- Clicking the row raises the **T3 Code window**. Selecting the thread inside it needs `deep_link` above *and* a T3 build that answers `t3code://threads/<environment>/<thread>` — as of T3 Code 0.0.33 nothing does (the scheme is claimed by the app's OAuth callbacks, and a second launch only reveals the window), so it stays off and the click lands you in the app on whichever thread was last open.
+
+Thread titles and ids are read from T3's own state database, opened read-only. Without the `t3` cargo feature that read is skipped and the sessions simply wear the agent's own title; `enabled = false` drops them from the panel altogether, back to treating every headless agent as a script's.
 
 ## Waybar styling
 

@@ -141,7 +141,7 @@ fn comm_looks_like_version(comm: &str) -> bool {
 /// derived from a command line — whether it hosts sessions, drives one
 /// programmatically, or forked one — and this is the one place that reads it, so
 /// the handling of a process that vanished mid-read cannot drift between them.
-fn proc_cmdline(pid: u32) -> Option<String> {
+pub fn proc_cmdline(pid: u32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{}/cmdline", pid)).ok()
 }
 
@@ -224,6 +224,25 @@ fn is_programmatic_args(args: &[&str]) -> bool {
     }
     args.windows(2)
         .any(|w| w[0] == "--output-format" && w[1] == "stream-json")
+}
+
+/// The badge a session hosted by T3 Code wears where a terminal name would go.
+pub const T3_HOST_BADGE: &str = "T3 Code";
+
+/// Should a process this daemon has just noticed become a session?
+///
+/// A headless agent is normally a script's, and a script has no pane to send
+/// anyone to. The exception is an agent some application is running for a
+/// session the user is watching — a T3 Code thread — which is headless for the
+/// same reason and belongs in the panel for the opposite one.
+///
+/// Asked at both places a session can be born, the scan tick and the
+/// `SessionStart` hook, so that the two cannot come to different conclusions
+/// about the same process. `hosts` empty means every headless agent is a
+/// script's, which is what a machine without T3 Code, or a user who turned it
+/// off, both look like.
+pub fn is_trackable_agent(pid: u32, hosts: &[crate::t3::Runtime]) -> bool {
+    !is_programmatic_pid(pid) || crate::t3::hosted_by(pid, hosts).is_some()
 }
 
 /// Kind of AI agent being monitored.
@@ -532,6 +551,11 @@ pub struct Session {
     /// `name_from_outside`.
     #[serde(skip)]
     pub title_when_named: Option<String>,
+    /// T3 Code's id for the thread this agent is running, when it is running
+    /// one. What a click would point T3 at, and the mark that this session's
+    /// name is the thread's rather than the transcript's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t3_thread_id: Option<String>,
 }
 
 /// Unix epoch seconds; 0 if the system clock predates the epoch.
@@ -571,6 +595,7 @@ impl Session {
             pending_agents: 0,
             name_from_outside: false,
             title_when_named: None,
+            t3_thread_id: None,
         }
     }
 
@@ -921,6 +946,56 @@ impl SessionRegistry {
         }
     }
 
+    /// Name T3 Code as the place this session lives.
+    ///
+    /// Worth saying even when the thread itself could not be identified — an
+    /// unreadable or moved-on schema, a build without the `t3` feature, the
+    /// seconds between the process starting and T3 writing its runtime row. It
+    /// is the difference between a row that says where to go and one that says
+    /// `Term` about a terminal that does not exist.
+    ///
+    /// The one place that answers this, rather than [`detect_terminal`]'s walk
+    /// up the process tree: T3 is recognised by parenthood, and its server wears
+    /// a name that walk would know only for the packaged app.
+    pub fn set_t3_host(&self, id: &str) -> bool {
+        let mut map = self.sessions.write().unwrap();
+        let Some(session) = map.get_mut(id) else {
+            return false;
+        };
+        session.terminal = Some(T3_HOST_BADGE.to_string());
+        true
+    }
+
+    /// Give a session the T3 Code thread it is running: its id, its title, and
+    /// T3's own account of whether it is blocked on the user.
+    ///
+    /// Done under the write lock for the same reason [`Self::apply_agent_title`]
+    /// is: the hooks are writing to these same sessions.
+    ///
+    /// Returns true the first time a session is paired with a thread, so the
+    /// caller can say so once rather than every tick.
+    pub fn apply_t3_thread(&self, id: &str, thread: &crate::t3::Thread) -> bool {
+        let mut map = self.sessions.write().unwrap();
+        let Some(session) = map.get_mut(id) else {
+            return false;
+        };
+        let first_pairing = session.t3_thread_id.as_deref() != Some(thread.thread_id.as_str());
+        session.t3_thread_id = Some(thread.thread_id.clone());
+        // The thread's title, not the transcript's: the user named this thread,
+        // or watched T3 name it, and that is the word they will look for in the
+        // panel. Offered rather than assigned so a hand rename still holds.
+        session.offer_agent_title(&thread.title);
+        // Raised only, never lowered. T3 owns the permission prompt for the
+        // agents it hosts — they run with Claude's own prompting turned off — so
+        // this is the only thing that can say a T3 thread is blocked on its
+        // user. Clearing it is left to the agent's next hook, which always comes
+        // once the answer lands: the tool runs, or the turn ends.
+        if thread.blocked {
+            session.status = SessionStatus::WaitingApproval;
+        }
+        first_pairing
+    }
+
     /// Quiet a session that handed its running turn to a fork of itself — a
     /// background job. It will never fire the `Stop` that ends that turn, so
     /// nothing else can ever move it off `Thinking`, and `cleanup_dead` cannot
@@ -1164,6 +1239,36 @@ fn argv0_names_agent(args: &[&str], kind: AgentKind) -> bool {
         .file_name()
         .is_some_and(|name| is_agent_pid_alive_with_comm(&name.to_string_lossy(), kind))
         || (kind == AgentKind::ClaudeCode && is_claude_launcher_exe(argv0))
+}
+
+/// The session id a Claude Code process was launched with, when it was launched
+/// with one.
+///
+/// Only a caller that already knows which session it wants passes `--session-id`
+/// — a host driving the agent on stdio, which is how T3 Code runs its threads.
+/// An interactive `claude` picks its own id and says so in its transcript
+/// instead, so this is `None` for one, and that is the honest answer.
+///
+/// Worth reading because it is the only *stated* identity an agent process has.
+/// Everything else vibewatch knows about which session a process is running is
+/// inferred from what it has written and when, which is exactly what fails when
+/// two agents share a working directory.
+pub fn claude_session_id_arg(pid: u32) -> Option<String> {
+    let raw = proc_cmdline(pid)?;
+    let args: Vec<&str> = raw.split('\0').collect();
+    session_id_from_args(&args)
+}
+
+/// Both spellings, since a caller may pass either and the agent accepts both.
+fn session_id_from_args(args: &[&str]) -> Option<String> {
+    args.iter()
+        .enumerate()
+        .find_map(|(index, arg)| match arg.strip_prefix("--session-id") {
+            Some("") => args.get(index + 1).map(|value| value.to_string()),
+            Some(rest) => rest.strip_prefix('=').map(str::to_string),
+            None => None,
+        })
+        .filter(|id| !id.is_empty())
 }
 
 /// Check whether a PID is still occupied by a process of the given `AgentKind`.
@@ -2746,6 +2851,123 @@ mod tests {
         assert_eq!(
             zellij_client_pid("vibewatch-no-such-session-zzz-9999"),
             None
+        );
+    }
+
+    /// The stated identity of a hosted agent, in both spellings a host may use.
+    #[test]
+    fn the_session_id_is_read_from_either_spelling() {
+        assert_eq!(
+            session_id_from_args(&["claude", "--session-id=b59ad177", "--verbose"]).as_deref(),
+            Some("b59ad177")
+        );
+        assert_eq!(
+            session_id_from_args(&["claude", "--session-id", "b59ad177"]).as_deref(),
+            Some("b59ad177")
+        );
+    }
+
+    /// An interactive agent picks its own id and is not launched with one; the
+    /// transcript is what answers for it, so this must not invent anything.
+    #[test]
+    fn an_agent_launched_without_a_session_id_states_none() {
+        assert_eq!(session_id_from_args(&["claude"]), None);
+        assert_eq!(session_id_from_args(&["claude", "--session-id"]), None);
+        assert_eq!(session_id_from_args(&["claude", "--session-id="]), None);
+        assert_eq!(
+            session_id_from_args(&["claude", "--session-id-suffix=x"]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_t3_thread_names_its_session_and_says_where_to_find_it() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("s1".into(), AgentKind::ClaudeCode, 42));
+        let thread = crate::t3::Thread {
+            thread_id: "th-1".into(),
+            title: "Connect vibewatch to T3".into(),
+            provider_session_id: Some("s1".into()),
+            cwd: None,
+            blocked: false,
+        };
+
+        assert!(
+            registry.apply_t3_thread("s1", &thread),
+            "the first pairing is worth saying out loud"
+        );
+        assert!(
+            !registry.apply_t3_thread("s1", &thread),
+            "and the next tick's is not"
+        );
+
+        let session = registry.get("s1").unwrap();
+        assert_eq!(session.t3_thread_id.as_deref(), Some("th-1"));
+        assert_eq!(
+            session.session_name.as_deref(),
+            Some("Connect vibewatch to T3")
+        );
+    }
+
+    /// T3 owns the permission prompt for the agents it hosts, so its count is
+    /// the only thing that can put such a session in the state the whole panel
+    /// exists to surface.
+    #[test]
+    fn a_thread_blocked_on_its_user_is_waiting_for_approval() {
+        let registry = SessionRegistry::new();
+        let mut session = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
+        session.status = SessionStatus::Executing;
+        registry.register(session);
+        let thread = crate::t3::Thread {
+            thread_id: "th-1".into(),
+            title: "Ship it".into(),
+            provider_session_id: Some("s1".into()),
+            cwd: None,
+            blocked: true,
+        };
+
+        registry.apply_t3_thread("s1", &thread);
+        assert_eq!(
+            registry.get("s1").unwrap().status,
+            SessionStatus::WaitingApproval
+        );
+    }
+
+    /// The badge is worth setting on its own, for the session whose thread
+    /// could not be identified: `T3 Code` says where to go, `Term` names a
+    /// terminal that does not exist.
+    #[test]
+    fn an_unidentified_t3_session_still_says_where_it_lives() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("s1".into(), AgentKind::ClaudeCode, 42));
+
+        assert!(registry.set_t3_host("s1"));
+
+        let session = registry.get("s1").unwrap();
+        assert_eq!(session.terminal.as_deref(), Some(T3_HOST_BADGE));
+        assert_eq!(session.t3_thread_id, None);
+        assert_eq!(session.session_name, None);
+    }
+
+    /// A hand-typed name outranks the thread's title, the same way it outranks
+    /// the agent's own — the T3 title is offered, not imposed.
+    #[test]
+    fn a_hand_typed_name_survives_the_thread_title() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("s1".into(), AgentKind::ClaudeCode, 42));
+        registry.set_name_from_outside("s1", "mine".into(), None);
+        let thread = crate::t3::Thread {
+            thread_id: "th-1".into(),
+            title: "T3's idea of it".into(),
+            provider_session_id: Some("s1".into()),
+            cwd: None,
+            blocked: false,
+        };
+
+        registry.apply_t3_thread("s1", &thread);
+        assert_eq!(
+            registry.get("s1").unwrap().session_name.as_deref(),
+            Some("mine")
         );
     }
 
