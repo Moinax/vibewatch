@@ -99,9 +99,12 @@ pub struct T3Config {
     pub enabled: bool,
     /// On click, ask T3 Code to open the thread as well as raising its window.
     ///
-    /// Off because nothing on T3's side answers yet — see
-    /// [`crate::t3::focus_thread`]. Turn it on against a build that handles
-    /// `t3code://threads/<environment>/<thread>`.
+    /// On, because landing on the thread is the point of the click and every
+    /// way it can miss lands somewhere harmless: a build that does not handle
+    /// `t3code://threads/<environment>/<thread>` reveals its window, which is
+    /// what the click did anyway. Turn it off on a machine with no T3 desktop
+    /// app, where the scheme has no handler and the desktop would ask which
+    /// application to open it with.
     pub deep_link: bool,
 }
 
@@ -114,7 +117,7 @@ impl Default for T3Config {
     fn default() -> Self {
         Self {
             enabled: true,
-            deep_link: false,
+            deep_link: true,
         }
     }
 }

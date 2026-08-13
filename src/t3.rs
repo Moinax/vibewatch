@@ -264,13 +264,14 @@ pub fn environment_id(base_dir: &Path) -> Option<String> {
 /// Ask T3 Code to open a thread — the same move as selecting the agent's pane
 /// inside its multiplexer before raising the window it lives in.
 ///
-/// Off unless `t3.deep_link` is set, because as of T3 Code 0.0.33 nothing on the
-/// other end listens: the app claims `t3code://` for its OAuth callbacks and a
-/// second instance only reveals the window it already has. The URL is the shape
-/// T3's own mobile widgets use, so it is the one a desktop handler would grow.
-/// Until then the click still lands you in T3 Code — on whichever thread was
-/// last open — and this stays quiet rather than handing xdg-open a URL that
-/// would reopen the app or prompt for a handler.
+/// The URL is the shape T3's own mobile widgets use, which is what a desktop
+/// handler grows into. On by default because every way it can miss is
+/// harmless: a T3 that does not route the link still reveals its window — the
+/// click's other half — so the worst case is the behaviour we had before, plus
+/// a spawned `xdg-open`. Two cases are worth knowing about, and `t3.deep_link`
+/// exists for the second: with T3 closed the URL launches it, and on a machine
+/// with no T3 desktop app the scheme has no handler at all and the desktop asks
+/// which application to open it with.
 ///
 /// Reads the config itself rather than being handed it: this is a click, once,
 /// and it runs off a GTK signal that has no config to hand it.
