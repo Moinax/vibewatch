@@ -21,6 +21,8 @@
 //! Everything here degrades to nothing when T3 Code is not installed or not
 //! running, which is the common case.
 
+use std::io::Write;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use crate::session::Ask;
@@ -289,10 +291,44 @@ pub fn focus_thread(thread_id: &str) {
     else {
         return;
     };
+    // Hand it to the app directly when it is listening. `xdg-open` routes the
+    // same URL, but by launching a whole second copy of T3 Code whose only job
+    // is to take the single-instance lock, forward the link and die — measured
+    // at ~1.4s, half of it an AppImage's squashfs mount. Writing to the socket
+    // is a connect and a write.
+    if write_deep_link_socket(&url).is_ok() {
+        return;
+    }
     // Spawned and not waited on: the click's real job is the window raise that
     // follows, and `xdg-open` can take the better part of a second to hand the
     // URL over and exit.
     let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+/// Path T3 Code listens on for links, mirroring its own `deepLinkSocketPath`.
+///
+/// Only the release channel is addressed: a dev build binds its own name, and a
+/// click in the panel is about the agent the user is actually running.
+///
+/// `None` without `XDG_RUNTIME_DIR`. T3 Code also answers on a uid-scoped name
+/// in the temp dir, but reproducing that would cost a dependency for one
+/// `getuid()` — and the variable is set on every desktop this panel runs on.
+/// Falling back to `xdg-open` there is slower, not broken.
+fn deep_link_socket_path() -> Option<PathBuf> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")?;
+    (!dir.is_empty()).then(|| PathBuf::from(dir).join("t3code-deeplink.sock"))
+}
+
+/// Write one URL and close. An error means nothing is listening — an older T3,
+/// a dev-only build, or the app not running — and the caller falls back.
+fn write_deep_link_socket(url: &str) -> std::io::Result<()> {
+    let path = deep_link_socket_path()
+        .ok_or_else(|| std::io::Error::other("no XDG_RUNTIME_DIR"))?;
+    let mut stream = UnixStream::connect(path)?;
+    // The reader takes the first line, so the newline is what ends the message
+    // rather than the close: a caller that lingers must not hold it open.
+    stream.write_all(url.as_bytes())?;
+    stream.write_all(b"\n")
 }
 
 #[cfg(test)]
