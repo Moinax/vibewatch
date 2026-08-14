@@ -64,13 +64,13 @@ pub struct PanelConfig {
     /// Auto-hide the panel once nothing needs attention and the pointer is
     /// not over it.
     ///
-    /// Two things count as needing attention, and either one holds the panel
-    /// open indefinitely — the timer is reset, not merely deferred: a session
-    /// waiting for approval, and a session that just finished its turn
-    /// (`Session::just_finished`). The second is not time-based, so a finished
-    /// agent never times out on its own; it clears when the card is clicked or
-    /// when that agent picks the work back up. A chime you were away for
-    /// therefore still has its row waiting when you look back.
+    /// Only a session waiting for approval counts as needing attention, and it
+    /// holds the panel open indefinitely — the timer is reset, not merely
+    /// deferred — because it is the one state that cannot proceed without you.
+    /// A finished turn does not hold the drawer: closing loses nothing, since
+    /// `Session::just_finished` is not time-based, so the row stays lit until
+    /// the row's `Seen` bar or a click on the card acknowledges it, or that
+    /// agent picks the work back up.
     pub auto_close: bool,
     /// How long the pointer has to stay away before the panel closes, in
     /// milliseconds. Only starts counting once nothing needs attention in the
@@ -150,7 +150,7 @@ impl Default for PanelConfig {
             animate: true,
             animation_ms: 220,
             auto_close: true,
-            auto_close_ms: 5000,
+            auto_close_ms: 3000,
             open_on_finish: true,
             max_visible: 5,
         }
@@ -226,7 +226,7 @@ mod tests {
         assert!(config.panel.animate);
         assert_eq!(config.panel.animation_ms, 220);
         assert!(config.panel.auto_close);
-        assert_eq!(config.panel.auto_close_ms, 5000);
+        assert_eq!(config.panel.auto_close_ms, 3000);
         assert!(config.panel.open_on_finish);
         assert_eq!(config.panel.max_visible, 5);
         assert!(config.agents.is_empty());
