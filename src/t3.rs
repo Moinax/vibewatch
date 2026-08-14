@@ -341,8 +341,8 @@ fn deep_link_socket_path() -> Option<PathBuf> {
 /// Write one URL and close. An error means nothing is listening — an older T3,
 /// a dev-only build, or the app not running — and the caller falls back.
 fn write_deep_link_socket(url: &str) -> std::io::Result<()> {
-    let path = deep_link_socket_path()
-        .ok_or_else(|| std::io::Error::other("no XDG_RUNTIME_DIR"))?;
+    let path =
+        deep_link_socket_path().ok_or_else(|| std::io::Error::other("no XDG_RUNTIME_DIR"))?;
     let mut stream = UnixStream::connect(path)?;
     // The reader takes the first line, so the newline is what ends the message
     // rather than the close: a caller that lingers must not hold it open.
