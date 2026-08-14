@@ -6,12 +6,12 @@
 
 /* ── Panel container ──────────────────────────────────────────── */
 
-window,
-window.background,
-window.background.csd,
-window.solid-csd,
-window.csd,
-.background {
+/* Only the drawer's own surface, by the class `build_window` puts on it. This
+   provider is installed for the whole display, so an unscoped `window` /
+   `.background` rule here reaches every GTK surface the process ever maps —
+   which is how tooltips ended up as white text over the wallpaper. Everything
+   else (tooltips today, a popover tomorrow) keeps the theme's own ground. */
+window.vibewatch-panel {
     background-color: transparent;
     background-image: none;
     box-shadow: none;
@@ -35,7 +35,7 @@ window.csd,
     padding: 4px 0;
 }
 
-/* ── Header (title + sound mute toggle) ───────────────────────── */
+/* ── Header (title + auto-expand and mute toggles) ─────────────── */
 .panel-header {
     padding: 6px 12px 2px 12px;
 }
@@ -45,7 +45,7 @@ window.csd,
     color: @cat_text;
 }
 
-.mute-toggle {
+.header-toggle {
     min-height: 0;
     min-width: 0;
     padding: 2px 6px;
@@ -55,7 +55,7 @@ window.csd,
     box-shadow: none;
 }
 
-.mute-toggle:hover {
+.header-toggle:hover {
     background: @cat_hover_bg;
     color: @cat_text;
 }

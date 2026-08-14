@@ -2,9 +2,9 @@ mod approval;
 mod codex_rollout;
 mod compositor;
 mod config;
+mod flags;
 mod install;
 mod ipc;
-mod mute;
 mod notify;
 mod scanner;
 mod session;
@@ -304,6 +304,12 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
 
         let show_weak = glib::SendWeakRef::from(window.downgrade());
         let show_fn: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            // The header's auto-expand toggle, checked on the way in so it
+            // covers both the approval pop and the finish pop. Off leaves the
+            // chime, the waybar pill and the click toggle untouched.
+            if !flags::AUTO_EXPAND.is_on() {
+                return;
+            }
             let show_weak = show_weak.clone();
             glib::MainContext::default().invoke(move || {
                 if let Some(win) = show_weak.upgrade() {

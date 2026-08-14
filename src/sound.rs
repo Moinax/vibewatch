@@ -51,7 +51,7 @@ impl SoundPlayer {
         if !self.config.enabled {
             return;
         }
-        if crate::mute::is_muted() {
+        if crate::flags::MUTED.is_on() {
             return;
         }
 

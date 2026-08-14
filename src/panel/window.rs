@@ -116,18 +116,27 @@ fn brand_mark() -> Option<gtk::Image> {
     super::svg_mark(include_bytes!("../../assets/logos/vibewatch.svg"), 16)
 }
 
-/// Set the mute button's icon and tooltip to match the current state.
-fn apply_mute_icon(btn: &gtk::Button, muted: bool) {
-    btn.set_icon_name(if muted {
-        "audio-volume-muted-symbolic"
-    } else {
-        "audio-volume-high-symbolic"
-    });
-    btn.set_tooltip_text(Some(if muted {
-        "Sound muted — click to unmute"
-    } else {
-        "Sound on — click to mute"
-    }));
+/// A header button that flips a persistent [`crate::flags::Flag`] on click and
+/// wears the (icon, tooltip) pair for the state it is now in — `on` while the
+/// flag is set, `off` while it is not. The click repaints from what the flag
+/// reads back, so a write that never landed cannot leave the icon lying.
+fn header_toggle(
+    flag: crate::flags::Flag,
+    on: (&'static str, &'static str),
+    off: (&'static str, &'static str),
+) -> gtk::Button {
+    let btn = gtk::Button::new();
+    btn.add_css_class("header-toggle");
+    btn.add_css_class("flat");
+    let paint = move |b: &gtk::Button, state: bool| {
+        let (icon, tip) = if state { on } else { off };
+        b.set_icon_name(icon);
+        b.set_tooltip_text(Some(tip));
+    };
+    paint(&btn, flag.is_on());
+    let btn_for_click = btn.clone();
+    btn.connect_clicked(move |_| paint(&btn_for_click, flag.toggle()));
+    btn
 }
 
 pub fn build_window(
@@ -153,6 +162,9 @@ pub fn build_window(
     // connect_clicked on buttons) — no widgets consume keyboard input.
     window.set_keyboard_mode(gtk4_layer_shell::KeyboardMode::None);
     window.set_namespace(Some("vibewatch"));
+    // What the stylesheet's transparency rule keys off, so it lands on this
+    // surface and no other — see the note at the top of `style.css`.
+    window.add_css_class("vibewatch-panel");
 
     // Load CSS — palette provider is swapped on OS dark/light theme change.
     let display = gtk::gdk::Display::default().unwrap();
@@ -201,7 +213,7 @@ pub fn build_window(
     main_box.set_hexpand(false);
     main_box.set_halign(gtk::Align::Center);
 
-    // Header row: app title on the left, sound mute toggle on the right.
+    // Header row: app title on the left, auto-expand and mute toggles on the right.
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     header.add_css_class("panel-header");
 
@@ -215,18 +227,31 @@ pub fn build_window(
     title.set_halign(gtk::Align::Start);
     header.append(&title);
 
-    // Mutes/unmutes sound alerts; state is persisted by `crate::mute` so it
-    // survives restarts and is read by the daemon's SoundPlayer per event.
-    let mute_btn = gtk::Button::new();
-    mute_btn.add_css_class("mute-toggle");
-    mute_btn.add_css_class("flat");
-    apply_mute_icon(&mute_btn, crate::mute::is_muted());
-    let mute_btn_for_click = mute_btn.clone();
-    mute_btn.connect_clicked(move |_| {
-        let muted = crate::mute::toggle().unwrap_or(false);
-        apply_mute_icon(&mute_btn_for_click, muted);
-    });
-    header.append(&mute_btn);
+    // Lets an event pop the drawer open, or not; read by the daemon's show
+    // hook per announcement. Off leaves waybar reporting as usual and the
+    // click toggle working.
+    header.append(&header_toggle(
+        crate::flags::AUTO_EXPAND,
+        (
+            "view-reveal-symbolic",
+            "Panel opens on its own — click to stop it",
+        ),
+        (
+            "view-conceal-symbolic",
+            "Panel only opens on click — click to let events open it",
+        ),
+    ));
+
+    // Mutes/unmutes sound alerts; read by the daemon's SoundPlayer per event.
+    // Set means *muted*, so the crossed-out speaker is the `on` face here.
+    header.append(&header_toggle(
+        crate::flags::MUTED,
+        (
+            "audio-volume-muted-symbolic",
+            "Sound muted — click to unmute",
+        ),
+        ("audio-volume-high-symbolic", "Sound on — click to mute"),
+    ));
 
     main_box.append(&header);
 
