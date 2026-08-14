@@ -105,6 +105,19 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     action_label.set_max_width_chars(1);
     content.append(&action_label);
 
+    // "Seen it" without "take me there". The card click acknowledges too, but
+    // it also focuses the agent's pane and rolls the drawer up — no use when
+    // you are reading the fleet and only want the green row to stop claiming a
+    // finish you have already registered. It sits under the row as a bar rather
+    // than as an icon among the badges, because the panel already has one shape
+    // for "this row is asking you something" — the approval buttons — and a
+    // finish is the only other row that asks. Only on a finished row, since
+    // that is the only state acknowledgement means anything for. Being a
+    // Button, its own gesture claims the click, so the row's never sees it.
+    if session.just_finished() {
+        content.append(&ack_button(session.id.clone()));
+    }
+
     if let Some(ref pending) = session.pending_approval {
         // Empty `choices` = no actionable buttons (ExitPlanMode). The
         // indicator + "approval" state still render; the user clicks the
@@ -150,6 +163,28 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     row.set_child(Some(&card));
     row
+}
+
+/// The bar under a finished row: clears `just_finished` and nothing else — no
+/// focus, no dismiss. The row repaints on the panel's next tick, which reads the
+/// registry the daemon has just written.
+///
+/// A word, not a glyph. The icon this replaced printed a second check on a row
+/// whose indicator was already one, and said nothing about what pressing it did.
+fn ack_button(session_id: String) -> gtk::Button {
+    let btn = gtk::Button::with_label("Seen");
+    btn.add_css_class("ack-bar");
+    btn.set_focusable(false); // mouse-only surface, same as the row
+    btn.set_hexpand(true);
+    btn.set_halign(gtk::Align::Fill);
+    btn.set_tooltip_text(Some("Clear the finish and stay in the panel"));
+    btn.connect_clicked(move |_| {
+        let sid = session_id.clone();
+        std::thread::spawn(move || {
+            send_to_daemon(crate::ipc::InboundEvent::AcknowledgeSession { session_id: sid });
+        });
+    });
+    btn
 }
 
 fn format_elapsed(session: &Session) -> String {

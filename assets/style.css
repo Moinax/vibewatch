@@ -179,6 +179,32 @@ window.vibewatch-panel {
                                       alpha(@cat_green, 0.16));
 }
 
+/* The acknowledge bar, only ever on a just-finished row. Deliberately the same
+   shape as the approval buttons below — a row that wants something from you
+   answers in a bar under the card, and a finish is the only ask besides an
+   approval. Neutral at rest so the calmest state does not shout louder than a
+   blocked one, green only under the pointer: the ink is @cat_text either way,
+   because the glyph this replaced was painted @cat_green on a green-tinted row
+   and came out at ~2:1 in Latte. */
+.ack-bar {
+    margin-top: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    padding: 3px 10px;
+    min-height: 22px;
+    border-radius: 5px;
+    color: @cat_text;
+    border: 1px solid alpha(@cat_border, 0.30);
+    background-color: alpha(@cat_button_bg, 0.50);
+    box-shadow: none;
+}
+
+.ack-bar:hover {
+    background-color: alpha(@cat_green, 0.18);
+    border-color: alpha(@cat_green, 0.45);
+}
+
 /* ── Indicator ────────────────────────────────────────────────── */
 
 /* One icon per state rather than one dot in six colours (see
