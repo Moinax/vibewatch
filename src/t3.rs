@@ -171,7 +171,8 @@ fn read_threads(base_dir: &Path) -> rusqlite::Result<Vec<Thread>> {
                 json_extract(r.runtime_payload_json, '$.cwd'),
                 COALESCE(t.pending_approval_count, 0),
                 COALESCE(t.pending_user_input_count, 0),
-                COALESCE(t.has_actionable_proposed_plan, 0)
+                COALESCE(t.has_actionable_proposed_plan, 0),
+                t.interaction_mode
            FROM provider_session_runtime r
            JOIN projection_threads t USING (thread_id)
           WHERE t.deleted_at IS NULL
@@ -184,7 +185,12 @@ fn read_threads(base_dir: &Path) -> rusqlite::Result<Vec<Thread>> {
             title: row.get(1)?,
             provider_session_id: row.get(2)?,
             cwd: row.get(3)?,
-            blocked: ask_from_counts(row.get(4)?, row.get(5)?, row.get(6)?),
+            blocked: ask_from_counts(
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get_ref(7)?.as_str()?,
+            ),
         })
     })?;
     rows.collect()
@@ -194,13 +200,26 @@ fn read_threads(base_dir: &Path) -> rusqlite::Result<Vec<Thread>> {
 /// input, then plan — T3's own order in `resolveThreadStatusPill`, and the right
 /// one on its own terms: a permission gate has stopped the agent dead, a
 /// question has stopped this turn, and a plan is only an invitation.
+///
+/// Three of T3's four ranks. The fourth — a running turn outranks a plan too —
+/// needs to know what the session is doing, which this side cannot see, so it
+/// lives in [`SessionRegistry::apply_t3_thread`](crate::session::SessionRegistry::apply_t3_thread);
+/// a change to T3's pill has to be answered in both places.
+///
+/// The plan counter is the one that needs a second opinion, because it counts
+/// nothing outstanding: `has_actionable_proposed_plan` says the latest plan has
+/// no `implementedAt`, and approving one and watching the agent build it never
+/// sets that. What ends the ask is the thread leaving plan mode, which is what
+/// accepting a plan does — so the mode is the condition T3's own pill checks
+/// alongside the flag, and without it a thread says `plan ready` for the rest
+/// of its life, from the moment it was told to go.
 #[cfg(feature = "t3")]
-fn ask_from_counts(approvals: i64, inputs: i64, plan: i64) -> Option<Ask> {
+fn ask_from_counts(approvals: i64, inputs: i64, plan: i64, interaction_mode: &str) -> Option<Ask> {
     if approvals > 0 {
         Some(Ask::Approval)
     } else if inputs > 0 {
         Some(Ask::Input)
-    } else if plan > 0 {
+    } else if plan > 0 && interaction_mode == "plan" {
         Some(Ask::Plan)
     } else {
         None
@@ -378,12 +397,28 @@ mod tests {
     #[cfg(feature = "t3")]
     #[test]
     fn the_ask_that_blocks_hardest_wins() {
-        assert_eq!(ask_from_counts(0, 0, 0), None);
-        assert_eq!(ask_from_counts(1, 0, 0), Some(Ask::Approval));
-        assert_eq!(ask_from_counts(0, 2, 0), Some(Ask::Input));
-        assert_eq!(ask_from_counts(0, 0, 1), Some(Ask::Plan));
-        assert_eq!(ask_from_counts(1, 1, 1), Some(Ask::Approval));
-        assert_eq!(ask_from_counts(0, 1, 1), Some(Ask::Input));
+        // In plan mode throughout: the mode is the plan branch's own gate, and
+        // holding it still here leaves the counters as the only variable.
+        assert_eq!(ask_from_counts(0, 0, 0, "plan"), None);
+        assert_eq!(ask_from_counts(1, 0, 0, "plan"), Some(Ask::Approval));
+        assert_eq!(ask_from_counts(0, 2, 0, "plan"), Some(Ask::Input));
+        assert_eq!(ask_from_counts(0, 0, 1, "plan"), Some(Ask::Plan));
+        assert_eq!(ask_from_counts(1, 1, 1, "plan"), Some(Ask::Approval));
+        assert_eq!(ask_from_counts(0, 1, 1, "plan"), Some(Ask::Input));
+    }
+
+    /// The go is spelled by the mode, not by the flag: accepting a plan puts
+    /// the thread back in `default` and leaves `has_actionable_proposed_plan`
+    /// standing, so a thread that was told to go and did the work must not
+    /// still be asking for a verdict.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn an_accepted_plan_stops_asking() {
+        assert_eq!(ask_from_counts(0, 0, 1, "default"), None);
+        // And the mode gates that branch alone: the other two are live counts
+        // and mean what they say whatever mode the thread is in.
+        assert_eq!(ask_from_counts(1, 0, 1, "default"), Some(Ask::Approval));
+        assert_eq!(ask_from_counts(0, 1, 1, "default"), Some(Ask::Input));
     }
 
     fn thread(id: &str, session: Option<&str>, cwd: Option<&str>) -> Thread {

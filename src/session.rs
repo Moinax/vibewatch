@@ -1169,12 +1169,25 @@ impl SessionRegistry {
         // user. Clearing it is left to the agent's next hook, which always comes
         // once the answer lands: the tool runs, or the turn ends.
         //
-        // The ask itself *is* assigned unconditionally, including back to
-        // `None`: it is only ever read while the status says blocked, so it
-        // cannot lower anything, and leaving a stale one behind is how a thread
-        // would keep claiming to want a plan approved after the plan was.
-        session.blocked_on = thread.blocked;
-        if thread.blocked.is_some() {
+        // The ask itself is rewritten every tick, including back to `None`: it
+        // is only ever read while the status says blocked, so it cannot lower
+        // anything, and leaving a stale one behind is how a thread would keep
+        // claiming to want a plan approved after the plan was.
+        //
+        // A plan is the exception to the raise, and T3's pill agrees: it ranks a
+        // running turn *above* `Plan Ready` and below the other two. This is the
+        // fourth of those ranks; [`crate::t3::ask_from_counts`] holds the other
+        // three, and a change to T3's pill has to be answered in both. The flag
+        // outlives the plan it was raised for, so a thread revising a plan has
+        // one on the table and an agent working on the next — an invitation is
+        // not worth interrupting that with, while a gate that stopped the agent
+        // dead always is.
+        let blocked = match thread.blocked {
+            Some(Ask::Plan) if session.state_kind() == StateKind::Working => None,
+            ask => ask,
+        };
+        session.blocked_on = blocked;
+        if blocked.is_some() {
             session.status = SessionStatus::WaitingApproval;
         }
         first_pairing
@@ -3079,17 +3092,23 @@ mod tests {
         );
     }
 
+    /// The thread every pairing test below hands to `s1`, varying only the two
+    /// fields any of them care about: what it is called and what it is holding.
+    fn t3_thread(title: &str, blocked: Option<Ask>) -> crate::t3::Thread {
+        crate::t3::Thread {
+            thread_id: "th-1".into(),
+            title: title.into(),
+            provider_session_id: Some("s1".into()),
+            cwd: None,
+            blocked,
+        }
+    }
+
     #[test]
     fn a_t3_thread_names_its_session_and_says_where_to_find_it() {
         let registry = SessionRegistry::new();
         registry.register(Session::new("s1".into(), AgentKind::ClaudeCode, 42));
-        let thread = crate::t3::Thread {
-            thread_id: "th-1".into(),
-            title: "Connect vibewatch to T3".into(),
-            provider_session_id: Some("s1".into()),
-            cwd: None,
-            blocked: None,
-        };
+        let thread = t3_thread("Connect vibewatch to T3", None);
 
         assert!(
             registry.apply_t3_thread("s1", &thread),
@@ -3117,13 +3136,7 @@ mod tests {
         let mut session = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
         session.status = SessionStatus::Executing;
         registry.register(session);
-        let thread = crate::t3::Thread {
-            thread_id: "th-1".into(),
-            title: "Ship it".into(),
-            provider_session_id: Some("s1".into()),
-            cwd: None,
-            blocked: Some(Ask::Approval),
-        };
+        let thread = t3_thread("Ship it", Some(Ask::Approval));
 
         registry.apply_t3_thread("s1", &thread);
         assert_eq!(
@@ -3143,7 +3156,6 @@ mod tests {
         for (ask, expected) in [
             (Ask::Approval, StateKind::PendingApproval),
             (Ask::Input, StateKind::AwaitingInput),
-            (Ask::Plan, StateKind::PlanReady),
         ] {
             let registry = SessionRegistry::new();
             let mut session = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
@@ -3151,13 +3163,28 @@ mod tests {
             // The lie the ask has to survive.
             session.current_tool = Some(TOOL_EXIT_PLAN_MODE.to_string());
             registry.register(session);
-            let thread = crate::t3::Thread {
-                thread_id: "th-1".into(),
-                title: "Ship it".into(),
-                provider_session_id: Some("s1".into()),
-                cwd: None,
-                blocked: Some(ask),
-            };
+            let thread = t3_thread("Ship it", Some(ask));
+
+            registry.apply_t3_thread("s1", &thread);
+            assert_eq!(registry.get("s1").unwrap().state_kind(), expected);
+        }
+    }
+
+    /// The plan is the ask that waits for the agent to stop — the split off the
+    /// test above, which is why it cannot be another row in that table.
+    #[test]
+    fn a_plan_waits_for_the_agent_to_stop() {
+        for (status, expected) in [
+            (SessionStatus::Executing, StateKind::Working),
+            (SessionStatus::Idle, StateKind::PlanReady),
+        ] {
+            let registry = SessionRegistry::new();
+            let mut session = Session::new("s1".into(), AgentKind::ClaudeCode, 42);
+            session.status = status;
+            // The same lie, still to be survived once the plan does land.
+            session.current_tool = Some(TOOL_EXIT_PLAN_MODE.to_string());
+            registry.register(session);
+            let thread = t3_thread("Ship it", Some(Ask::Plan));
 
             registry.apply_t3_thread("s1", &thread);
             assert_eq!(registry.get("s1").unwrap().state_kind(), expected);
@@ -3172,13 +3199,7 @@ mod tests {
     fn an_answered_ask_does_not_outlive_the_answer() {
         let registry = SessionRegistry::new();
         registry.register(Session::new("s1".into(), AgentKind::ClaudeCode, 42));
-        let mut thread = crate::t3::Thread {
-            thread_id: "th-1".into(),
-            title: "Ship it".into(),
-            provider_session_id: Some("s1".into()),
-            cwd: None,
-            blocked: Some(Ask::Plan),
-        };
+        let mut thread = t3_thread("Ship it", Some(Ask::Plan));
         registry.apply_t3_thread("s1", &thread);
         assert_eq!(registry.get("s1").unwrap().blocked_on, Some(Ask::Plan));
 
@@ -3210,13 +3231,7 @@ mod tests {
         let registry = SessionRegistry::new();
         registry.register(Session::new("s1".into(), AgentKind::ClaudeCode, 42));
         registry.set_name_from_outside("s1", "mine".into(), None);
-        let thread = crate::t3::Thread {
-            thread_id: "th-1".into(),
-            title: "T3's idea of it".into(),
-            provider_session_id: Some("s1".into()),
-            cwd: None,
-            blocked: None,
-        };
+        let thread = t3_thread("T3's idea of it", None);
 
         registry.apply_t3_thread("s1", &thread);
         assert_eq!(
