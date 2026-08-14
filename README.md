@@ -140,7 +140,7 @@ The daemon emits the line as a JSON object with these relevant fields:
 
 | Field    | Meaning                                                                                          |
 |----------|--------------------------------------------------------------------------------------------------|
-| `text`   | Widget label, e.g. `dotfiles <span foreground="#6c7086">│</span> <span foreground="#74c7ec">thinking</span>` — Pango markup inline |
+| `text`   | Widget label, e.g. `dotfiles <span foreground="#6c7086">│</span> <span foreground="#74d4ff">thinking</span>` — Pango markup inline |
 | `class`  | Two entries: the state (`idle`, `active`, `attention`) and the mark (`logo-*`), as an array so waybar replaces the whole list on each update |
 | `sessions` | Full session snapshot (panel consumers; ignored by waybar)                                     |
 
@@ -148,7 +148,7 @@ The **status word** is colored by the daemon using the [Catppuccin](https://catp
 
 | State | Word | Icon | Mocha | Latte |
 |-------|------|------|-------|-------|
-| `working` | `thinking`, or the tool | `md-thought_bubble` / per tool | `#74c7ec` sapphire | `#209fb5` |
+| `working` | `thinking`, or the tool | `md-thought_bubble` / per tool | `#74d4ff` sky-300 | `#0084d1` |
 | `waiting-approval` | `awaiting approval` | `fa-question` | `#fab387` peach | `#fe640b` |
 | `awaiting-input` | `awaiting answer` | `fa-question` | `#b4befe` lavender | `#7287fd` |
 | `plan-ready` | `plan ready` | `fa-question` | `#cba6f7` mauve | `#8839ef` |

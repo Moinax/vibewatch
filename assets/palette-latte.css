@@ -34,7 +34,10 @@
 
 @define-color cat_green    #40a02b;
 @define-color cat_peach    #fe640b;
-@define-color cat_sapphire #209fb5;
+/* Deliberately off the Catppuccin ramp: T3Code's own Working blue (Tailwind
+   sky-600), so a busy agent reads the same colour in the bar, the panel and
+   the editor it came from. Sapphire (#209fb5) was the nearest token. */
+@define-color cat_working #0084d1;
 @define-color cat_lavender #7287fd;
 @define-color cat_mauve    #8839ef;
 @define-color cat_blue     #1e66f5;

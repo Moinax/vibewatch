@@ -231,9 +231,9 @@ window.vibewatch-panel {
 }
 
 .indicator.working {
-    color: @cat_sapphire;
-    text-shadow: 0 0 6px alpha(@cat_sapphire, 0.7),
-                 0 0 12px alpha(@cat_sapphire, 0.3);
+    color: @cat_working;
+    text-shadow: 0 0 6px alpha(@cat_working, 0.7),
+                 0 0 12px alpha(@cat_working, 0.3);
 }
 
 /* The attention dot breathes so a blocked agent pulls the eye even in a
@@ -338,7 +338,7 @@ window.vibewatch-panel {
 }
 
 .action-line.working {
-    color: @cat_sapphire;
+    color: @cat_working;
 }
 
 /* The three asks carry the extra weight and the glow: they are the only lines
@@ -382,8 +382,8 @@ window.vibewatch-panel {
 }
 
 .status-badge.working {
-    color: @cat_sapphire;
-    background-color: alpha(@cat_sapphire, 0.10);
+    color: @cat_working;
+    background-color: alpha(@cat_working, 0.10);
 }
 
 .status-badge.waiting-approval {

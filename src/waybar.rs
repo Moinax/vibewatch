@@ -14,7 +14,8 @@ use crate::session::{Session, SessionStatus, StateKind};
 /// green to take it. Warm = act, blue = busy, green = resolved, grey = nothing.
 /// The reasoning behind that assignment is on [`StateKind`].
 struct Palette {
-    /// Sapphire. Thinking and executing both, the way T3Code paints Working
+    /// T3Code's own Working blue — Tailwind sky-300 on dark, sky-600 on light
+    /// (the pairing T3Code itself uses). Thinking and executing both, the way T3Code paints Working
     /// and Connecting one colour: the machine is busy, there is nothing here
     /// for you, look away. Which tool is running is on the glyph beside it.
     working: &'static str,
@@ -45,7 +46,7 @@ struct Palette {
 }
 
 const MOCHA: Palette = Palette {
-    working: "#74c7ec",  // sapphire
+    working: "#74d4ff",  // sky-300
     approval: "#fab387", // peach
     input: "#b4befe",    // lavender
     plan: "#cba6f7",     // mauve
@@ -55,7 +56,7 @@ const MOCHA: Palette = Palette {
 };
 
 const LATTE: Palette = Palette {
-    working: "#209fb5",  // sapphire
+    working: "#0084d1",  // sky-600
     approval: "#fe640b", // peach
     input: "#7287fd",    // lavender
     plan: "#8839ef",     // mauve
@@ -385,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn test_thinking_uses_sapphire_dark() {
+    fn test_thinking_uses_the_working_blue_dark() {
         let sessions = vec![make_named(
             "dotfiles",
             AgentKind::ClaudeCode,
@@ -395,7 +396,7 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "dotfiles {} <span foreground=\"#74c7ec\">\u{f07f6} thinking</span>",
+                "dotfiles {} <span foreground=\"#74d4ff\">\u{f07f6} thinking</span>",
                 SEP_DARK
             )
         );
@@ -404,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn test_thinking_uses_sapphire_light() {
+    fn test_thinking_uses_the_working_blue_light() {
         let sessions = vec![make_named(
             "dotfiles",
             AgentKind::ClaudeCode,
@@ -414,7 +415,7 @@ mod tests {
         assert_eq!(
             status.text,
             "dotfiles <span foreground=\"#8c8fa1\">\u{2502}</span> \
-             <span foreground=\"#209fb5\">\u{f07f6} thinking</span>"
+             <span foreground=\"#0084d1\">\u{f07f6} thinking</span>"
         );
     }
 
@@ -430,7 +431,7 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "vibewatch {} <span foreground=\"#74c7ec\">\u{f120} exec</span>  \
+                "vibewatch {} <span foreground=\"#74d4ff\">\u{f120} exec</span>  \
                  <span foreground=\"#cdd6f4\">+1</span>",
                 SEP_DARK
             )
@@ -496,7 +497,7 @@ mod tests {
         ];
         let s = dark(&sessions);
         assert_eq!(s.name, "vibewatch");
-        assert_eq!(s.state, "<span foreground=\"#74c7ec\">\u{f120} exec</span>");
+        assert_eq!(s.state, "<span foreground=\"#74d4ff\">\u{f120} exec</span>");
         assert_eq!(s.count, "<span foreground=\"#cdd6f4\">+1</span>");
         assert!(!payload_part(&s, StatusPart::Count).contains("empty"));
         for piece in [&s.name, &s.state, &s.count] {
@@ -661,7 +662,7 @@ mod tests {
         for (flavour, css, palette) in [("mocha", MOCHA_CSS, &MOCHA), ("latte", LATTE_CSS, &LATTE)]
         {
             for (field, ink, name) in [
-                ("working", palette.working, "cat_sapphire"),
+                ("working", palette.working, "cat_working"),
                 ("approval", palette.approval, "cat_peach"),
                 ("input", palette.input, "cat_lavender"),
                 ("plan", palette.plan, "cat_mauve"),
@@ -712,7 +713,7 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "dotfiles {} <span foreground=\"#74c7ec\">\u{f07f6} thinking</span>",
+                "dotfiles {} <span foreground=\"#74d4ff\">\u{f07f6} thinking</span>",
                 SEP_DARK
             )
         );
@@ -836,7 +837,7 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "dotfiles {} <span foreground=\"#74c7ec\">\u{f120} A&amp;B&lt;x&gt;</span>",
+                "dotfiles {} <span foreground=\"#74d4ff\">\u{f120} A&amp;B&lt;x&gt;</span>",
                 SEP_DARK
             )
         );
@@ -851,7 +852,7 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "dotfiles {} <span foreground=\"#74c7ec\">\u{f120} Bash</span>",
+                "dotfiles {} <span foreground=\"#74d4ff\">\u{f120} Bash</span>",
                 SEP_DARK
             )
         );

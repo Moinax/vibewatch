@@ -6,7 +6,7 @@
  * palette (Mocha when the system is in dark mode, Latte otherwise). One hue per
  * state — see `StateKind` in src/session.rs:
  *
- *   sapphire   working          the machine is busy; nothing here for you
+ *   sky blue   working            the machine is busy; nothing here for you
  *   peach      awaiting approval  a permission gate is blocking
  *   lavender   awaiting answer    a question is blocking
  *   mauve      plan ready         a plan wants a verdict
