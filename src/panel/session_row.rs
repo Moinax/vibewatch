@@ -3,7 +3,7 @@ use gtk4 as gtk;
 use libadwaita as adw;
 
 use crate::compositor::niri::NiriWindow;
-use crate::session::{describe_tool, prettify_tool_name, Session, SessionStatus};
+use crate::session::{describe_tool, prettify_tool_name, Session, SessionStatus, StateKind};
 
 /// Build a ListBoxRow widget for a single session.
 ///
@@ -250,10 +250,16 @@ fn build_choice_bar(request_id: String, choices: &[crate::session::ApprovalChoic
 /// Maximum characters of prompt/agent text to render before ellipsizing.
 const DESCRIBE_MAX_CHARS: usize = 60;
 
-/// First content line: the freshest of "live tool" / "last prompt" / "last
-/// agent text" / "last completed tool". Returns `None` only when nothing has
-/// been captured yet. A completed tool stays visible as the "last event"
-/// until a newer prompt or agent sentence arrives.
+/// First content line: what the agent is doing while it works, and what it
+/// last said once it stops. Returns `None` only when nothing has been captured
+/// yet.
+///
+/// Three rules, in order. A live tool wins while one is running — that is the
+/// work, and its command or file is the most useful thing on the card. With
+/// the turn over, the agent's closing sentence wins, whatever else happened
+/// after it. Mid-turn, the freshest of prompt / agent text / completed tool
+/// wins, so a completed tool stays visible as the "last event" until something
+/// newer lands.
 pub(crate) fn top_line(session: &Session) -> Option<String> {
     if matches!(
         session.status,
@@ -261,6 +267,22 @@ pub(crate) fn top_line(session: &Session) -> Option<String> {
     ) {
         if let Some(tool) = session.current_tool.as_deref() {
             return Some(render_tool(tool, session.tool_detail.as_deref(), true));
+        }
+    }
+
+    // Turn over — the sign-off outranks freshness. The newest *event* on a
+    // finished session is routinely not the answer: the tool it ran last, or a
+    // background task reporting in seconds later. Both replaced "what did it
+    // say" with "what happened last", which is the one question the row does
+    // not need to answer once the agent is done.
+    //
+    // Asked of `state_kind` rather than of `status` directly, like the CSS
+    // class above: that match is exhaustive, so a status added later is
+    // classified there — once — instead of falling through this test as `false`
+    // and quietly putting the row back on whatever landed last.
+    if matches!(session.state_kind(), StateKind::Resting | StateKind::Done) {
+        if let Some(text) = session.last_agent_text.as_deref() {
+            return Some(render_agent(session, text));
         }
     }
 
@@ -299,32 +321,40 @@ pub(crate) fn top_line(session: &Session) -> Option<String> {
 
 fn render_tool(tool: &str, detail: Option<&str>, present: bool) -> String {
     if let Some(d) = detail {
-        return truncate(&describe_tool(tool, d, present), DESCRIBE_MAX_CHARS);
+        return one_line(&describe_tool(tool, d, present), DESCRIBE_MAX_CHARS);
     }
     let verb = if present { "Running" } else { "Ran" };
     format!("{} {}", verb, prettify_tool_name(tool))
 }
 
 fn render_user(text: &str) -> String {
-    format!("You: \"{}\"", truncate(text, DESCRIBE_MAX_CHARS))
+    format!("You: \"{}\"", one_line(text, DESCRIBE_MAX_CHARS))
 }
 
 fn render_agent(session: &Session, text: &str) -> String {
     format!(
         "{}: \"{}\"",
         session.agent.short_name(),
-        truncate(text, DESCRIBE_MAX_CHARS),
+        one_line(text, DESCRIBE_MAX_CHARS),
     )
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max.saturating_sub(3)).collect();
-        out.push_str("...");
-        out
+/// Collapse every run of whitespace into single spaces, then truncate to `max`
+/// characters with an ellipsis.
+///
+/// The row's label ellipsizes horizontally but still honours newlines, so one
+/// multi-line prompt or heredoc command grew the card by a row per line and
+/// pushed every other session down the panel. Flattening belongs here rather
+/// than in each caller: every string the row renders is a one-line summary,
+/// without exception.
+fn one_line(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        return flat;
     }
+    let mut out: String = flat.chars().take(max.saturating_sub(3)).collect();
+    out.push_str("...");
+    out
 }
 
 fn focus_session(window_id: Option<&str>, pid: u32, t3_thread_id: Option<&str>) {
@@ -533,8 +563,9 @@ mod tests {
     }
 
     #[test]
-    fn top_line_user_wins_when_newer() {
+    fn top_line_user_wins_when_newer_mid_turn() {
         let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Thinking;
         s.last_prompt = Some("please do X".into());
         s.last_prompt_at = Some(200);
         s.last_agent_text = Some("done".into());
@@ -545,11 +576,70 @@ mod tests {
     #[test]
     fn top_line_agent_wins_when_newer_or_equal() {
         let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Thinking;
         s.last_prompt = Some("please do X".into());
         s.last_prompt_at = Some(100);
         s.last_agent_text = Some("done".into());
         s.last_agent_text_at = Some(100);
         assert_eq!(top_line(&s).as_deref(), Some("Claude: \"done\""));
+    }
+
+    #[test]
+    fn top_line_idle_shows_the_sign_off_over_a_newer_prompt() {
+        // The turn is over and something was submitted after it — a background
+        // task reporting in, or the user typing while the agent was still
+        // wrapping up. What the agent said is what the row is for.
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Idle;
+        s.last_agent_text = Some("Ready to review.".into());
+        s.last_agent_text_at = Some(100);
+        s.last_prompt = Some("also update the tests".into());
+        s.last_prompt_at = Some(300);
+        assert_eq!(
+            top_line(&s).as_deref(),
+            Some("Claude: \"Ready to review.\"")
+        );
+    }
+
+    #[test]
+    fn top_line_idle_shows_the_sign_off_over_the_last_tool() {
+        // Stop refreshes the sentence, but only stamps it when the text
+        // *changed* — so a turn that ended on a tool call leaves the tool
+        // holding the newest timestamp.
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Idle;
+        s.last_agent_text = Some("All green.".into());
+        s.last_agent_text_at = Some(100);
+        s.last_tool = Some("Bash".into());
+        s.last_tool_detail = Some("cargo test".into());
+        s.last_tool_at = Some(300);
+        assert_eq!(top_line(&s).as_deref(), Some("Claude: \"All green.\""));
+    }
+
+    #[test]
+    fn top_line_idle_without_a_sentence_still_falls_back() {
+        // Cursor and WebStorm have no readable transcript, so an idle row
+        // there has only its tool history to show.
+        let mut s = mk(AgentKind::Cursor);
+        s.status = SessionStatus::Idle;
+        s.last_tool = Some("Bash".into());
+        s.last_tool_detail = Some("cargo test".into());
+        s.last_tool_at = Some(300);
+        assert_eq!(top_line(&s).as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn top_line_flattens_newlines_to_a_single_line() {
+        // A multi-line prompt or heredoc command must not grow the card: the
+        // label honours newlines even with ellipsizing on.
+        let mut s = mk(AgentKind::ClaudeCode);
+        s.status = SessionStatus::Thinking;
+        s.last_prompt = Some("fix the deploy\nthen ship it".into());
+        s.last_prompt_at = Some(100);
+        assert_eq!(
+            top_line(&s).as_deref(),
+            Some("You: \"fix the deploy then ship it\"")
+        );
     }
 
     #[test]

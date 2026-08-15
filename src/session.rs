@@ -69,6 +69,30 @@ pub fn spawns_subagent(tool: &str) -> bool {
     tool == TOOL_AGENT || tool == TOOL_TASK
 }
 
+/// True when a `UserPromptSubmit` prompt is the harness talking, not the user:
+/// a background task reporting in, injected context, the output of a local
+/// command. All of them fire the hook exactly as typed text does.
+///
+/// The event is still real — the agent *is* working again, so the status
+/// change stands — but the text is an XML envelope nobody typed, and the panel
+/// promised a sentence. A finished background task is the common one: it lands
+/// as `<task-notification>` seconds after the agent signed off, which made it
+/// the freshest thing on the session and put `You: "<task-notification>` on the
+/// card in place of what the agent had just said.
+///
+/// Matched on the opening tag alone. The payload carries its own newlines and
+/// nested tags, so anything looser is guesswork.
+pub fn is_synthetic_prompt(prompt: &str) -> bool {
+    const TAGS: &[&str] = &[
+        "<task-notification>",
+        "<system-reminder>",
+        "<local-command-stdout>",
+        "<user-prompt-submit-hook>",
+    ];
+    let head = prompt.trim_start();
+    TAGS.iter().any(|tag| head.starts_with(tag))
+}
+
 /// `/proc/<pid>/comm` values we accept as "this PID is still Claude Code".
 /// Consulted through [`identify_agent_pid`], which the scanner's discovery and
 /// the registry's liveness check both go through, so a rename here updates both
@@ -1819,6 +1843,28 @@ pub fn prettify_tool_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synthetic_prompt_spots_a_background_task_reporting_in() {
+        let prompt = "<task-notification>\n<task-id>b3k3non94</task-id>\n<status>failed</status>\n</task-notification>";
+        assert!(is_synthetic_prompt(prompt));
+    }
+
+    #[test]
+    fn synthetic_prompt_spots_an_injected_reminder() {
+        assert!(is_synthetic_prompt(
+            "<system-reminder>be brief</system-reminder>"
+        ));
+    }
+
+    #[test]
+    fn synthetic_prompt_leaves_typed_text_alone() {
+        assert!(!is_synthetic_prompt("fix the deploy"));
+        // A prompt that merely mentions one is still the user typing.
+        assert!(!is_synthetic_prompt(
+            "what does <task-notification> mean in the hook payload?"
+        ));
+    }
 
     #[test]
     fn programmatic_args_detect_no_session_persistence() {

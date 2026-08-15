@@ -766,8 +766,15 @@ async fn handle_connection(
                         session.pending_approval = None;
                     }
                     session.status = SessionStatus::Thinking;
-                    session.last_prompt = prompt;
-                    session.last_prompt_at = Some(session::now_epoch());
+                    // Only what a human actually typed becomes `last_prompt` —
+                    // see [`session::is_synthetic_prompt`]. A harness envelope
+                    // still means the agent picked the work back up, so the
+                    // status above stands; what it must not do is overwrite the
+                    // last thing the user said with its own markup.
+                    if let Some(text) = prompt.filter(|p| !session::is_synthetic_prompt(p)) {
+                        session.last_prompt = Some(text);
+                        session.last_prompt_at = Some(session::now_epoch());
+                    }
                     session.current_tool = None;
                     session.tool_detail = None;
                     // A new prompt is a clean slate: an agent still running from
