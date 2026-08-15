@@ -34,34 +34,32 @@ fn write_json(path: &Path, value: &Value) -> Result<()> {
     fs::write(path, out).with_context(|| format!("writing {}", path.display()))
 }
 
-pub fn apply_hooks_merge(path: &Path, dry_run: bool) -> Result<()> {
+/// Like every `apply_*_install`, returns whether it changed (or would change)
+/// anything.
+pub fn apply_hooks_merge(path: &Path, dry_run: bool) -> Result<bool> {
     if !path.exists() {
         eprintln!(
             "vibewatch install: {} does not exist yet; skipping hook merge. \
              Run vibewatch install again after Claude Code creates it.",
             path.display()
         );
-        return Ok(());
+        return Ok(false);
     }
     let original = read_json(path)?;
     let merged = merge_hooks(original.clone());
     if merged == original {
-        eprintln!(
-            "vibewatch install: hooks already present in {}",
-            path.display()
-        );
-        return Ok(());
+        return Ok(false);
     }
     if dry_run {
         eprintln!(
             "vibewatch install: [dry-run] would merge hooks into {}",
             path.display()
         );
-        return Ok(());
+        return Ok(true);
     }
     write_json(path, &merged)?;
     eprintln!("vibewatch install: merged hooks into {}", path.display());
-    Ok(())
+    Ok(true)
 }
 
 pub fn apply_hooks_unmerge(path: &Path, dry_run: bool) -> Result<()> {
@@ -101,15 +99,19 @@ pub fn run(opts: Options) -> Result<()> {
         apply_waybar_uninstall(opts.dry_run)?;
         eprintln!("vibewatch install: uninstall complete");
     } else {
-        if !opts.no_service {
-            apply_service_install(opts.dry_run)?;
-        }
-        if !opts.no_hooks {
-            apply_hooks_merge(&path, opts.dry_run)?;
-        }
-        apply_waybar_install(opts.dry_run)?;
-        apply_logos_install(opts.dry_run)?;
-        if !opts.dry_run {
+        // Separate bindings, never one `||` chain: every step has to run, and
+        // `||` would short-circuit the rest as soon as one reported a change.
+        let service = !opts.no_service && apply_service_install(opts.dry_run)?;
+        let hooks = !opts.no_hooks && apply_hooks_merge(&path, opts.dry_run)?;
+        let waybar = apply_waybar_install(opts.dry_run)?;
+        let logos = apply_logos_install(opts.dry_run)?;
+        // A re-run that changed nothing is already installed: the manual steps
+        // are a first-install checklist, not a status report.
+        if !(service || hooks || waybar || logos) {
+            // "nothing left to set up", not "nothing to do": the service step
+            // can still have started a stopped unit on the way here.
+            eprintln!("vibewatch install: already installed, nothing left to set up");
+        } else if !opts.dry_run {
             print_manual_steps();
         }
     }
@@ -257,22 +259,37 @@ fn systemd_unit_path() -> PathBuf {
         .join(SERVICE_NAME)
 }
 
-fn has_systemctl() -> bool {
+/// `systemctl <args>` exited 0. `.output()` rather than `.status()` so the
+/// queries' `enabled` / `active` stdout doesn't leak onto the terminal.
+fn systemctl_ok(args: &[&str]) -> bool {
     Command::new("systemctl")
-        .arg("--version")
+        .args(args)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
-pub fn apply_service_install(dry_run: bool) -> Result<()> {
+fn has_systemctl() -> bool {
+    systemctl_ok(&["--version"])
+}
+
+pub fn apply_service_install(dry_run: bool) -> Result<bool> {
     if !has_systemctl() {
         eprintln!("vibewatch install: systemctl not found; skipping service install");
-        return Ok(());
+        return Ok(false);
     }
     let path = systemd_unit_path();
     let current = fs::read_to_string(&path).unwrap_or_default();
     let needs_write = current != SERVICE_BODY;
+    // Skip the work when the unit is already up: `daemon-reload` re-parses every
+    // user unit (~600ms) and `enable --now` is a full bus transaction even as a
+    // no-op (~300ms), against ~5ms for each read-only query.
+    if !needs_write
+        && systemctl_ok(&["--user", "is-enabled", SERVICE_NAME])
+        && systemctl_ok(&["--user", "is-active", SERVICE_NAME])
+    {
+        return Ok(false);
+    }
     if dry_run {
         if needs_write {
             eprintln!(
@@ -284,7 +301,7 @@ pub fn apply_service_install(dry_run: bool) -> Result<()> {
             "vibewatch install: [dry-run] would enable --now {}",
             SERVICE_NAME
         );
-        return Ok(());
+        return Ok(true);
     }
     if needs_write {
         if let Some(parent) = path.parent() {
@@ -309,7 +326,11 @@ pub fn apply_service_install(dry_run: bool) -> Result<()> {
         ),
         Err(e) => eprintln!("vibewatch install: systemctl enable --now failed: {e}"),
     }
-    Ok(())
+    // Only the unit file counts as a change, never the enable: a machine whose
+    // service is stopped, masked, or has no user bus falls through the guard
+    // above on *every* run, and reporting that as a change would re-print the
+    // first-install checklist forever — on exactly the machines it least suits.
+    Ok(needs_write)
 }
 
 pub fn apply_service_uninstall(dry_run: bool) -> Result<()> {
@@ -346,22 +367,22 @@ fn waybar_snippet_path() -> PathBuf {
         .join("waybar-module.jsonc")
 }
 
-pub fn apply_waybar_install(dry_run: bool) -> Result<()> {
+pub fn apply_waybar_install(dry_run: bool) -> Result<bool> {
     let path = waybar_snippet_path();
     let current = fs::read_to_string(&path).unwrap_or_default();
     if current == WAYBAR_SNIPPET {
-        return Ok(());
+        return Ok(false);
     }
     if dry_run {
         eprintln!("vibewatch install: [dry-run] would drop {}", path.display());
-        return Ok(());
+        return Ok(true);
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(&path, WAYBAR_SNIPPET)?;
     eprintln!("vibewatch install: wrote {}", path.display());
-    Ok(())
+    Ok(true)
 }
 
 /// The agent marks the widget wears, keyed by the `logo-*` class that selects
@@ -405,7 +426,7 @@ fn logos_dir() -> PathBuf {
 /// `~/.config/waybar/style*.css`, so the stylesheet can reach them with a
 /// relative `url("../vibewatch/logos/claude.svg")` and needs no absolute home
 /// path baked into it.
-pub fn apply_logos_install(dry_run: bool) -> Result<()> {
+pub fn apply_logos_install(dry_run: bool) -> Result<bool> {
     let dir = logos_dir();
     let css = logo_css_path();
     let stale: Vec<&(&str, &str)> = LOGOS
@@ -414,7 +435,7 @@ pub fn apply_logos_install(dry_run: bool) -> Result<()> {
         .collect();
     let css_stale = fs::read_to_string(&css).unwrap_or_default() != LOGO_CSS;
     if stale.is_empty() && !css_stale {
-        return Ok(());
+        return Ok(false);
     }
     if dry_run {
         eprintln!(
@@ -423,7 +444,7 @@ pub fn apply_logos_install(dry_run: bool) -> Result<()> {
             dir.display(),
             if css_stale { "updated" } else { "current" },
         );
-        return Ok(());
+        return Ok(true);
     }
     fs::create_dir_all(&dir)?;
     for (name, body) in &stale {
@@ -440,7 +461,7 @@ pub fn apply_logos_install(dry_run: bool) -> Result<()> {
             dir.display()
         );
     }
-    Ok(())
+    Ok(true)
 }
 
 pub fn apply_logos_uninstall(dry_run: bool) -> Result<()> {
