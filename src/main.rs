@@ -472,6 +472,9 @@ struct AnnounceTiming {
     idle_debounce: std::time::Duration,
     /// Patience for the sub-agents a held turn is waiting on.
     hold_ceiling: std::time::Duration,
+    /// Quiet required of a permission request before it counts as one a human
+    /// will have to answer.
+    approval_debounce: std::time::Duration,
 }
 
 impl AnnounceTiming {
@@ -479,6 +482,7 @@ impl AnnounceTiming {
         Self {
             idle_debounce: config.idle_debounce(),
             hold_ceiling: config.hold_ceiling(),
+            approval_debounce: config.approval_debounce(),
         }
     }
 }
@@ -502,6 +506,62 @@ fn announce_finish(sound_player: &SoundPlayer, panel_hooks: &PanelHooks, why: &s
     if let Some(ref show) = panel_hooks.finish {
         show();
     }
+}
+
+/// Announce that an agent is blocked on the user: the chime, and the panel
+/// sliding open with the blocked row on top.
+fn announce_approval(sound_player: &SoundPlayer, panel_hooks: &PanelHooks, why: &str) {
+    eprintln!("vibewatch: announcing approval ({why})");
+    sound_player.play(SoundEvent::ApprovalNeeded);
+    if let Some(ref show) = panel_hooks.show {
+        show();
+    }
+}
+
+/// Announce a permission request, once it has stayed outstanding for
+/// `approval_debounce`.
+///
+/// The hook fires when a decision is *asked for*, which is not the same as a
+/// human being asked: an allowlist entry or a mode that auto-accepts resolves
+/// it in milliseconds, and the request that never reached anyone is exactly the
+/// chime-plus-pop-up being fixed here. Same rule as a finish — suppression
+/// needs positive evidence the session moved on, so a request whose session has
+/// left the registry is announced rather than swallowed.
+fn schedule_approval_alert(
+    registry: &SessionRegistry,
+    sound_player: &Arc<SoundPlayer>,
+    panel_hooks: &PanelHooks,
+    sid: String,
+    request_id: Option<String>,
+    approval_debounce: std::time::Duration,
+) {
+    if approval_debounce.is_zero() {
+        announce_approval(sound_player, panel_hooks, "undebounced");
+        return;
+    }
+    let registry = registry.clone();
+    let sound_player = sound_player.clone();
+    let panel_hooks = panel_hooks.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(approval_debounce).await;
+        match registry.get(&sid) {
+            // Still blocked, and on the very request this was scheduled for —
+            // a second request arriving in the window brings its own alert.
+            Some(s)
+                if s.status == SessionStatus::WaitingApproval
+                    && request_id.as_ref().is_none_or(|rid| {
+                        s.pending_approval.as_ref().is_some_and(|p| &p.request_id == rid)
+                    }) =>
+            {
+                announce_approval(&sound_player, &panel_hooks, "outstanding")
+            }
+            Some(s) => eprintln!(
+                "vibewatch: approval alert for {sid} superseded (status {}, resolved without asking)",
+                s.status.css_class()
+            ),
+            None => announce_approval(&sound_player, &panel_hooks, "exited"),
+        }
+    });
 }
 
 /// What a `Stop` turned out to mean, once the session behind it was found.
@@ -828,7 +888,14 @@ async fn handle_connection(
                             session.touch();
                             registry.register(session);
                             status_notify.notify_waiters();
-                            sound_player.play(SoundEvent::ApprovalNeeded);
+                            schedule_approval_alert(
+                                &registry,
+                                &sound_player,
+                                &panel_hooks,
+                                session_id.clone(),
+                                None,
+                                timing.approval_debounce,
+                            );
                         }
                         continue;
                     }
@@ -866,10 +933,14 @@ async fn handle_connection(
                 } else {
                     log_drop("PermissionRequest", &session_id, pid);
                 }
-                sound_player.play(SoundEvent::ApprovalNeeded);
-                if let Some(ref show) = panel_hooks.show {
-                    show();
-                }
+                schedule_approval_alert(
+                    &registry,
+                    &sound_player,
+                    &panel_hooks,
+                    session_id.clone(),
+                    Some(request_id.clone()),
+                    timing.approval_debounce,
+                );
 
                 // No choices ⇒ the hook already short-circuited with `ask`
                 // and closed the socket; nothing to answer back.

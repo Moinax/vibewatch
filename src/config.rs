@@ -39,6 +39,18 @@ pub struct GeneralConfig {
     /// and cancels this wait — only a session that has gone completely still is
     /// released. `0` lets a held turn stay silent indefinitely.
     pub hold_ceiling_ms: u64,
+    /// How long a permission request has to still be outstanding before it is
+    /// announced, in milliseconds.
+    ///
+    /// The hook fires whenever a decision is *asked for*, not when it reaches
+    /// the user — an allowlist entry, a mode that auto-accepts, or T3 Code
+    /// answering on its own resolves it without anyone ever seeing a prompt,
+    /// and announcing on arrival means a chime and a panel pop for a session
+    /// that never stopped working. Measured on this machine: auto-resolved
+    /// requests come back in 7-130ms, while one actually waiting on the user
+    /// sits for minutes — so the two are trivially separable by waiting.
+    /// `0` restores announcing on every request.
+    pub approval_debounce_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,6 +141,7 @@ impl Default for GeneralConfig {
             socket_path: None,
             idle_debounce_ms: 3000,
             hold_ceiling_ms: 300_000,
+            approval_debounce_ms: 400,
         }
     }
 }
@@ -179,6 +192,13 @@ impl Config {
         std::time::Duration::from_millis(self.general.hold_ceiling_ms)
     }
 
+    /// How long a permission request must stay outstanding before it is
+    /// announced. See [`GeneralConfig::approval_debounce_ms`]; zero announces
+    /// on arrival.
+    pub fn approval_debounce(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.general.approval_debounce_ms)
+    }
+
     /// Returns the IPC socket path.
     /// Uses `$XDG_RUNTIME_DIR/vibewatch.sock` if available,
     /// otherwise falls back to `/tmp/vibewatch-$USER.sock`.
@@ -219,6 +239,7 @@ mod tests {
         assert!(config.general.socket_path.is_none());
         assert_eq!(config.general.idle_debounce_ms, 3000);
         assert_eq!(config.general.hold_ceiling_ms, 300_000);
+        assert_eq!(config.general.approval_debounce_ms, 400);
         assert!(config.sounds.enabled);
         assert_eq!(config.sounds.approval_needed, "builtin:chime");
         assert_eq!(config.sounds.idle, "builtin:success");
@@ -244,6 +265,7 @@ mod tests {
         assert_eq!(config.general.compositor, "hyprland");
         assert_eq!(config.general.idle_debounce_ms, 3000);
         assert_eq!(config.general.hold_ceiling_ms, 300_000);
+        assert_eq!(config.general.approval_debounce_ms, 400);
     }
 
     #[test]
