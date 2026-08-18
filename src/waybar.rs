@@ -355,7 +355,7 @@ pub fn print_waybar_part(sessions: &[Session], part: StatusPart) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{AgentKind, SessionStatus};
+    use crate::session::{AgentKind, SessionStatus, ICON_DONE};
 
     /// Build a session with a pinned `session_name` so assertions don't
     /// depend on `/proc/<pid>/cwd` resolution inside `display_name()`.
@@ -456,9 +456,9 @@ mod tests {
         assert_eq!(
             status.text,
             format!(
-                "vibewatch {} <span foreground=\"#a6e3a1\">\u{2714} done</span>  \
+                "vibewatch {} <span foreground=\"#a6e3a1\">{} done</span>  \
                  <span foreground=\"#cdd6f4\">+1</span>",
-                SEP_DARK
+                SEP_DARK, ICON_DONE
             )
         );
         assert_eq!(status.logo, "logo-claude");
@@ -553,7 +553,7 @@ mod tests {
             "expected the session named, got {:?}",
             status.text
         );
-        assert!(status.text.contains("\u{2714} done"));
+        assert!(status.text.contains(&format!("{ICON_DONE} done")));
     }
 
     #[test]

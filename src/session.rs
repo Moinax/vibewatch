@@ -23,7 +23,7 @@ pub const TOOL_TASK: &str = "Task";
 /// is why `md-brain` is not here despite being the obvious choice for thinking.
 /// Being Nerd Font glyphs, they need one in the font stack; the geometric shapes
 /// these replaced did not. See the note on `.indicator` in `assets/style.css`.
-pub const ICON_DONE: &str = "\u{2714}"; // heavy check — plain Unicode, unlike the rest
+pub const ICON_DONE: &str = "\u{f012c}"; // md-check — U+2714 fell back to DejaVu, 5px taller
 pub const ICON_THINKING: &str = "\u{f07f6}"; // md-thought_bubble
 pub const ICON_APPROVAL: &str = "\u{f128}"; // fa-question
 pub const ICON_IDLE: &str = "\u{f04b2}"; // md-sleep, a literal zᶻᶻ
@@ -2241,7 +2241,7 @@ mod tests {
         // A finish is its own shape too, distinct from all of the above.
         let mut done = Session::new("s".into(), AgentKind::ClaudeCode, 1);
         done.mark_finished();
-        assert_eq!(done.indicator_glyph(), "\u{2714}");
+        assert_eq!(done.indicator_glyph(), "\u{f012c}");
         assert!(!seen.contains_key(done.indicator_glyph()));
         // And the word must not repeat it: a surface with an indicator column
         // would then draw the check twice on one row, which it did.
