@@ -28,6 +28,10 @@ pub const ICON_THINKING: &str = "\u{f07f6}"; // md-thought_bubble
 pub const ICON_APPROVAL: &str = "\u{f128}"; // fa-question
 pub const ICON_IDLE: &str = "\u{f04b2}"; // md-sleep, a literal zᶻᶻ
 pub const ICON_STOPPED: &str = "\u{00d7}"; // multiplication sign
+/// md-radar. A sweep rather than an eye: the panel header already wears an
+/// eye for its own visibility toggle, and two eyes on one surface meaning two
+/// different things is worse than a glyph nobody has to name.
+pub const ICON_MONITORING: &str = "\u{f0437}";
 /// Worn by any tool without an entry in [`tool_icon`], MCP servers aside.
 pub const ICON_TOOL_DEFAULT: &str = "\u{f120}"; // fa-terminal
 
@@ -401,6 +405,10 @@ pub enum StateKind {
     AwaitingInput,
     /// A plan is on the table and wants a verdict.
     PlanReady,
+    /// The turn ended, but work the agent launched is still running and will
+    /// re-invoke it — a background shell it parked on. Not a finish, and not
+    /// activity either: nothing is being written right now.
+    Monitoring,
     /// The turn ended and the finish has not been acknowledged yet.
     Done,
     /// Nothing to say: asleep, or seen by the scan and never heard from.
@@ -469,6 +477,7 @@ impl StateKind {
     pub fn css_class(&self) -> &'static str {
         match self {
             StateKind::Working => "working",
+            StateKind::Monitoring => "monitoring",
             StateKind::PendingApproval => "waiting-approval",
             StateKind::AwaitingInput => "awaiting-input",
             StateKind::PlanReady => "plan-ready",
@@ -691,6 +700,19 @@ pub struct Session {
     /// Daemon bookkeeping, never the wire.
     #[serde(skip)]
     pub pending_agents: u32,
+    /// `Bash` shells of this session still alive, as of the last time anything
+    /// counted them — see [`count_background_shells`], which is what a `Stop`
+    /// and every scan tick call. Non-zero only for work the agent launched with
+    /// `run_in_background` and parked itself on: it stopped, but the task will
+    /// re-invoke it when it exits, so the turn is not a finish.
+    ///
+    /// Derived from `/proc` rather than counted from hooks, which is what makes
+    /// it self-repairing: a task that dies unannounced, a daemon started
+    /// mid-sweep, a session adopted by the scanner — every one of them reads
+    /// correctly on the next tick, with nothing to reset. Daemon bookkeeping,
+    /// never the wire.
+    #[serde(skip)]
+    pub background_shells: u32,
     /// Set while `session_name` came from outside vibewatch — a multiplexer tab
     /// the user renamed by hand, pushed in with `SetSessionName`.
     ///
@@ -748,6 +770,7 @@ impl Session {
             finished_at: None,
             finish_seq: 0,
             pending_agents: 0,
+            background_shells: 0,
             name_from_outside: false,
             title_when_named: None,
             t3_thread_id: None,
@@ -815,6 +838,14 @@ impl Session {
         self.finish_seq = self.finish_seq.wrapping_add(1);
     }
 
+    /// Re-read what this session left running, from its own pid. The one way to
+    /// set the count on a `Session` you hold: the registry's
+    /// [`set_background_shells`](SessionRegistry::set_background_shells) is the
+    /// other, and it exists to catch the fall to zero that releases a finish.
+    pub fn refresh_background_shells(&mut self) {
+        self.background_shells = count_background_shells(self.pid);
+    }
+
     /// The agent launched a sub-agent, so its next stop is a wait, not a finish.
     pub fn launch_subagent(&mut self) {
         self.pending_agents += 1;
@@ -844,12 +875,61 @@ impl Session {
         std::mem::take(&mut self.pending_agents)
     }
 
+    /// Work the agent launched that is still running now that its turn has
+    /// ended — the reason a `Stop` is not always a finish. `None` when there is
+    /// none, which is the ordinary case.
+    ///
+    /// Two buckets, and T3 Code's vocabulary for them, whose sidebar had this
+    /// right while the panel was still calling all of it `done`
+    /// (`ThreadBackgroundLiveness` in its server): a sub-agent is the agent
+    /// itself, working somewhere else, so the session still reads `Working`; a
+    /// background shell is a task the agent parked on and will be re-invoked by,
+    /// which reads `Monitoring` — busy, but with nothing being written right
+    /// now. Agents win when both are outstanding, for the same reason: the
+    /// louder of the two states is the true one.
+    pub fn background_liveness(&self) -> Option<StateKind> {
+        if self.pending_agents > 0 {
+            Some(StateKind::Working)
+        } else if self.background_shells > 0 {
+            Some(StateKind::Monitoring)
+        } else {
+            None
+        }
+    }
+
+    /// True while a turn is actually under way — the agent is thinking, or has
+    /// a tool in flight.
+    ///
+    /// Not the same question as [`state_kind`](Self::state_kind) answering
+    /// `Working`, which is *also* what a stopped turn with sub-agents still out
+    /// reads as. A caller that means "is this agent mid-turn" wants this one;
+    /// asking `state_kind` would have it treat a parked agent as a busy one.
+    pub fn is_turn_running(&self) -> bool {
+        matches!(
+            self.status,
+            SessionStatus::Thinking | SessionStatus::Executing
+        )
+    }
+
     /// True when this session is a candidate to have its finish announced: it
     /// stopped, it has not picked the work back up, and nothing it launched is
     /// still running. Deliberately says nothing about *when* it stopped — that is
     /// the debounce's job, and [`Session::finish_seq`] identifies the turn.
+    ///
+    /// The same question as [`just_finished`](Self::just_finished), asked by the
+    /// sound instead of by the row, and delegated rather than spelled twice: the
+    /// two were written apart and drifted into the same expression, which is one
+    /// edit away from a chime for a turn the panel is not lighting.
     pub fn announceable(&self) -> bool {
-        self.status == SessionStatus::Idle && self.finished_at.is_some() && self.pending_agents == 0
+        self.just_finished()
+    }
+
+    /// The turn ended and has not been picked back up or acknowledged. Says
+    /// nothing about what the agent left running — that is what splits this into
+    /// [`just_finished`](Self::just_finished) and [`held_open`](Self::held_open),
+    /// which are exhaustive over it and mutually exclusive.
+    fn turn_ended(&self) -> bool {
+        self.status == SessionStatus::Idle && self.finished_at.is_some()
     }
 
     /// The user clicked this session's card: they are heading for the pane,
@@ -864,8 +944,24 @@ impl Session {
     /// the state is gated on it still being idle. The panel lights these
     /// rows, ranks them near the top, and stays open while any exists, so
     /// the agent that chimed can't scroll past unnoticed.
+    /// Background work holds this shut: the turn is stamped finished the moment
+    /// the agent stops, but a session that stopped only to wait on twelve runs
+    /// it launched has not finished anything, and saying so is what chimed and
+    /// lit the row while the work had half an hour left. The stamp stays — when
+    /// the last task exits and nothing picked the work back up, this opens on
+    /// its own and the finish lands then.
     pub fn just_finished(&self) -> bool {
-        self.status == SessionStatus::Idle && self.finished_at.is_some()
+        self.turn_ended() && self.background_liveness().is_none()
+    }
+
+    /// The mirror of [`just_finished`](Self::just_finished): the turn ended and
+    /// is being held open by work the agent left running. Between them they
+    /// split every stopped turn in two, which is what the hold ceiling needs —
+    /// "still waiting on the thing I was scheduled for" is not a question
+    /// `just_finished` can answer any more, now that it is false for both a
+    /// held turn and a turn nobody ever stopped.
+    pub fn held_open(&self) -> bool {
+        self.turn_ended() && self.background_liveness().is_some()
     }
 
     /// Human-readable name: session name > project folder > agent name.
@@ -959,9 +1055,10 @@ impl Session {
             // "idle" in `inline_status`, wears the idle glyph and bands with the
             // idle ones — it was green only in the bar, so a session nothing had
             // ever been heard from lit up as busy.
-            SessionStatus::Idle | SessionStatus::Running | SessionStatus::Stopped => {
-                StateKind::Resting
+            SessionStatus::Idle | SessionStatus::Running => {
+                self.background_liveness().unwrap_or(StateKind::Resting)
             }
+            SessionStatus::Stopped => StateKind::Resting,
         }
     }
 
@@ -990,7 +1087,14 @@ impl Session {
                 .map_or(ICON_TOOL_DEFAULT, tool_icon),
             SessionStatus::Thinking => ICON_THINKING,
             SessionStatus::WaitingApproval => ICON_APPROVAL,
-            SessionStatus::Idle | SessionStatus::Running => ICON_IDLE,
+            // The same fold as `state_kind` and `inline_status`, in the same
+            // arm: a parked turn's status is `Idle`, and the sleep glyph on a
+            // session with twelve runs outstanding is the lie the word was.
+            SessionStatus::Idle | SessionStatus::Running => match self.background_liveness() {
+                Some(StateKind::Monitoring) => ICON_MONITORING,
+                Some(_) => ICON_THINKING,
+                None => ICON_IDLE,
+            },
             SessionStatus::Stopped => ICON_STOPPED,
         }
     }
@@ -1013,8 +1117,14 @@ impl Session {
                 _ => "awaiting approval".to_string(),
             },
             SessionStatus::Thinking => "thinking".to_string(),
-            SessionStatus::Running => "idle".to_string(),
-            SessionStatus::Idle => "idle".to_string(),
+            // Idle is only idle once nothing the agent launched is still
+            // running — same fold as `state_kind`, so the word and the hue
+            // cannot end up describing two different sessions.
+            SessionStatus::Running | SessionStatus::Idle => match self.background_liveness() {
+                Some(StateKind::Monitoring) => "monitoring".to_string(),
+                Some(_) => "working".to_string(),
+                None => "idle".to_string(),
+            },
             SessionStatus::Stopped => "stopped".to_string(),
         }
     }
@@ -1049,7 +1159,7 @@ impl Session {
         match self.state_kind() {
             k if k.needs_user() => 0,
             StateKind::Done => 1,
-            StateKind::Working => 2,
+            StateKind::Working | StateKind::Monitoring => 2,
             _ if self.status == SessionStatus::Stopped => 4,
             _ => 3,
         }
@@ -1207,7 +1317,7 @@ impl SessionRegistry {
         // not worth interrupting that with, while a gate that stopped the agent
         // dead always is.
         let blocked = match thread.blocked {
-            Some(Ask::Plan) if session.state_kind() == StateKind::Working => None,
+            Some(Ask::Plan) if session.is_turn_running() => None,
             ask => ask,
         };
         session.blocked_on = blocked;
@@ -1322,6 +1432,23 @@ impl SessionRegistry {
         } else {
             false
         }
+    }
+
+    /// Record how many background shells a session has left, freshly counted.
+    ///
+    /// Returns the turn whose finish this released — the last background task
+    /// of a stopped turn exiting, which is the same edge as the last sub-agent
+    /// reporting in and is announced the same way, debounce included. `None`
+    /// every other tick, which is nearly all of them: the count has to have
+    /// *fallen* to zero, on a session that stopped and never picked the work
+    /// back up. A session that was re-invoked by its own task announces through
+    /// its next `Stop` instead, like any other turn.
+    pub fn set_background_shells(&self, id: &str, live: u32) -> Option<(String, u64)> {
+        let mut map = self.sessions.write().unwrap();
+        let session = map.get_mut(id)?;
+        let had = std::mem::replace(&mut session.background_shells, live);
+        (had > 0 && live == 0 && session.announceable())
+            .then(|| (session.id.clone(), session.finish_seq))
     }
 
     /// Look up a session by id; if missing and any session exists for the
@@ -1546,6 +1673,58 @@ pub fn parent_pid(pid: u32) -> Option<u32> {
     let rest = &stat[stat.rfind(')')? + 2..];
     let ppid: u32 = rest.split_whitespace().nth(1)?.parse().ok()?;
     (ppid > 1).then_some(ppid)
+}
+
+/// The mark every shell Claude Code's `Bash` tool spawns carries: the tool
+/// restores the session's shell state by sourcing a snapshot it wrote at
+/// startup, and that path is in the argv of every command it runs. Nothing else
+/// a session keeps as a child has it — an MCP server is spawned directly, and a
+/// hook runs in a plain shell that inherits none of this — so it is what tells a
+/// tool's shell apart from the rest of the process tree.
+const CLAUDE_BASH_MARKER: &str = "/.claude/shell-snapshots/snapshot-";
+
+/// Pure half of [`count_background_shells`], over one process's raw argv.
+fn is_claude_bash_shell(cmdline: &str) -> bool {
+    cmdline.contains(CLAUDE_BASH_MARKER)
+}
+
+/// How many of a Claude Code session's `Bash` shells are alive right now.
+///
+/// What makes this a count of *background* work is when it is asked, not what
+/// it looks at: a foreground `Bash` has been reaped before its tool result
+/// exists, and a `Stop` fires after the last of those, so a shell still standing
+/// when the turn ends is one the agent launched with `run_in_background` — the
+/// case Claude Code itself describes as "you will be notified when it
+/// completes", i.e. a turn that stopped in order to be re-invoked later.
+///
+/// Direct children only. A background shell's own descendants — the twelve
+/// `claude` runs of an eval sweep, say — are that shell's business, and counting
+/// them would report one parked task as a dozen.
+///
+/// Every thread, not just the main one, even though Node forks from its loop
+/// thread and in practice puts every child there: `/proc` files children under
+/// the thread that spawned them, so reading one thread's list is a bet on an
+/// implementation detail of somebody else's runtime. The whole sweep is a
+/// readdir and a few dozen procfs reads per session per tick.
+///
+/// A hook shell caught mid-flight would be a false positive. It costs a chime
+/// three seconds, not the chime: the next scan tick finds the shell gone and
+/// releases the finish exactly as a real background task's exit does.
+pub fn count_background_shells(pid: u32) -> u32 {
+    let Ok(threads) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return 0;
+    };
+    threads
+        .flatten()
+        .filter_map(|thread| std::fs::read_to_string(thread.path().join("children")).ok())
+        .map(|children| {
+            children
+                .split_ascii_whitespace()
+                .filter_map(|child| child.parse::<u32>().ok())
+                .filter(|child| proc_cmdline(*child).is_some_and(|raw| is_claude_bash_shell(&raw)))
+                .count() as u32
+        })
+        .sum()
 }
 
 /// How far up a process tree we walk before giving up on finding a window.
@@ -2140,6 +2319,171 @@ mod tests {
         s
     }
 
+    /// The whole of the background-work rule, on the shape that produced it: an
+    /// agent that stopped in order to be woken by a sweep it launched. `done`
+    /// was what the panel said for the whole half hour that sweep had left.
+    #[test]
+    fn background_work_holds_a_stopped_turn_open() {
+        let mut s = finished("sweep", 100);
+        s.background_shells = 1;
+        assert!(!s.just_finished(), "nothing finished — it parked");
+        assert!(s.held_open(), "the turn is stamped, and held");
+        assert!(!s.announceable(), "and no chime while it is");
+        assert_eq!(s.state_kind(), StateKind::Monitoring);
+        assert_eq!(s.state_label(), "monitoring");
+        assert_eq!(s.indicator_glyph(), ICON_MONITORING);
+        assert_eq!(
+            s.activity_band(),
+            2,
+            "bands with the working ones, not `done`"
+        );
+
+        // The task exits: the stamp was there all along, so the finish lands
+        // without anything having to re-stamp it.
+        s.background_shells = 0;
+        assert!(s.just_finished());
+        assert!(s.announceable());
+        assert_eq!(s.state_kind(), StateKind::Done);
+    }
+
+    /// Sub-agents hold the same turn open, and read as `Working` rather than
+    /// `Monitoring` — the agent itself is running, somewhere else. T3 Code's
+    /// split, and the one thing its sidebar had right that the panel did not.
+    #[test]
+    fn sub_agents_hold_it_open_as_working() {
+        let mut s = finished("fan-out", 100);
+        s.pending_agents = 2;
+        assert!(!s.just_finished());
+        assert_eq!(s.state_kind(), StateKind::Working);
+        assert_eq!(s.state_label(), "working");
+        assert_eq!(s.indicator_glyph(), ICON_THINKING);
+
+        // Both at once is still the louder of the two.
+        s.background_shells = 1;
+        assert_eq!(s.state_kind(), StateKind::Working);
+        assert!(!s.subagent_finished(), "one of the two reported");
+        assert!(s.subagent_finished(), "and then the last one");
+        assert_eq!(
+            s.state_kind(),
+            StateKind::Monitoring,
+            "and hands the hold to the task still running"
+        );
+    }
+
+    /// A background task says nothing about a turn that never stopped: the
+    /// agent launching one mid-turn and carrying on must keep reading as busy.
+    #[test]
+    fn a_running_turn_outranks_its_own_background_work() {
+        let mut s = ordered("running", SessionStatus::Executing, 10, 10);
+        s.background_shells = 1;
+        s.current_tool = Some("Bash".into());
+        assert_eq!(s.state_kind(), StateKind::Working);
+        assert!(s.is_turn_running());
+        assert!(!s.held_open(), "nothing is held — nothing stopped");
+
+        // And an ask still outranks both: a session blocked on a permission
+        // gate is blocked whatever it left running.
+        let mut blocked = ordered("gated", SessionStatus::WaitingApproval, 10, 10);
+        blocked.background_shells = 1;
+        blocked.blocked_on = Some(Ask::Approval);
+        assert_eq!(blocked.state_kind(), StateKind::PendingApproval);
+    }
+
+    /// The mark that tells a `Bash` tool's shell from everything else a session
+    /// keeps as a child — which is the only reason the count means "background
+    /// work" rather than "processes".
+    #[test]
+    fn only_the_bash_tools_own_shells_count() {
+        assert!(is_claude_bash_shell(
+            "/usr/bin/zsh\0-c\0source /home/u/.claude/shell-snapshots/snapshot-zsh-1787015360406-589puw.sh 2>/dev/null || true && eval './sweep.sh'"
+        ));
+        // The two kinds of child a session keeps for its whole life, and a hook.
+        assert!(!is_claude_bash_shell(
+            "/home/u/.local/bin/uv\0tool\0uvx\0mcp-grafana"
+        ));
+        assert!(!is_claude_bash_shell(
+            "npm\0exec\0@playwright/mcp@latest\0--headless"
+        ));
+        assert!(!is_claude_bash_shell("bash\0-c\0vibewatch notify stop"));
+    }
+
+    /// The `/proc` half, against a real child of this very process: the count
+    /// has to survive procfs filing children under the thread that spawned
+    /// them, which is not the main one here and need not be one in Claude Code
+    /// either.
+    #[test]
+    fn a_live_child_is_counted_through_proc() {
+        let me = std::process::id();
+        let before = count_background_shells(me);
+        // Shaped like a real one — marker, `||`, `&&` — and not by accident: a
+        // shell handed a single command execs into it and loses the whole argv,
+        // which is why the tool's own `source … || true && eval … && pwd`
+        // survives in `/proc` at all.
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                ": {}x || true && sleep 30 && true",
+                CLAUDE_BASH_MARKER
+            ))
+            .spawn()
+            .expect("sh spawns");
+        // `spawn` returns on the fork, not on the exec, and a child that has
+        // not exec'd yet still wears its parent's argv — so this waits for the
+        // real one rather than racing it.
+        let counted = (0..200).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            count_background_shells(me) == before + 1
+        });
+        assert!(counted, "the shell shows up once it has exec'd");
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(count_background_shells(me), before, "and reaped is gone");
+    }
+
+    /// The edge the scan tick announces on, and the three near-misses it must
+    /// not: the count has to *fall* to zero, on a session that stopped and
+    /// stayed stopped. Live in production only when the agent is not re-invoked
+    /// by its own task — a `claude` that exited, a task killed by hand — since
+    /// an agent that wakes up announces through its next `Stop` like any turn.
+    #[test]
+    fn the_last_background_task_releases_the_turn_it_held() {
+        let registry = SessionRegistry::new();
+        let mut session = Session::new("parked".into(), AgentKind::ClaudeCode, 1);
+        session.mark_finished();
+        let held_on = session.finish_seq;
+        registry.register(session);
+
+        assert_eq!(
+            registry.set_background_shells("parked", 2),
+            None,
+            "work appearing announces nothing"
+        );
+        assert_eq!(
+            registry.set_background_shells("parked", 1),
+            None,
+            "nor does one of two ending"
+        );
+        assert_eq!(
+            registry.set_background_shells("parked", 0),
+            Some(("parked".to_string(), held_on)),
+            "the last one ending is the finish"
+        );
+        assert_eq!(
+            registry.set_background_shells("parked", 0),
+            None,
+            "and it is announced once, not on every tick after"
+        );
+        assert!(registry.get("parked").is_some_and(|s| s.just_finished()));
+
+        // A session that never stopped has no turn to release, however much
+        // background work comes and goes underneath it.
+        let mut working = Session::new("working".into(), AgentKind::ClaudeCode, 2);
+        working.status = SessionStatus::Executing;
+        registry.register(working);
+        registry.set_background_shells("working", 1);
+        assert_eq!(registry.set_background_shells("working", 0), None);
+    }
+
     #[test]
     fn just_finished_holds_until_the_card_is_clicked() {
         let mut s = finished("done", 100);
@@ -2451,20 +2795,27 @@ mod tests {
     }
 
     #[test]
-    fn a_held_turn_still_reads_as_finished_so_the_ceiling_can_release_it() {
-        // The shape the hold ceiling keys on: a turn waiting on sub-agents is not
-        // announceable, but it is still `just_finished` and still on the same
-        // `finish_seq`. That combination is what tells "held" apart from "the
-        // session moved on", and it is why dropping the count is enough to
-        // release the announcement once the sub-agents are presumed gone.
+    fn a_held_turn_reads_as_held_so_the_ceiling_can_release_it() {
+        // The shape the hold ceiling keys on: a turn waiting on sub-agents is
+        // neither announceable nor `just_finished` — it is `held_open`, on the
+        // same `finish_seq` it stopped on. That combination is what tells
+        // "held" apart from "the session moved on", and it is why dropping the
+        // count is enough to release the announcement once the sub-agents are
+        // presumed gone.
+        //
+        // `just_finished` used to be the marker here, and said `done` on the
+        // panel for the whole time the held work ran. The two questions were
+        // one because nothing had ever needed them apart.
         let mut s = Session::new("held".into(), AgentKind::ClaudeCode, 1);
         s.launch_subagent();
         s.mark_finished();
         let held_on = s.finish_seq;
         assert!(!s.announceable(), "held: nothing to announce yet");
-        assert!(s.just_finished(), "but the turn did end, and stays lit");
+        assert!(!s.just_finished(), "and nothing finished either");
+        assert!(s.held_open(), "the turn ended and is being held");
         assert_eq!(s.reset_subagents(), 1, "the ceiling presumes them gone");
         assert!(s.announceable(), "which releases the announcement");
+        assert!(s.just_finished(), "and lights the row it was holding dark");
         assert_eq!(s.finish_seq, held_on, "still the very turn that was held");
     }
 

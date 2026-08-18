@@ -280,7 +280,10 @@ pub(crate) fn top_line(session: &Session) -> Option<String> {
     // class above: that match is exhaustive, so a status added later is
     // classified there — once — instead of falling through this test as `false`
     // and quietly putting the row back on whatever landed last.
-    if matches!(session.state_kind(), StateKind::Resting | StateKind::Done) {
+    if matches!(
+        session.state_kind(),
+        StateKind::Resting | StateKind::Done | StateKind::Monitoring
+    ) {
         if let Some(text) = session.last_agent_text.as_deref() {
             return Some(render_agent(session, text));
         }

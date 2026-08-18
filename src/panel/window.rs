@@ -39,11 +39,14 @@ fn sessions_fingerprint(sessions: &[Session]) -> u64 {
         s.session_name.hash(&mut h);
         s.terminal.hash(&mut h);
         s.started_at_epoch.hash(&mut h);
-        // Derived from status + `finished_at`, not stored, and not time-based:
-        // it clears when the click acknowledges the finish, and when the agent
-        // picks the work back up. Hashed so the card stops being lit on the
-        // very next poll instead of staying lit until something else changes.
-        s.just_finished().hash(&mut h);
+        // What the row paints, and not the predicates it is folded from:
+        // derived from status, `finished_at` and whatever the agent left
+        // running, none of it stored and none of it time-based. Hashed so the
+        // card stops being lit on the very next poll instead of staying lit
+        // until something else changes — and so the next state folded into
+        // `state_kind` needs no line of its own here, which is how the finish
+        // and then the hold each came to need one.
+        s.state_kind().css_class().hash(&mut h);
         s.pending_approval
             .as_ref()
             .map(|p| (&p.request_id, p.choices.len()))

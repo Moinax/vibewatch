@@ -133,6 +133,11 @@ fn detect_dark_mode() -> bool {
 fn color_for_state(kind: StateKind, palette: &Palette) -> &'static str {
     match kind {
         StateKind::Working => palette.working,
+        // T3Code's own choice, and the right one: monitoring is the same
+        // machine-is-busy blue, told apart by its word and by the pill not
+        // pulsing. A hue of its own would claim the state is a third thing to
+        // learn, when it is Working holding still.
+        StateKind::Monitoring => palette.working,
         StateKind::PendingApproval => palette.approval,
         StateKind::AwaitingInput => palette.input,
         StateKind::PlanReady => palette.plan,
@@ -225,7 +230,7 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
         "attention".to_string()
     } else if sessions
         .iter()
-        .any(|s| s.state_kind() == StateKind::Working)
+        .any(|s| matches!(s.state_kind(), StateKind::Working | StateKind::Monitoring))
     {
         "active".to_string()
     } else {
@@ -235,9 +240,14 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
     // Nothing to report: no sessions at all, or a fleet where every one of them
     // is asleep and none has an unacknowledged finish. Either way no single
     // session's name carries signal, so the widget wears the brand instead.
-    let at_rest = active.iter().all(|s| {
-        matches!(s.status, SessionStatus::Idle | SessionStatus::Running) && !s.just_finished()
-    });
+    // Asked of `state_kind` and not re-derived from `status`, for the reason the
+    // panel row gives for the same choice: that match is exhaustive, so a state
+    // added later is classified there — once. Spelled out here, this clause had
+    // to be hand-patched the day a stopped turn stopped meaning an idle one, and
+    // the failure mode is silent: the bar goes anonymous over a busy fleet.
+    // `active` has already dropped the stopped sessions, the only others
+    // `Resting` covers.
+    let at_rest = active.iter().all(|s| s.state_kind() == StateKind::Resting);
     if at_rest {
         // Untinted, so it inherits the bar's own text colour and reads like the
         // clock or the volume rather than like something switched off. Dim was
@@ -683,6 +693,9 @@ mod tests {
     /// share ink is a vocabulary with five words in it. Distinctness is the one
     /// property the palette has to hold on its own — everything else about it is
     /// taste.
+    ///
+    /// `Monitoring` is the deliberate exception and is checked separately
+    /// below: it is `Working` holding still, not a seventh thing to learn.
     #[test]
     fn every_state_gets_ink_of_its_own() {
         for (flavour, palette) in [("mocha", &MOCHA), ("latte", &LATTE)] {
@@ -699,6 +712,11 @@ mod tests {
             seen.sort_unstable();
             seen.dedup();
             assert_eq!(seen.len(), inks.len(), "{flavour} reuses a state colour");
+            assert_eq!(
+                color_for_state(StateKind::Monitoring, palette),
+                color_for_state(StateKind::Working, palette),
+                "{flavour}: monitoring is working's blue on purpose"
+            );
         }
     }
 

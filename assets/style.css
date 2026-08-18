@@ -276,6 +276,15 @@ window.vibewatch-panel {
                  0 0 12px alpha(@cat_mauve, 0.3);
 }
 
+/* Monitoring: the working blue, without the glow. The turn is over and the
+   agent is parked on something it launched — busy enough that the row must not
+   read as asleep, calm enough that it must not compete with a session actually
+   writing. T3Code draws the same distinction by dropping the pulse from its
+   pill. */
+.indicator.monitoring {
+    color: @cat_working;
+}
+
 .indicator.just-finished {
     color: @cat_green;
     text-shadow: 0 0 6px alpha(@cat_green, 0.7),
@@ -359,6 +368,13 @@ window.vibewatch-panel {
     color: @cat_mauve;
     font-weight: 700;
     text-shadow: 0 0 4px alpha(@cat_mauve, 0.35);
+}
+
+/* Working's blue, like the pill in the bar and the glyph beside it: the agent
+   is parked on something it launched, which is a kind of busy. Nothing louder —
+   there is nothing here to act on. */
+.action-line.monitoring {
+    color: @cat_working;
 }
 
 /* Plain weight, no glow: a finish is worth seeing, not worth interrupting for. */

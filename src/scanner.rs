@@ -68,12 +68,18 @@ pub fn scan_agent_processes() -> Vec<(AgentKind, u32)> {
 /// `status_notify` is pulsed at the end of every iteration so the waybar
 /// `SubscribeStatus` subscriber learns about sessions that disappeared when
 /// their PID died — those removals bypass the hook handler entirely.
+///
+/// `finished` announces a turn (id, [`Session::finish_seq`]) the same way the
+/// `Stop` handler does, debounce included. Two finishes reach the fleet only
+/// through here: a Codex turn, which has no `Stop` hook at all, and a Claude
+/// Code turn that stopped on background work — the last task exiting is an
+/// edge no hook fires for either.
 pub async fn run_scanner(
     registry: SessionRegistry,
     compositor: Box<dyn Compositor>,
     config: Config,
     status_notify: std::sync::Arc<tokio::sync::Notify>,
-    codex_finished: std::sync::Arc<dyn Fn(String, u64) + Send + Sync>,
+    finished: std::sync::Arc<dyn Fn(String, u64) + Send + Sync>,
 ) {
     // Transcript mtime per session, as of the last time its title was read.
     // Reading a title means reading a whole transcript (see
@@ -272,7 +278,7 @@ pub async fn run_scanner(
             ) {
                 session.set_last_agent_text_if_changed(text);
             }
-            let finished = if finished_turn {
+            let turn_over = if finished_turn {
                 session.mark_finished();
                 session.touch();
                 Some((session.id.clone(), session.finish_seq))
@@ -280,8 +286,38 @@ pub async fn run_scanner(
                 None
             };
             registry.register(session);
-            if let Some((session_id, finish_seq)) = finished {
-                codex_finished(session_id, finish_seq);
+            if let Some((session_id, finish_seq)) = turn_over {
+                finished(session_id, finish_seq);
+            }
+        }
+
+        // What the agent left running behind a stopped turn. Re-counted from
+        // `/proc` every tick rather than tracked from hooks, because there is no
+        // hook for it: a background task's exit re-invokes the agent, and the
+        // panel would otherwise learn a turn was still going only once it
+        // produced its next word. The count is also how a finish gets held —
+        // see `Session::just_finished` — so this is what releases one.
+        //
+        // Sessions mid-turn are skipped, and nothing goes stale for it: every
+        // surface reads the count under `Idle`/`Running` only, and the `Stop`
+        // hook re-counts at the exact moment it starts mattering. It is not a
+        // free skip either — a turn in flight is the one that has a *foreground*
+        // shell to walk, and hashing its comings and goings rebuilt the panel's
+        // whole list twice per long `Bash` call.
+        for session in registry
+            .all()
+            .into_iter()
+            .filter(|s| s.agent == AgentKind::ClaudeCode && !s.is_turn_running())
+        {
+            let live = crate::session::count_background_shells(session.pid);
+            if let Some((session_id, finish_seq)) =
+                registry.set_background_shells(&session.id, live)
+            {
+                eprintln!(
+                    "vibewatch: {} background work finished — releasing its turn",
+                    session_id
+                );
+                finished(session_id, finish_seq);
             }
         }
 

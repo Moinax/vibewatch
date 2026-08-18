@@ -658,7 +658,7 @@ fn schedule_hold_ceiling(
         let Some(mut session) = registry.get(&sid) else {
             return;
         };
-        if !session.just_finished() || session.finish_seq != seq {
+        if !session.held_open() || session.finish_seq != seq {
             eprintln!(
                 "vibewatch: hold on {sid} ended on its own (status {}, turn {} vs {seq})",
                 session.status.css_class(),
@@ -666,17 +666,23 @@ fn schedule_hold_ceiling(
             );
             return;
         }
+        // Sub-agents are all this presumes gone, and all it can: a background
+        // task's liveness is re-read from `/proc` every tick, so there is
+        // nothing to bound about it — its exit releases the hold by itself.
+        // Whether dropping the count *is* a finish is then the model's call and
+        // not a second guess here, which is what `SubAgentStop` asks too.
         let dropped = session.reset_subagents();
-        if dropped == 0 {
-            eprintln!("vibewatch: hold on {sid} already released by its last sub-agent");
-            return;
-        }
+        let releases = session.announceable();
         registry.register(session);
-        announce_finish(
-            &sound_player,
-            &panel_hooks,
-            &format!("hold expired, {dropped} sub-agent(s) never reported"),
-        );
+        if releases {
+            announce_finish(
+                &sound_player,
+                &panel_hooks,
+                &format!("hold expired, {dropped} sub-agent(s) never reported"),
+            );
+        } else {
+            eprintln!("vibewatch: hold on {sid} kept — background work still running");
+        }
     });
 }
 
@@ -1060,15 +1066,20 @@ async fn handle_connection(
                     }
                     session.touch();
                     log_transition(&session.id, prev, session.status, "Stop");
-                    // With sub-agents still running this stop is the agent parking
-                    // itself until they report back, and the last to report is
-                    // what re-opens the question.
-                    finished = if session.pending_agents == 0 {
+                    // Counted here and not left to the scan tick: the chime and
+                    // the row fire on this event, three seconds before the next
+                    // one, and both were wrong for those three seconds.
+                    session.refresh_background_shells();
+                    // With sub-agents still running, or a task the agent
+                    // launched into the background, this stop is the agent
+                    // parking itself until that work reports back — and what
+                    // re-opens the question is the last of it ending.
+                    finished = if session.background_liveness().is_none() {
                         StopOutcome::Ready(session.id.clone(), session.finish_seq)
                     } else {
                         eprintln!(
-                            "vibewatch: {} stopped with {} sub-agent(s) outstanding — holding",
-                            session.id, session.pending_agents
+                            "vibewatch: {} stopped with {} sub-agent(s) and {} background task(s) outstanding — holding",
+                            session.id, session.pending_agents, session.background_shells
                         );
                         StopOutcome::Held(session.id.clone(), session.finish_seq)
                     };
