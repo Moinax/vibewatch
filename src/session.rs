@@ -250,6 +250,15 @@ fn is_programmatic_args(args: &[&str]) -> bool {
     if args.contains(&"--no-session-persistence") {
         return true;
     }
+    // `-p` is the flag that actually *means* this: print one answer and exit,
+    // with no TUI for anyone to sit in front of. The stream-JSON test below is
+    // a proxy for it that happens to match how the desktop apps drive an agent
+    // — which is why they need an exemption — and it misses every script that
+    // asks for plain `--output-format json`. One such script put a row in the
+    // panel per run of a twelve-run sweep, each dying a couple of minutes later.
+    if args.contains(&"-p") || args.contains(&"--print") {
+        return true;
+    }
     args.windows(2)
         .any(|w| w[0] == "--output-format" && w[1] == "stream-json")
 }
@@ -2053,6 +2062,8 @@ mod tests {
         ]));
     }
 
+    /// How a desktop app drives an agent — and why they need the T3 host
+    /// exemption on top: headless like a script's, watched like a pane's.
     #[test]
     fn programmatic_args_detect_stream_json_output() {
         assert!(is_programmatic_args(&[
@@ -2069,6 +2080,24 @@ mod tests {
             "--output-format",
             "text"
         ]));
+    }
+
+    /// The one-shot flag, in both spellings and with the output format a script
+    /// most naturally asks for. Taken from a real sweep: `claude -p /review
+    /// --dry <sha> --model opus --output-format json`, run twelve times, twelve
+    /// rows in a panel meant for agents you can be sent to.
+    #[test]
+    fn programmatic_args_detect_a_one_shot_print() {
+        assert!(is_programmatic_args(&[
+            "claude",
+            "-p",
+            "/review",
+            "--model",
+            "opus",
+            "--output-format",
+            "json"
+        ]));
+        assert!(is_programmatic_args(&["claude", "--print", "hello"]));
     }
 
     #[test]
