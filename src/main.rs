@@ -575,6 +575,11 @@ enum StopOutcome {
     /// No session matched the stop, so there is nothing to watch and no evidence
     /// anything resumed. Announce it — silence is the worse failure.
     Unknown,
+    /// A stop from a process the panel deliberately does not track: a
+    /// `claude -p` in a script. It reached this arm *because* the filter worked,
+    /// so unlike `Unknown` there is nothing missing here — no row to light, and
+    /// nobody waiting on a turn they never started. Silent.
+    Untracked,
 }
 
 /// Announce that `sid` finished, once it has been quiet for `idle_debounce`.
@@ -1087,6 +1092,19 @@ async fn handle_connection(
                     status_notify.notify_waiters();
                 } else {
                     log_drop("Stop", &session_id, pid);
+                    // The same question `SessionStart` asks before making a row,
+                    // asked at the third place a stop can land. Without it every
+                    // run of a twelve-run sweep chimes from behind the filter
+                    // that just stopped it having a row — the noise moved, it
+                    // did not go.
+                    let hosts = if t3.enabled {
+                        crate::t3::live_runtimes()
+                    } else {
+                        Vec::new()
+                    };
+                    if pid.is_some_and(|pid| !session::is_trackable_agent(pid, &hosts)) {
+                        finished = StopOutcome::Untracked;
+                    }
                 }
                 // The agent finished responding and went idle. Pop the panel
                 // open alongside the chime: the sound says *someone* is done,
@@ -1121,6 +1139,9 @@ async fn handle_connection(
                     ),
                     StopOutcome::Unknown => {
                         announce_finish(&sound_player, &panel_hooks, "no session")
+                    }
+                    StopOutcome::Untracked => {
+                        eprintln!("vibewatch: stop from untracked agent {session_id} — no chime")
                     }
                 }
             }
