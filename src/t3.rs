@@ -52,16 +52,25 @@ const PROFILES: [&str; 2] = ["userdata", "dev"];
 /// file whose pid has since been recycled would make an unrelated process's
 /// children look like T3 threads.
 pub fn live_runtimes() -> Vec<Runtime> {
+    profile_dirs()
+        .into_iter()
+        .filter_map(|base_dir| {
+            let pid = runtime_pid(&base_dir)?;
+            looks_like_t3_server(pid).then_some(Runtime { pid, base_dir })
+        })
+        .collect()
+}
+
+/// Every T3 state directory that exists, most-likely first — one per build
+/// channel, both of which can be in use at once.
+fn profile_dirs() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };
     PROFILES
         .iter()
-        .filter_map(|profile| {
-            let base_dir = home.join(".t3").join(profile);
-            let pid = runtime_pid(&base_dir)?;
-            looks_like_t3_server(pid).then_some(Runtime { pid, base_dir })
-        })
+        .map(|profile| home.join(".t3").join(profile))
+        .filter(|dir| dir.is_dir())
         .collect()
 }
 

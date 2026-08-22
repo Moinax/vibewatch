@@ -311,6 +311,32 @@ impl AgentKind {
         }
     }
 
+    /// This agent's lowercase slug — the spelling that reaches session ids, and
+    /// the one the providers metering account quotas use for themselves.
+    ///
+    /// One table with [`AgentKind::from_slug`], so a rename cannot leave a
+    /// reader matching a string nothing writes any more.
+    pub fn slug(&self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "claude",
+            AgentKind::Codex => "codex",
+            AgentKind::Cursor => "cursor",
+            AgentKind::WebStorm => "webstorm",
+        }
+    }
+
+    /// The agent a slug names, or `None` for one vibewatch has no agent for.
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        [
+            AgentKind::ClaudeCode,
+            AgentKind::Codex,
+            AgentKind::Cursor,
+            AgentKind::WebStorm,
+        ]
+        .into_iter()
+        .find(|kind| kind.slug() == slug)
+    }
+
     /// The waybar CSS class that selects this agent's logo, `logo-*`. The
     /// widget is a single label, so the mark cannot be a character in the text
     /// -- no Nerd Font carries a Claude or an OpenAI glyph, and every hexagon

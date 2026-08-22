@@ -9,6 +9,7 @@ pub struct Config {
     pub sounds: SoundConfig,
     pub panel: PanelConfig,
     pub t3: T3Config,
+    pub limits: LimitsConfig,
     pub agents: HashMap<String, AgentConfig>,
 }
 
@@ -125,6 +126,27 @@ pub struct AgentConfig {
     pub window_class: String,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct LimitsConfig {
+    /// Show how much of each provider's account quota is spent, above the
+    /// agent list.
+    ///
+    /// On means the daemon asks Claude's account endpoint for the figures,
+    /// using the OAuth token Claude Code already holds — the only place they
+    /// exist, since Claude reports them on a live session stream and persists
+    /// nothing. That is the one outbound request vibewatch makes, so it gets a
+    /// switch: off leaves the section out and the daemon entirely local.
+    /// Codex's half needs no network either way, being on disk already.
+    pub enabled: bool,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 impl Default for T3Config {
     fn default() -> Self {
         Self {
@@ -168,6 +190,16 @@ impl Default for PanelConfig {
             max_visible: 5,
         }
     }
+}
+
+/// Where vibewatch keeps what must survive a restart: the header toggles, and
+/// the account-limits cache. `$XDG_STATE_HOME/vibewatch`, falling back the way
+/// the spec says to.
+pub fn state_dir() -> PathBuf {
+    dirs::state_dir()
+        .or_else(dirs::data_local_dir)
+        .unwrap_or_else(|| PathBuf::from("~/.local/state"))
+        .join("vibewatch")
 }
 
 impl Config {

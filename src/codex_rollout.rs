@@ -18,6 +18,12 @@ use std::path::{Path, PathBuf};
 /// compaction, or a new thread). Looking up by cwd cannot distinguish two
 /// Codex processes in the same repository and, once cached, misses that
 /// rotation entirely. The writer's open file descriptor is unambiguous.
+/// Where Codex keeps its rollouts, `~/.codex/sessions`. Named here because
+/// this module is what knows the layout underneath it.
+pub fn sessions_root() -> Option<PathBuf> {
+    Some(dirs::home_dir()?.join(".codex").join("sessions"))
+}
+
 pub fn find_open_for_pid(pid: u32) -> Option<PathBuf> {
     find_open_in(Path::new("/proc"), pid)
 }

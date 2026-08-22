@@ -5,6 +5,8 @@ pub mod config;
 pub mod flags;
 pub mod install;
 pub mod ipc;
+#[cfg(feature = "panel")]
+pub mod limits;
 pub mod notify;
 pub mod scanner;
 pub mod session;

@@ -31,12 +31,22 @@ rodio = { version = "0.19", optional = true }
 # T3 Code's state database, read read-only for thread titles and ids
 rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 
+# Account rate limits (optional, panel only): one GET to Claude's account
+# endpoint per refresh. Optional because the panel is the only reader, and a
+# headless build has no business carrying a TLS stack it cannot reach.
+# `default-features = false` drops the native-tls path and the cookie/gzip
+# machinery none of this uses; `rustls` is what is left to speak HTTPS.
+ureq = { version = "3.4.0", default-features = false, features = [
+  "json",
+  "rustls",
+], optional = true }
+
 [dev-dependencies]
 tempfile = "3"
 
 [features]
 default = ["panel", "sound", "hyprland-backend", "t3"]
-panel = ["dep:gtk4", "dep:libadwaita", "dep:gtk4-layer-shell"]
+panel = ["dep:gtk4", "dep:libadwaita", "dep:gtk4-layer-shell", "dep:ureq"]
 sound = ["dep:rodio"]
 hyprland-backend = ["dep:hyprland"]
 # Read T3 Code's thread titles and ids from its state database. T3 Code

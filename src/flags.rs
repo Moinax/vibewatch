@@ -1,5 +1,6 @@
-//! Persistent, process-wide toggles the panel header owns: sound mute, and
-//! whether events are allowed to pop the drawer open by themselves.
+//! Persistent, process-wide toggles the panel owns: sound mute, whether
+//! events are allowed to pop the drawer open by themselves, and whether the
+//! account-limits section is unfolded.
 //!
 //! Each flag is a tiny file (`1` = on, anything else = off) under the XDG state
 //! directory, so it survives restarts and is shared between the panel button
@@ -23,6 +24,14 @@ pub const MUTED: Flag = Flag {
     default: false,
 };
 
+/// The account-limits section above the agent list is unfolded. Defaults to
+/// on: the numbers are the reason the section was added, and a fold nobody
+/// knows to open shows nothing.
+pub const LIMITS_EXPANDED: Flag = Flag {
+    name: "limits-expanded",
+    default: true,
+};
+
 /// A finish or an approval is allowed to slide the drawer open on its own.
 /// Off means the panel only ever opens from a click; waybar keeps reporting.
 /// Defaults to on, matching the behaviour before the toggle existed.
@@ -35,11 +44,7 @@ impl Flag {
     /// Path to the flag file: `$XDG_STATE_HOME/vibewatch/<name>`
     /// (falls back to `~/.local/state/vibewatch/<name>`).
     fn path(self) -> PathBuf {
-        dirs::state_dir()
-            .or_else(dirs::data_local_dir)
-            .unwrap_or_else(|| PathBuf::from("~/.local/state"))
-            .join("vibewatch")
-            .join(self.name)
+        crate::config::state_dir().join(self.name)
     }
 
     /// Whether the flag is on. The default stands in when the file is missing

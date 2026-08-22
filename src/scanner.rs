@@ -9,15 +9,6 @@ use crate::session::{
 };
 
 /// Map an AgentKind to its short string identifier.
-fn agent_str(kind: &AgentKind) -> &'static str {
-    match kind {
-        AgentKind::ClaudeCode => "claude",
-        AgentKind::Codex => "codex",
-        AgentKind::Cursor => "cursor",
-        AgentKind::WebStorm => "webstorm",
-    }
-}
-
 /// Codex has no Stop hook, so its equivalent finish edge is inferred from the
 /// durable rollout state. Requiring a working predecessor prevents a newly
 /// discovered, already-idle process from producing a startup chime.
@@ -123,7 +114,7 @@ pub async fn run_scanner(
             if !is_trackable_agent(*pid, &t3_runtimes) {
                 continue;
             }
-            let id = format!("scan-{}-{}", agent_str(kind), pid);
+            let id = format!("scan-{}-{}", kind.slug(), pid);
             let mut session = Session::new(id, *kind, *pid);
             session.terminal = Some(detect_terminal(*pid));
             if *kind == AgentKind::ClaudeCode {

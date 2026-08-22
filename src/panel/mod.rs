@@ -1,3 +1,4 @@
+pub mod limits;
 pub mod session_row;
 pub mod window;
 

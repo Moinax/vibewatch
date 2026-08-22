@@ -60,6 +60,110 @@ window.vibewatch-panel {
     color: @cat_text;
 }
 
+/* ── Account limits ───────────────────────────────────────────── */
+/* T3 Code's usage hover card, above the fleet. It sits on the panel ground
+   rather than in a dug-out card: the session rows own that recess, and a
+   second sunken block above them would read as one more agent. */
+
+.limits-section {
+    padding: 0 12px 2px 12px;
+}
+
+/* The disclosure row. Flat and unpadded on the left so "Limits" lines up with
+   the panel title above it — the chevron sits in the gutter, not in the text
+   column. */
+.limits-toggle {
+    min-height: 0;
+    padding: 2px 4px 2px 0;
+    background: none;
+    border: none;
+    box-shadow: none;
+    color: @cat_text_muted;
+}
+
+.limits-toggle:hover {
+    color: @cat_text;
+}
+
+.limits-title {
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* Sized down to the title beside it: the stock 16px symbolic reads as a button
+   next to an 11px label. Its colour comes from the `limit-warn` /
+   `limit-critical` classes the section hangs on it, the same two the hot row
+   wears — a symbolic icon takes `color` like text does. */
+.limit-warning {
+    -gtk-icon-size: 12px;
+}
+
+.limits-body {
+    padding-bottom: 4px;
+}
+
+.provider-name {
+    font-size: 11px;
+    font-weight: 500;
+    color: @cat_text;
+}
+
+/* Only rendered once the snapshot is old enough to matter, so it never has to
+   compete with the numbers when they are current. */
+.limit-age {
+    font-size: 9px;
+    color: @cat_text_time;
+}
+
+.limit-window-label,
+.limit-reset {
+    font-size: 9px;
+    color: @cat_text_time;
+}
+
+.limit-used {
+    font-size: 10px;
+    color: @cat_text;
+}
+
+.limit-warn {
+    color: @cat_peach;
+}
+
+.limit-critical {
+    color: @cat_red;
+}
+
+.limit-empty {
+    font-size: 10px;
+    color: @cat_text_muted;
+}
+
+/* A hairline, not a widget: the number beside it carries the reading, and the
+   bar is only there to make a row scannable without one. Adwaita's default
+   progressbar is several times this tall and would out-weigh the text. */
+.limit-meter trough,
+.limit-meter progress {
+    min-height: 3px;
+    border-radius: 2px;
+    border: none;
+}
+
+.limit-meter trough {
+    background-color: alpha(@cat_border, 0.30);
+}
+
+/* Per provider, the same distinction the T3 card draws. Claude's terracotta is
+   its own brand colour and holds on both grounds, so it is not a palette token;
+   Codex has no mark colour there either and takes the foreground. */
+.limit-meter progress {
+    background-color: @cat_text;
+}
+
+.limit-meter.claude progress {
+    background-color: #d97757;
+}
+
 .session-list {
     background: transparent;
 }

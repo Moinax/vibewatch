@@ -5,6 +5,8 @@ mod config;
 mod flags;
 mod install;
 mod ipc;
+#[cfg(feature = "panel")]
+mod limits;
 mod notify;
 mod scanner;
 mod session;
@@ -167,6 +169,7 @@ async fn run_daemon_headless(config: Config, registry: SessionRegistry) -> anyho
     let policy = ConnectionPolicy {
         timing,
         t3: config.t3,
+        limits: config.limits,
     };
 
     eprintln!(
@@ -335,6 +338,7 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                 let policy = ConnectionPolicy {
                     timing,
                     t3: config.t3,
+                    limits: config.limits,
                 };
 
                 eprintln!(
@@ -349,6 +353,10 @@ fn run_daemon_with_panel(config: Config, registry: SessionRegistry) -> anyhow::R
                         return;
                     }
                 };
+
+                // Fill the cache before anything asks for it, so the first
+                // panel open has figures rather than an empty section.
+                limits::refresh_in_background(config.limits.enabled);
 
                 let compositor = match compositor::create_compositor(&config.general.compositor) {
                     Ok(c) => c,
@@ -495,6 +503,7 @@ impl AnnounceTiming {
 struct ConnectionPolicy {
     timing: AnnounceTiming,
     t3: crate::config::T3Config,
+    limits: crate::config::LimitsConfig,
 }
 
 /// Announce that an agent finished its turn: the chime, and the panel popping
@@ -701,7 +710,11 @@ async fn handle_connection(
     status_notify: Arc<tokio::sync::Notify>,
     policy: ConnectionPolicy,
 ) {
-    let ConnectionPolicy { timing, t3 } = policy;
+    let ConnectionPolicy { timing, t3, limits } = policy;
+    // The limits refresh is the panel's, and so is gated on it; without the
+    // feature this field has no reader.
+    #[cfg(not(feature = "panel"))]
+    let _ = limits;
     let (read_half, mut write_half) = stream.into_split();
     let mut reader = BufReader::new(read_half);
 
@@ -710,6 +723,14 @@ async fn handle_connection(
             Ok(e) => e,
             Err(_) => return,
         };
+
+        // Every event, not a chosen few: a turn ending and a panel opening are
+        // both moments the figures are worth having, and so is the next event
+        // that turns out to be. `refresh_in_background` is a `stat` and a
+        // comparison when the cache is warm, which it almost always is, so the
+        // arms do not each have to remember to ask.
+        #[cfg(feature = "panel")]
+        limits::refresh_in_background(limits.enabled);
 
         match event {
             InboundEvent::SessionStart {
