@@ -171,12 +171,15 @@ fn read_threads(base_dir: &Path) -> rusqlite::Result<Vec<Thread>> {
     conn.busy_timeout(std::time::Duration::from_millis(250))?;
 
     // The two projections are joined rather than read from `projection_threads`
-    // alone because the id the agent knows itself by is only in the runtime row,
-    // as the cursor T3 would resume the provider session from.
+    // alone because the id the agent knows itself by is only in the runtime
+    // cursor. Claude stores it under `resume`; Codex uses `threadId` itself.
     let mut stmt = conn.prepare(
         "SELECT r.thread_id,
                 t.title,
-                json_extract(r.resume_cursor_json, '$.resume'),
+                COALESCE(
+                    json_extract(r.resume_cursor_json, '$.resume'),
+                    json_extract(r.resume_cursor_json, '$.threadId')
+                ),
                 json_extract(r.runtime_payload_json, '$.cwd'),
                 COALESCE(t.pending_approval_count, 0),
                 COALESCE(t.pending_user_input_count, 0),
@@ -428,6 +431,53 @@ mod tests {
         // and mean what they say whatever mode the thread is in.
         assert_eq!(ask_from_counts(1, 0, 1, "default"), Some(Ask::Approval));
         assert_eq!(ask_from_counts(0, 1, 1, "default"), Some(Ask::Input));
+    }
+
+    /// Both T3 cursor shapes resolve to the provider's exact session id.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn reads_provider_session_ids_from_both_cursor_shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open(dir.path().join("state.sqlite")).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE provider_session_runtime (
+                thread_id TEXT PRIMARY KEY,
+                resume_cursor_json TEXT,
+                runtime_payload_json TEXT,
+                last_seen_at TEXT
+            );
+            CREATE TABLE projection_threads (
+                thread_id TEXT PRIMARY KEY,
+                title TEXT,
+                pending_approval_count INTEGER,
+                pending_user_input_count INTEGER,
+                has_actionable_proposed_plan INTEGER,
+                interaction_mode TEXT,
+                deleted_at TEXT
+            );
+            INSERT INTO provider_session_runtime VALUES
+                ('t-claude', '{"threadId":"t-claude","resume":"claude-session"}',
+                 '{"cwd":"/repo"}', '2026-08-27T00:00:00Z'),
+                ('t-codex', '{"threadId":"codex-session"}',
+                 '{"cwd":"/repo"}', '2026-08-27T00:00:01Z');
+            INSERT INTO projection_threads VALUES
+                ('t-claude', 'Claude thread', 0, 0, 0, 'default', NULL),
+                ('t-codex', 'Codex thread', 0, 0, 0, 'default', NULL);
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        let threads = read_threads(dir.path()).unwrap();
+        assert_eq!(
+            threads[0].provider_session_id.as_deref(),
+            Some("codex-session")
+        );
+        assert_eq!(
+            threads[1].provider_session_id.as_deref(),
+            Some("claude-session")
+        );
     }
 
     fn thread(id: &str, session: Option<&str>, cwd: Option<&str>) -> Thread {
