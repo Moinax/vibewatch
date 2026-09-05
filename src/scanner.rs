@@ -722,18 +722,28 @@ mod tests {
         fn start(home: &Path, config: Option<&Path>, cwd: &Path, id: Option<&str>) -> Self {
             let mut command = std::process::Command::new("sh");
             command
-                .args(["-c", "read line"])
+                .args(["-c", "echo ready; read line"])
                 .env("HOME", home)
                 .env_remove("CLAUDE_CONFIG_DIR")
                 .current_dir(cwd)
-                .stdin(std::process::Stdio::piped());
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped());
             if let Some(config) = config {
                 command.env("CLAUDE_CONFIG_DIR", config);
             }
             if let Some(id) = id {
                 command.args(["--session-id", id]);
             }
-            Self(command.spawn().unwrap())
+            use std::io::BufRead;
+
+            let mut process = Self(command.spawn().unwrap());
+            // Wait for exec before inspecting /proc; spawn can return while
+            // the child still has the test runner's command line.
+            let mut output = std::io::BufReader::new(process.0.stdout.take().unwrap());
+            let mut ready = String::new();
+            output.read_line(&mut ready).unwrap();
+            assert_eq!(ready, "ready\n");
+            process
         }
 
         fn session(&self) -> Session {
