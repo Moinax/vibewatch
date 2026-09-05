@@ -17,14 +17,18 @@ use std::path::{Path, PathBuf};
 /// successful read it is populated with the resolved path.
 pub fn read_last_assistant_line(
     agent: AgentKind,
+    pid: u32,
     session_id: &str,
     cached_path: &mut Option<PathBuf>,
 ) -> Option<String> {
     match agent {
         AgentKind::Cursor | AgentKind::WebStorm => None,
         AgentKind::ClaudeCode => {
-            let home = dirs::home_dir()?;
-            read_last_assistant_line_in(agent, &home.join(".claude"), session_id, cached_path)
+            if let Some(path) = cached_path.as_ref().filter(|path| path.exists()) {
+                return parse_claude(&head_and_tail(path)?);
+            }
+            let root = crate::session::claude_config_dir(pid)?;
+            read_last_assistant_line_in(agent, &root, session_id, cached_path)
         }
         AgentKind::Codex => {
             let home = dirs::home_dir()?;
@@ -34,7 +38,7 @@ pub fn read_last_assistant_line(
 }
 
 /// Walk `<root>/projects/*/` looking for `<session_id>.jsonl`.
-fn resolve_claude_path_in(root: &Path, session_id: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_claude_path_in(root: &Path, session_id: &str) -> Option<PathBuf> {
     let projects = root.join("projects");
     for project in std::fs::read_dir(&projects).ok()?.flatten() {
         let candidate = project.path().join(format!("{}.jsonl", session_id));
@@ -602,8 +606,8 @@ mod tests {
     #[test]
     fn cursor_and_webstorm_return_none() {
         let mut p = None;
-        assert!(read_last_assistant_line(AgentKind::Cursor, "s1", &mut p).is_none());
-        assert!(read_last_assistant_line(AgentKind::WebStorm, "s1", &mut p).is_none());
+        assert!(read_last_assistant_line(AgentKind::Cursor, 0, "s1", &mut p).is_none());
+        assert!(read_last_assistant_line(AgentKind::WebStorm, 0, "s1", &mut p).is_none());
         assert!(p.is_none());
     }
 

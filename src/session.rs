@@ -1664,15 +1664,37 @@ pub fn is_agent_pid_alive(pid: u32, kind: AgentKind) -> bool {
 ///
 /// Worth avoiding when the caller already knows the path: there are hundreds of
 /// project directories, so this is a `stat` per directory per call.
-pub fn claude_transcript_path(session_id: &str) -> Option<std::path::PathBuf> {
-    let claude_projects = dirs::home_dir()?.join(".claude/projects");
-    for project in std::fs::read_dir(&claude_projects).ok()?.flatten() {
-        let transcript = project.path().join(format!("{}.jsonl", session_id));
-        if transcript.exists() {
-            return Some(transcript);
-        }
+pub fn claude_transcript_path(pid: u32, session_id: &str) -> Option<std::path::PathBuf> {
+    crate::transcript::resolve_claude_path_in(&claude_config_dir(pid)?, session_id)
+}
+
+/// Claude's config directory belongs to the agent process, not the daemon.
+/// T3 can run several accounts at once, each with its own CLAUDE_CONFIG_DIR.
+pub fn claude_config_dir(pid: u32) -> Option<std::path::PathBuf> {
+    let raw = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
+    let dir = claude_config_dir_from_environ(&raw)
+        .or_else(|| dirs::home_dir().map(|p| p.join(".claude")))?;
+    if dir.is_absolute() {
+        Some(dir)
+    } else {
+        Some(
+            std::fs::read_link(format!("/proc/{pid}/cwd"))
+                .ok()?
+                .join(dir),
+        )
     }
-    None
+}
+
+fn claude_config_dir_from_environ(raw: &[u8]) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let value = |key: &[u8]| {
+        raw.split(|b| *b == 0)
+            .find_map(|entry| entry.strip_prefix(key))
+            .filter(|value| !value.is_empty())
+            .map(|value| std::path::PathBuf::from(std::ffi::OsStr::from_bytes(value)))
+    };
+    value(b"CLAUDE_CONFIG_DIR=").or_else(|| value(b"HOME=").map(|home| home.join(".claude")))
 }
 
 /// Read the session name from a Claude Code transcript (last custom-title entry).
@@ -1698,8 +1720,8 @@ pub fn read_transcript_name_at(transcript: &std::path::Path) -> Option<String> {
 }
 
 /// The same, for a caller that has only the session id.
-pub fn read_transcript_name(session_id: &str) -> Option<String> {
-    read_transcript_name_at(&claude_transcript_path(session_id)?)
+pub fn read_transcript_name(pid: u32, session_id: &str) -> Option<String> {
+    read_transcript_name_at(&claude_transcript_path(pid, session_id)?)
 }
 
 /// Get the parent PID by parsing /proc/{pid}/stat.
@@ -2057,6 +2079,30 @@ pub fn prettify_tool_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_config_uses_the_agents_environment() {
+        use std::path::PathBuf;
+        assert_eq!(
+            claude_config_dir_from_environ(
+                b"HOME=/accounts/personal\0CLAUDE_CONFIG_DIR=/accounts/work\0"
+            ),
+            Some(PathBuf::from("/accounts/work"))
+        );
+        assert_eq!(
+            claude_config_dir_from_environ(b"HOME=/accounts/personal\0CLAUDE_CONFIG_DIR=\0"),
+            Some(PathBuf::from("/accounts/personal/.claude"))
+        );
+        assert_eq!(
+            claude_config_dir_from_environ(b"HOME=/accounts/personal\0"),
+            Some(PathBuf::from("/accounts/personal/.claude"))
+        );
+        assert_eq!(
+            claude_config_dir_from_environ(b"OTHER_CLAUDE_CONFIG_DIR=/wrong\0"),
+            None
+        );
+        assert_eq!(claude_config_dir(u32::MAX), None);
+    }
 
     #[test]
     fn synthetic_prompt_spots_a_background_task_reporting_in() {

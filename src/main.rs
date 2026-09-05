@@ -830,6 +830,7 @@ async fn handle_connection(
                     let agent = session.agent;
                     if let Some(text) = transcript::read_last_assistant_line(
                         agent,
+                        session.pid,
                         &session_id,
                         &mut session.transcript_path,
                     ) {
@@ -881,7 +882,7 @@ async fn handle_connection(
                     }
                     // Same rule as the scan tick: the agent's title only takes
                     // the name if it has moved since a hand rename banked it.
-                    if let Some(title) = session::read_transcript_name(&session_id) {
+                    if let Some(title) = session::read_transcript_name(session.pid, &session_id) {
                         session.offer_agent_title(&title);
                     }
                     session.touch();
@@ -1085,6 +1086,7 @@ async fn handle_connection(
                     let agent = session.agent;
                     if let Some(text) = transcript::read_last_assistant_line(
                         agent,
+                        session.pid,
                         &session_id,
                         &mut session.transcript_path,
                     ) {
@@ -1203,6 +1205,7 @@ async fn handle_connection(
                         let agent = session.agent;
                         if let Some(text) = transcript::read_last_assistant_line(
                             agent,
+                            session.pid,
                             &sid,
                             &mut session.transcript_path,
                         ) {
@@ -1267,7 +1270,18 @@ async fn handle_connection(
                 // The agent's title as it stands goes in with the name, so the
                 // hold ends on the next change to it rather than on everything
                 // it has already said.
-                let title = session::read_transcript_name(&session_id);
+                let title = registry.all().iter().find_map(|session| {
+                    (session.id == session_id
+                        || session.agent_session_id.as_deref() == Some(session_id.as_str()))
+                    .then(|| {
+                        session
+                            .transcript_path
+                            .as_deref()
+                            .and_then(session::read_transcript_name_at)
+                            .or_else(|| session::read_transcript_name(session.pid, &session_id))
+                    })
+                    .flatten()
+                });
                 if registry.set_name_from_outside(&session_id, name.clone(), title) {
                     eprintln!("vibewatch: {session_id} named \"{name}\" from outside");
                     status_notify.notify_waiters();

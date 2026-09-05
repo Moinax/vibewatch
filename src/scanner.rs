@@ -264,6 +264,7 @@ pub async fn run_scanner(
             }
             if let Some(text) = crate::transcript::read_last_assistant_line(
                 AgentKind::Codex,
+                session.pid,
                 &snapshot.session_id,
                 &mut session.transcript_path,
             ) {
@@ -450,7 +451,7 @@ fn transcript_title_if_changed(
         None if session.id.starts_with("scan-") || session.id.starts_with("window-") => {
             return None
         }
-        None => crate::session::claude_transcript_path(&session.id)?,
+        None => crate::session::claude_transcript_path(session.pid, &session.id)?,
     };
     let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
     if seen.get(&session.id) == Some(&mtime) {
@@ -507,10 +508,8 @@ fn transcript_for(
     census: &HashMap<u32, PathBuf>,
     floor: std::time::SystemTime,
 ) -> Option<PathBuf> {
-    if let Some(path) = crate::session::claude_session_id_arg(session.pid)
-        .and_then(|id| crate::session::claude_transcript_path(&id))
-    {
-        return Some(path);
+    if let Some(id) = crate::session::claude_session_id_arg(session.pid) {
+        return crate::session::claude_transcript_path(session.pid, &id);
     }
     if cwd_is_shared(census, session.pid) {
         eprintln!(
@@ -521,7 +520,7 @@ fn transcript_for(
         return None;
     }
     crate::transcript::find_claude_transcript_for_cwd(
-        &dirs::home_dir()?.join(".claude/projects"),
+        &crate::session::claude_config_dir(session.pid)?.join("projects"),
         cwd,
         floor,
     )
@@ -561,6 +560,8 @@ fn hydrate_from_transcript(session: &mut Session, census: &HashMap<u32, PathBuf>
     // the same moment — the process cannot have written anything before it
     // started.
     let floor = transcript_floor(session.pid);
+    // Keep T3's stated identity even before Claude writes its first transcript.
+    session.agent_session_id = crate::session::claude_session_id_arg(session.pid);
     let Some(path) = transcript_for(session, cwd, census, floor) else {
         return;
     };
@@ -589,6 +590,7 @@ fn hydrate_from_transcript(session: &mut Session, census: &HashMap<u32, PathBuf>
     // resolves by session id, which a `scan-` session does not have.
     if let Some(text) = crate::transcript::read_last_assistant_line(
         AgentKind::ClaudeCode,
+        session.pid,
         &snapshot.session_id,
         &mut session.transcript_path,
     ) {
@@ -712,6 +714,174 @@ mod tests {
         // read, and the muxer fallback is what names it.
         let scan = Session::new("scan-claude-78".into(), AgentKind::ClaudeCode, 78);
         assert_eq!(transcript_title_if_changed(&scan, &mut seen), None);
+    }
+
+    struct ClaudeProcess(std::process::Child);
+
+    impl ClaudeProcess {
+        fn start(home: &Path, config: Option<&Path>, cwd: &Path, id: Option<&str>) -> Self {
+            let mut command = std::process::Command::new("sh");
+            command
+                .args(["-c", "read line"])
+                .env("HOME", home)
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .current_dir(cwd)
+                .stdin(std::process::Stdio::piped());
+            if let Some(config) = config {
+                command.env("CLAUDE_CONFIG_DIR", config);
+            }
+            if let Some(id) = id {
+                command.args(["--session-id", id]);
+            }
+            Self(command.spawn().unwrap())
+        }
+
+        fn session(&self) -> Session {
+            Session::new(
+                format!("scan-claude-{}", self.0.id()),
+                AgentKind::ClaudeCode,
+                self.0.id(),
+            )
+        }
+    }
+
+    impl Drop for ClaudeProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn write_account_transcript(
+        root: &Path,
+        cwd: &Path,
+        id: &str,
+        title: &str,
+        tool: &str,
+    ) -> PathBuf {
+        let project = cwd.to_string_lossy().replace('/', "-");
+        let directory = root.join("projects").join(project);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("{id}.jsonl"));
+        let records = [
+            serde_json::json!({"type":"custom-title", "customTitle":title}),
+            serde_json::json!({"type":"assistant", "sessionId":id, "message":{
+                "role":"assistant", "content":[{"type":"text", "text":title},
+                    {"type":"tool_use", "id":"tool-1", "name":tool, "input":{}}]}}),
+        ];
+        std::fs::write(
+            &path,
+            records
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        path
+    }
+
+    #[test]
+    fn two_claude_accounts_in_one_worktree_keep_their_own_transcripts() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = home.path();
+        let personal = ClaudeProcess::start(home.path(), None, cwd, Some("same-id"));
+        let work_root = home.path().join("work-account");
+        let work = ClaudeProcess::start(home.path(), Some(&work_root), cwd, Some("same-id"));
+        let census = HashMap::from([
+            (personal.0.id(), cwd.to_owned()),
+            (work.0.id(), cwd.to_owned()),
+        ]);
+        let paths = [
+            write_account_transcript(
+                &home.path().join(".claude"),
+                cwd,
+                "same-id",
+                "Personal",
+                "Bash",
+            ),
+            write_account_transcript(&work_root, cwd, "same-id", "Work", "AskUserQuestion"),
+        ];
+        for (index, (process, title, status)) in [
+            (
+                &personal,
+                "Personal",
+                crate::session::SessionStatus::Executing,
+            ),
+            (
+                &work,
+                "Work",
+                crate::session::SessionStatus::WaitingApproval,
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut session = process.session();
+            hydrate_from_transcript(&mut session, &census);
+            assert_eq!(session.agent_session_id.as_deref(), Some("same-id"));
+            assert_eq!(session.transcript_path.as_ref(), Some(&paths[index]));
+            assert_eq!(session.status, status);
+            assert_eq!(
+                transcript_title_if_changed(&session, &mut HashMap::new()).as_deref(),
+                Some(title)
+            );
+            assert_eq!(
+                crate::session::read_transcript_name(session.pid, "same-id").as_deref(),
+                Some(title)
+            );
+            // Hook sessions have no cached transcript when the first event arrives.
+            let mut cached = None;
+            assert_eq!(
+                crate::transcript::read_last_assistant_line(
+                    AgentKind::ClaudeCode,
+                    session.pid,
+                    "same-id",
+                    &mut cached
+                )
+                .as_deref(),
+                Some(title)
+            );
+            assert_eq!(cached.as_ref(), Some(&paths[index]));
+        }
+    }
+
+    #[test]
+    fn a_stated_session_id_never_falls_back_to_another_transcript() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("work-account");
+        let process = ClaudeProcess::start(
+            home.path(),
+            Some(&root),
+            home.path(),
+            Some("not-written-yet"),
+        );
+        write_account_transcript(&root, home.path(), "another-session", "Wrong", "Bash");
+        let mut session = process.session();
+        let census = HashMap::from([(session.pid, home.path().to_owned())]);
+        hydrate_from_transcript(&mut session, &census);
+        assert_eq!(session.agent_session_id.as_deref(), Some("not-written-yet"));
+        assert_eq!(session.transcript_path, None);
+    }
+
+    #[test]
+    fn claude_without_a_stated_id_uses_its_own_account_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("work-account");
+        let process = ClaudeProcess::start(
+            home.path(),
+            Some(Path::new("work-account")),
+            home.path(),
+            None,
+        );
+        let path =
+            write_account_transcript(&root, home.path(), "interactive", "Work", "AskUserQuestion");
+        let mut session = process.session();
+        let census = HashMap::from([(session.pid, home.path().to_owned())]);
+        hydrate_from_transcript(&mut session, &census);
+        assert_eq!(session.agent_session_id.as_deref(), Some("interactive"));
+        assert_eq!(session.transcript_path, Some(path));
+        assert_eq!(session.blocked_on, Some(crate::session::Ask::Input));
     }
 
     #[test]

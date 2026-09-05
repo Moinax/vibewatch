@@ -128,6 +128,8 @@ window_class = "jetbrains-webstorm"
 - The row is named after the **T3 thread**, not the agent's transcript title, and carries a `T3 Code` badge where a terminal name would be. When T3 says a thread is waiting on you, the row says which of the three it is — `awaiting approval`, `awaiting answer` or `plan ready` — read from the three counters T3's own sidebar ranks by. For these agents T3 owns the prompt rather than Claude, so its answer is the only one there is: our hooks never see the gate, and the agent's last tool is stale by the time it matters.
 - Clicking the row raises the **T3 Code window** and asks T3 to select the thread inside it, over `t3code://threads/<environment>/<thread>` — the URL T3's own mobile widgets use. A T3 build that does not route that link still reveals its window, so the click lands you in the app either way, on whichever thread was last open. Upstream T3 does not route it yet ([pingdotgg/t3code#6008](https://github.com/pingdotgg/t3code/pull/6008)). Set `deep_link = false` on a machine with no T3 desktop app: nothing claims the scheme there, so the desktop would ask which application to open it with.
 
+Claude transcripts are read from each agent process's `CLAUDE_CONFIG_DIR`, or from `.claude` under that process's `HOME` when unset. Separate Claude providers can use separate accounts and transcript directories. Hooks must be installed in each account's settings.
+
 Thread titles and ids are read from T3's own state database, opened read-only. Without the `t3` cargo feature that read is skipped and the sessions simply wear the agent's own title; `enabled = false` drops them from the panel altogether, back to treating every headless agent as a script's.
 
 ## Waybar styling
