@@ -63,7 +63,7 @@ pub fn live_runtimes() -> Vec<Runtime> {
 
 /// Every T3 state directory that exists, most-likely first — one per build
 /// channel, both of which can be in use at once.
-fn profile_dirs() -> Vec<PathBuf> {
+pub(crate) fn profile_dirs() -> Vec<PathBuf> {
     let Some(home) = dirs::home_dir() else {
         return Vec::new();
     };

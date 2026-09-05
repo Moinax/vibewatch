@@ -20,7 +20,7 @@
 //! it spares every reader a date parse — the one place an ISO-8601 string
 //! arrives is Claude's response, converted once on the way in.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -71,11 +71,25 @@ pub struct Window {
     pub resets_at: Option<i64>,
 }
 
-/// One provider's quota, as of its last report.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One account's quota, as of its last report.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// `claude` or `codex`.
     pub provider: String,
+    /// Which account, when a provider can have several: Claude's config
+    /// directory. With the provider it is the cache key, so two subscriptions
+    /// never overwrite each other. `None` for Codex, which has one.
+    #[serde(default)]
+    pub source: Option<PathBuf>,
+    /// The account's name in the panel — "Moinax" — read from the T3 Code
+    /// instance that points at it, which is where the user named it. `None`
+    /// names nothing and the block wears the provider's name alone.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// The instance's accent colour from the same place, `#rrggbb`, painted as
+    /// a badge on the provider mark so two Claude accounts tell apart.
+    #[serde(default)]
+    pub accent: Option<String>,
     /// Rendered in this order. A window a provider adds or brings back (Codex's
     /// paused 5-hour, a new model weekly) arrives here and is painted with no
     /// change anywhere downstream.
@@ -179,22 +193,40 @@ pub fn refresh_in_background(enabled: bool) {
 /// A provider that cannot be reached keeps whatever it last reported, so one
 /// leg failing never costs the other's figures — nor its own previous ones.
 pub fn refresh() {
-    let merged = merge(read(), [fetch_claude(), read_codex()]);
+    let accounts = claude_accounts();
+    let fresh: Vec<Option<Snapshot>> = accounts
+        .iter()
+        .map(fetch_claude)
+        .chain([read_codex()])
+        .collect();
+    let merged = merge(read(), fresh);
     write_cache(&merged);
 }
 
-/// Fold whatever answered into whatever was cached, one entry per provider.
+/// Fold whatever answered into whatever was cached, one entry per account.
 ///
-/// A provider that did not answer keeps its previous entry untouched. That is
+/// An account that did not answer keeps its previous entry untouched. That is
 /// the whole failure policy: one leg going quiet — no network, an expired
-/// token, Codex never run on this machine — costs neither the other leg's
-/// figures nor its own last ones, which then simply age in view.
+/// token, Codex never run on this machine — costs neither the other legs'
+/// figures nor its own last ones, which then simply age in view. The one
+/// thing dropped is an account whose config directory is gone: nothing can
+/// ever refresh it, so its figures would age in view forever.
 fn merge(
     mut cached: Vec<Snapshot>,
     fresh: impl IntoIterator<Item = Option<Snapshot>>,
 ) -> Vec<Snapshot> {
+    // A Claude entry with no source was written before accounts existed, and
+    // no account will ever match it.
+    cached.retain(|s| {
+        s.source
+            .as_deref()
+            .map_or(s.provider != "claude", Path::is_dir)
+    });
     for snapshot in fresh.into_iter().flatten() {
-        match cached.iter_mut().find(|s| s.provider == snapshot.provider) {
+        match cached
+            .iter_mut()
+            .find(|s| s.provider == snapshot.provider && s.source == snapshot.source)
+        {
             Some(current) => *current = snapshot,
             None => cached.push(snapshot),
         }
@@ -206,12 +238,115 @@ fn merge(
 // Claude
 // ---------------------------------------------------------------------------
 
-/// The OAuth access token Claude Code holds for the subscription account.
+/// One Claude subscription: where Claude Code keeps its credentials, and how
+/// T3 Code names it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaudeAccount {
+    pub config_dir: PathBuf,
+    pub label: Option<String>,
+    pub accent: Option<String>,
+}
+
+/// Every Claude account on this machine: `~/.claude`, plus each config
+/// directory a T3 Code provider instance points at. A second subscription is
+/// a second `CLAUDE_CONFIG_DIR`, and T3 is where the user gave it a name and a
+/// colour, so those come along; an instance aimed at the default directory
+/// names that one.
+// ponytail: T3's settings are the only source of accounts; a `[limits]`
+// list in config.toml is the upgrade if someone runs two accounts without T3.
+fn claude_accounts() -> Vec<ClaudeAccount> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let mut accounts = vec![ClaudeAccount {
+        config_dir: home.join(".claude"),
+        label: None,
+        accent: None,
+    }];
+    for profile in crate::t3::profile_dirs() {
+        let Ok(raw) = std::fs::read_to_string(profile.join("settings.json")) else {
+            continue;
+        };
+        for instance in t3_claude_instances(&raw, &home) {
+            match accounts
+                .iter_mut()
+                .find(|a| a.config_dir == instance.config_dir)
+            {
+                Some(known) => {
+                    known.label = instance.label.or(known.label.take());
+                    known.accent = instance.accent.or(known.accent.take());
+                }
+                None => accounts.push(instance),
+            }
+        }
+    }
+    accounts
+}
+
+/// The Claude instances in a T3 `settings.json`. An empty `homePath` is T3's
+/// spelling for the default `~/.claude`.
+fn t3_claude_instances(raw: &str, home: &Path) -> Vec<ClaudeAccount> {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
+    };
+    let Some(instances) = value.get("providerInstances").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    instances
+        .values()
+        .filter(|instance| instance.get("driver").and_then(Value::as_str) == Some("claudeAgent"))
+        .map(|instance| {
+            let home_path = instance
+                .pointer("/config/homePath")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let config_dir = match home_path.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None if home_path.is_empty() || home_path == "~" => home.join(".claude"),
+                None => PathBuf::from(home_path),
+            };
+            ClaudeAccount {
+                config_dir,
+                label: instance
+                    .get("displayName")
+                    .and_then(Value::as_str)
+                    .and_then(account_label),
+                accent: instance
+                    .get("accentColor")
+                    .and_then(Value::as_str)
+                    .filter(|colour| is_hex_colour(colour))
+                    .map(str::to_string),
+            }
+        })
+        .collect()
+}
+
+/// "Claude (Moinax)" → "Moinax". The provider's own name already heads the
+/// block, so an instance named after it alone names nothing.
+fn account_label(display_name: &str) -> Option<String> {
+    let trimmed = display_name.trim();
+    let rest = trimmed
+        .strip_prefix("Claude Code")
+        .or_else(|| trimmed.strip_prefix("Claude"))
+        .unwrap_or(trimmed);
+    let rest =
+        rest.trim_matches(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '·' | '-' | ':'));
+    (!rest.is_empty()).then(|| rest.to_string())
+}
+
+/// `#rrggbb` and nothing else: the value lands in a stylesheet.
+fn is_hex_colour(colour: &str) -> bool {
+    colour.len() == 7
+        && colour.starts_with('#')
+        && colour[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The OAuth access token Claude Code holds for the account.
 ///
 /// Read on each refresh rather than held: Claude Code rotates it, and a copy
 /// kept in memory would go stale and start answering 401 with no way back.
-fn claude_token() -> Option<String> {
-    let path = dirs::home_dir()?.join(".claude").join(".credentials.json");
+fn claude_token(account: &ClaudeAccount) -> Option<String> {
+    let path = account.config_dir.join(".credentials.json");
     token_from_credentials(&std::fs::read_to_string(path).ok()?)
 }
 
@@ -231,13 +366,13 @@ fn token_from_credentials(raw: &str) -> Option<String> {
     )
 }
 
-/// Claude's quota, straight from the account.
+/// One Claude account's quota, straight from the account.
 ///
 /// `None` on anything at all going wrong — no token, no network, a refusal, a
 /// shape we do not recognise. The caller keeps the previous snapshot in every
 /// one of those cases, which is why none of them are worth telling apart here.
-fn fetch_claude() -> Option<Snapshot> {
-    let token = claude_token()?;
+fn fetch_claude(account: &ClaudeAccount) -> Option<Snapshot> {
+    let token = claude_token(account)?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(REQUEST_TIMEOUT))
         .build()
@@ -251,7 +386,11 @@ fn fetch_claude() -> Option<Snapshot> {
         .into_body()
         .read_json()
         .ok()?;
-    claude_snapshot(&body, now_epoch())
+    let mut snapshot = claude_snapshot(&body, now_epoch())?;
+    snapshot.source = Some(account.config_dir.clone());
+    snapshot.account = account.label.clone();
+    snapshot.accent = account.accent.clone();
+    Some(snapshot)
 }
 
 /// Fold Claude's response into the contract.
@@ -316,6 +455,7 @@ fn claude_snapshot(body: &Value, now: i64) -> Option<Snapshot> {
         provider: AgentKind::ClaudeCode.slug().to_string(),
         windows,
         as_of: now,
+        ..Default::default()
     })
 }
 
@@ -475,6 +615,7 @@ fn codex_snapshot(content: &str, fallback_as_of: i64) -> Option<Snapshot> {
                 provider: AgentKind::Codex.slug().to_string(),
                 windows,
                 as_of,
+                ..Default::default()
             });
         }
     }
@@ -716,29 +857,36 @@ mod tests {
         assert_eq!(labels, ["Session", "Weekly"]);
     }
 
+    fn claude_at(dir: &Path, as_of: i64) -> Snapshot {
+        Snapshot {
+            provider: "claude".to_string(),
+            source: Some(dir.to_path_buf()),
+            windows: vec![Window {
+                id: "five_hour".to_string(),
+                label: "5h".to_string(),
+                used_percent: 9.0,
+                resets_at: Some(10),
+            }],
+            as_of,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn a_quiet_leg_costs_neither_the_other_nor_its_own_last_figures() {
+        let home = std::env::temp_dir();
         let cached = vec![
-            Snapshot {
-                provider: "claude".to_string(),
-                windows: vec![Window {
-                    id: "five_hour".to_string(),
-                    label: "5h".to_string(),
-                    used_percent: 9.0,
-                    resets_at: Some(10),
-                }],
-                as_of: 100,
-            },
+            claude_at(&home, 100),
             Snapshot {
                 provider: "codex".to_string(),
-                windows: Vec::new(),
                 as_of: 50,
+                ..Default::default()
             },
         ];
         let fresh = Snapshot {
-            provider: "claude".to_string(),
             windows: Vec::new(),
             as_of: 200,
+            ..claude_at(&home, 200)
         };
 
         // Claude answered, Codex did not.
@@ -759,12 +907,86 @@ mod tests {
     fn a_provider_seen_for_the_first_time_is_added_not_dropped() {
         let fresh = Snapshot {
             provider: "codex".to_string(),
-            windows: Vec::new(),
             as_of: 7,
+            ..Default::default()
         };
         let merged = merge(Vec::new(), [Some(fresh)]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].provider, "codex");
+    }
+
+    #[test]
+    fn two_claude_accounts_are_two_entries() {
+        // Two directories that exist: the merge drops an account whose
+        // directory is gone.
+        let personal = claude_at(Path::new("/"), 1);
+        let work = claude_at(&std::env::temp_dir(), 2);
+        let merged = merge(Vec::new(), [Some(personal.clone()), Some(work.clone())]);
+        assert_eq!(merged.len(), 2, "one entry per account, not per provider");
+
+        // Refreshing one leaves the other standing.
+        let merged = merge(merged, [None, Some(Snapshot { as_of: 3, ..work })]);
+        assert_eq!(merged[0].as_of, 1);
+        assert_eq!(merged[1].as_of, 3);
+    }
+
+    #[test]
+    fn a_claude_entry_from_before_accounts_or_whose_directory_is_gone_is_dropped() {
+        let legacy = Snapshot {
+            provider: "claude".to_string(),
+            as_of: 1,
+            ..Default::default()
+        };
+        let gone = claude_at(Path::new("/nonexistent/claude-config"), 2);
+        let codex = Snapshot {
+            provider: "codex".to_string(),
+            as_of: 3,
+            ..Default::default()
+        };
+        let merged = merge(vec![legacy, gone, codex.clone()], [None]);
+        assert_eq!(merged, vec![codex]);
+    }
+
+    #[test]
+    fn t3_instances_name_and_colour_the_accounts() {
+        let home = Path::new("/home/me");
+        let raw = r##"{"providerInstances": {
+            "claude_mbrella": {"driver": "claudeAgent", "displayName": "Claude (Mbrella)",
+                               "accentColor": "#00c28e", "config": {"homePath": "~/.claude-mbrella"}},
+            "claudeAgent": {"driver": "claudeAgent", "displayName": "Claude (Moinax)",
+                            "accentColor": "#07B7F5", "config": {"homePath": ""}},
+            "codex": {"driver": "codex", "displayName": "Codex"}
+        }}"##;
+        let mut instances = t3_claude_instances(raw, home);
+        instances.sort_by(|a, b| a.config_dir.cmp(&b.config_dir));
+        assert_eq!(
+            instances,
+            vec![
+                ClaudeAccount {
+                    config_dir: home.join(".claude"),
+                    label: Some("Moinax".to_string()),
+                    accent: Some("#07B7F5".to_string()),
+                },
+                ClaudeAccount {
+                    config_dir: home.join(".claude-mbrella"),
+                    label: Some("Mbrella".to_string()),
+                    accent: Some("#00c28e".to_string()),
+                },
+            ]
+        );
+        assert!(t3_claude_instances("not json", home).is_empty());
+    }
+
+    #[test]
+    fn account_labels_drop_the_provider_name_and_bad_colours_are_refused() {
+        assert_eq!(account_label("Claude (Moinax)").as_deref(), Some("Moinax"));
+        assert_eq!(account_label("Claude Code · Work").as_deref(), Some("Work"));
+        assert_eq!(account_label("Personal").as_deref(), Some("Personal"));
+        assert_eq!(account_label("Claude"), None);
+        assert_eq!(account_label("  "), None);
+        assert!(is_hex_colour("#00c28e"));
+        assert!(!is_hex_colour("#00c28e; }"));
+        assert!(!is_hex_colour("red"));
     }
 
     #[test]

@@ -25,11 +25,12 @@ pub const MUTED: Flag = Flag {
 };
 
 /// The account-limits section above the agent list is unfolded. Defaults to
-/// on: the numbers are the reason the section was added, and a fold nobody
-/// knows to open shows nothing.
+/// off: the folded row carries one chip per account, so the figure that
+/// matters is in view either way, and the meters cost a third of the panel
+/// once two Claude accounts report.
 pub const LIMITS_EXPANDED: Flag = Flag {
     name: "limits-expanded",
-    default: true,
+    default: false,
 };
 
 /// A finish or an approval is allowed to slide the drawer open on its own.

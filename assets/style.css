@@ -90,6 +90,42 @@ window.vibewatch-panel {
     font-weight: 600;
 }
 
+/* The folded row's chips: one per account, its tightest window's figure, the
+   rest on hover. The pill-badge shape, so a chip reads as a badge rather than
+   as a second row of meters. */
+.limits-summary {
+    margin-left: 6px;
+}
+
+.limit-chip {
+    min-height: 18px;
+    padding: 0 6px 0 4px;
+    border-radius: 4px;
+    background-color: alpha(@cat_border, 0.14);
+}
+
+.limit-chip .limit-percent {
+    font-size: 10px;
+    font-weight: 600;
+}
+
+/* T3's instance badge: a dot in the account's own colour on the corner of the
+   provider mark, ringed in the panel ground so it sits on the mark rather than
+   in it. The colour itself comes from a per-accent provider the section
+   installs, GTK CSS having no per-widget inline colour. */
+.account-dot {
+    min-width: 5px;
+    min-height: 5px;
+    border-radius: 8px;
+    border: 1px solid @cat_panel_bg;
+}
+
+.provider-block .account-dot {
+    min-width: 6px;
+    min-height: 6px;
+    border-width: 1.5px;
+}
+
 .limits-body {
     padding-bottom: 4px;
 }
@@ -98,6 +134,12 @@ window.vibewatch-panel {
     font-size: 12px;
     font-weight: 500;
     color: @cat_text;
+}
+
+/* The account's name after the provider's, the way T3's heading does it. */
+.provider-instance {
+    font-size: 11px;
+    color: @cat_text_time;
 }
 
 .limit-window-label {
@@ -143,6 +185,24 @@ window.vibewatch-panel {
 
 .limit-meter.claude progress {
     background-color: #d97757;
+}
+
+/* Pressure overrides the series colour: peach from 60%, red from 85%. After
+   the provider rules on purpose — same specificity, so order decides. */
+.limit-percent.pressure-warn {
+    color: @cat_peach;
+}
+
+.limit-meter.pressure-warn progress {
+    background-color: @cat_peach;
+}
+
+.limit-percent.pressure-hot {
+    color: @cat_red;
+}
+
+.limit-meter.pressure-hot progress {
+    background-color: @cat_red;
 }
 
 .session-list {
