@@ -90,53 +90,36 @@ window.vibewatch-panel {
     font-weight: 600;
 }
 
-/* Sized down to the title beside it: the stock 16px symbolic reads as a button
-   next to an 11px label. Its colour comes from the `limit-warn` /
-   `limit-critical` classes the section hangs on it, the same two the hot row
-   wears — a symbolic icon takes `color` like text does. */
-.limit-warning {
-    -gtk-icon-size: 12px;
-}
-
 .limits-body {
     padding-bottom: 4px;
 }
 
 .provider-name {
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 500;
     color: @cat_text;
 }
 
-/* Only rendered once the snapshot is old enough to matter, so it never has to
-   compete with the numbers when they are current. */
-.limit-age {
-    font-size: 9px;
+.limit-window-label {
+    font-size: 11px;
     color: @cat_text_time;
 }
 
-.limit-window-label,
-.limit-reset {
-    font-size: 9px;
-    color: @cat_text_time;
-}
-
-.limit-used {
-    font-size: 10px;
+.limit-percent {
+    font-size: 11px;
+    font-weight: 500;
+    font-feature-settings: "tnum";
     color: @cat_text;
 }
 
-.limit-warn {
-    color: @cat_peach;
+.limit-percent.claude {
+    color: #d97757;
 }
 
-.limit-critical {
-    color: @cat_red;
-}
-
-.limit-empty {
+.limit-reset {
     font-size: 10px;
-    color: @cat_text_muted;
+    font-feature-settings: "tnum";
+    color: @cat_text_time;
 }
 
 /* A hairline, not a widget: the number beside it carries the reading, and the
@@ -144,7 +127,7 @@ window.vibewatch-panel {
    progressbar is several times this tall and would out-weigh the text. */
 .limit-meter trough,
 .limit-meter progress {
-    min-height: 3px;
+    min-height: 4px;
     border-radius: 2px;
     border: none;
 }
@@ -153,9 +136,7 @@ window.vibewatch-panel {
     background-color: alpha(@cat_border, 0.30);
 }
 
-/* Per provider, the same distinction the T3 card draws. Claude's terracotta is
-   its own brand colour and holds on both grounds, so it is not a palette token;
-   Codex has no mark colour there either and takes the foreground. */
+/* The exact series colours used by T3 Code's limits hover. */
 .limit-meter progress {
     background-color: @cat_text;
 }

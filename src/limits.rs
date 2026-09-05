@@ -14,8 +14,7 @@
 //! Both fold into one cache of our own under the state dir, which is what every
 //! surface reads. That keeps the read path off the network — the panel polls at
 //! 10 Hz — and means a fetch that fails leaves the last known figures standing
-//! rather than blanking the section. They then age visibly, which is the honest
-//! outcome: these numbers are stale far more often than they are missing.
+//! rather than blanking the section.
 //!
 //! Times are Unix seconds throughout. Codex reports them that way already, and
 //! it spares every reader a date parse — the one place an ISO-8601 string
@@ -62,7 +61,7 @@ const CODEX_MAX_FILES: usize = 32;
 pub struct Window {
     /// Stable identifier: `five_hour`, `seven_day`, or a model slug.
     pub id: String,
-    /// Short display label — "5h", "Week", "Fable".
+    /// Display label shared with T3 Code — "Session", "Weekly", "Weekly · Fable".
     pub label: String,
     /// Share of the window consumed, 0-100.
     pub used_percent: f64,
@@ -81,9 +80,8 @@ pub struct Snapshot {
     /// paused 5-hour, a new model weekly) arrives here and is painted with no
     /// change anywhere downstream.
     pub windows: Vec<Window>,
-    /// Unix seconds at which the provider reported these numbers — not when we
-    /// read them. Claude's can lag by hours; readers show the age rather than
-    /// pretend the figures are current.
+    /// Unix seconds at which the provider reported these numbers, used to keep
+    /// the freshest snapshot when several Codex sessions are available.
     pub as_of: i64,
 }
 
@@ -267,8 +265,8 @@ fn claude_snapshot(body: &Value, now: i64) -> Option<Snapshot> {
     let mut windows = Vec::new();
 
     for (bucket, kind, id, label) in [
-        ("five_hour", "session", "five_hour", "5h"),
-        ("seven_day", "weekly_all", "seven_day", "Week"),
+        ("five_hour", "session", "five_hour", "Session"),
+        ("seven_day", "weekly_all", "seven_day", "Weekly"),
     ] {
         let scoped = limits.and_then(|l| {
             l.iter()
@@ -303,7 +301,7 @@ fn claude_snapshot(body: &Value, now: i64) -> Option<Snapshot> {
         };
         if let Some(window) = window_from(
             &name.to_lowercase(),
-            name,
+            &format!("Weekly · {name}"),
             limit.get("percent").and_then(Value::as_f64),
             limit.get("resets_at"),
         ) {
@@ -442,9 +440,12 @@ fn codex_snapshot(content: &str, fallback_as_of: i64) -> Option<Snapshot> {
                 continue;
             };
             let (id, label) = match meter.get("window_minutes").and_then(Value::as_i64) {
-                Some(300) => ("five_hour", "5h"),
-                Some(10080) => ("seven_day", "Week"),
-                _ => (
+                Some(300) => ("five_hour", "Session"),
+                Some(10080) => ("seven_day", "Weekly"),
+                Some(minutes) if minutes >= 30 * 24 * 60 => (slot, "Monthly"),
+                Some(minutes) if minutes >= 7 * 24 * 60 => (slot, "Weekly"),
+                Some(_) => (slot, "Session"),
+                None => (
                     slot,
                     if slot == "primary" {
                         "Primary"
@@ -638,7 +639,7 @@ mod tests {
         .unwrap();
         let snapshot = claude_snapshot(&body, 1_787_406_101).expect("a snapshot");
         let labels: Vec<&str> = snapshot.windows.iter().map(|w| w.label.as_str()).collect();
-        assert_eq!(labels, ["5h", "Week", "Fable"]);
+        assert_eq!(labels, ["Session", "Weekly", "Weekly · Fable"]);
         assert_eq!(snapshot.windows[1].used_percent, 85.0);
         assert_eq!(
             snapshot.windows[0].resets_at,
@@ -673,7 +674,7 @@ mod tests {
         .unwrap();
         let snapshot = claude_snapshot(&body, 0).expect("a snapshot");
         let labels: Vec<&str> = snapshot.windows.iter().map(|w| w.label.as_str()).collect();
-        assert_eq!(labels, ["Week"]);
+        assert_eq!(labels, ["Weekly"]);
     }
 
     #[test]
@@ -689,7 +690,7 @@ mod tests {
         let snapshot = codex_snapshot(line, 1_787_200_000).expect("a snapshot");
         assert_eq!(snapshot.provider, "codex");
         assert_eq!(snapshot.windows.len(), 1);
-        assert_eq!(snapshot.windows[0].label, "Week");
+        assert_eq!(snapshot.windows[0].label, "Weekly");
         assert_eq!(snapshot.windows[0].id, "seven_day");
         assert_eq!(snapshot.windows[0].used_percent, 2.0);
         assert_eq!(snapshot.windows[0].resets_at, Some(1787207448));
@@ -712,7 +713,7 @@ mod tests {
         let line = r#"{"payload":{"rate_limits":{"primary":{"used_percent":30.0,"window_minutes":300,"resets_at":5},"secondary":{"used_percent":4.0,"window_minutes":10080,"resets_at":6}}}}"#;
         let snapshot = codex_snapshot(line, 0).expect("a snapshot");
         let labels: Vec<&str> = snapshot.windows.iter().map(|w| w.label.as_str()).collect();
-        assert_eq!(labels, ["5h", "Week"]);
+        assert_eq!(labels, ["Session", "Weekly"]);
     }
 
     #[test]
