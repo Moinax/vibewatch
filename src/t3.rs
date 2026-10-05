@@ -121,8 +121,8 @@ pub struct Thread {
     /// What T3 is holding this thread for, if anything. Kept as the three asks
     /// T3 itself keeps apart rather than collapsed to a bool: its sidebar
     /// paints "Pending Approval", "Awaiting Input" and "Plan Ready" as three
-    /// different states, the projection stores them as three counters, and a
-    /// sum threw all of that away one column before vibewatch could use it.
+    /// different states, and a bool threw all of that away one column before
+    /// vibewatch could use it.
     pub blocked: Option<Ask>,
 }
 
@@ -153,15 +153,23 @@ pub fn threads(_base_dir: &Path) -> Vec<Thread> {
     Vec::new()
 }
 
+/// The file T3 keeps its state in.
+///
+/// `statev2.sqlite` since the orchestration-v2 migration, which left the old
+/// `state.sqlite` in place as a frozen snapshot — so the name is not a detail
+/// to be lenient about: reading the stale one succeeds, returns threads last
+/// touched the day of the migration, and matches none of them.
+#[cfg(feature = "t3")]
+fn state_db_path(base_dir: &Path) -> PathBuf {
+    base_dir.join("statev2.sqlite")
+}
+
 #[cfg(feature = "t3")]
 fn read_threads(base_dir: &Path) -> rusqlite::Result<Vec<Thread>> {
     // `mode=ro` rather than opening the file read-only by flag alone: SQLite
     // needs the URI form to promise it will not write, and a writable open would
     // contend with the server for the database lock on every tick.
-    let uri = format!(
-        "file:{}?mode=ro",
-        base_dir.join("state.sqlite").to_string_lossy()
-    );
+    let uri = format!("file:{}?mode=ro", state_db_path(base_dir).to_string_lossy());
     let conn = rusqlite::Connection::open_with_flags(
         uri,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
@@ -170,25 +178,51 @@ fn read_threads(base_dir: &Path) -> rusqlite::Result<Vec<Thread>> {
     // rather than a tick we lose. Short, because this runs on the scan loop.
     conn.busy_timeout(std::time::Duration::from_millis(250))?;
 
-    // The two projections are joined rather than read from `projection_threads`
-    // alone because the id the agent knows itself by is only in the runtime
-    // cursor. Claude stores it under `resume`; Codex uses `threadId` itself.
+    // Four projections, because the thread row alone names none of what the
+    // panel needs:
+    //  - the id the agent knows itself by is the provider thread's
+    //    `nativeThreadRef.nativeId` — the `--session-id` Claude was launched
+    //    with, and the `threadId` for Codex. Not the `provider_session_id`
+    //    column, which is T3's own composite id and whose trailing uuid is an
+    //    *earlier* session of the same thread.
+    //  - the provider thread is pinned to the thread's own
+    //    `active_provider_thread_id` so a thread that has handed off or forked
+    //    contributes one row, the current one, rather than one per generation.
+    //  - a thread outside a worktree has no `worktreePath` and works in its
+    //    project's root, which is the directory its agent reports.
+    //  - the asks are rows now, not counters: one pending runtime request at a
+    //    time, split by kind exactly as T3 splits it for its own sidebar, and a
+    //    proposed plan is `active` until something supersedes it.
     let mut stmt = conn.prepare(
-        "SELECT r.thread_id,
+        "SELECT t.thread_id,
                 t.title,
+                json_extract(p.payload_json, '$.nativeThreadRef.nativeId'),
                 COALESCE(
-                    json_extract(r.resume_cursor_json, '$.resume'),
-                    json_extract(r.resume_cursor_json, '$.threadId')
+                    json_extract(t.payload_json, '$.worktreePath'),
+                    j.workspace_root
                 ),
-                json_extract(r.runtime_payload_json, '$.cwd'),
-                COALESCE(t.pending_approval_count, 0),
-                COALESCE(t.pending_user_input_count, 0),
-                COALESCE(t.has_actionable_proposed_plan, 0),
+                EXISTS (SELECT 1
+                          FROM orchestration_v2_projection_runtime_requests q
+                         WHERE q.thread_id = t.thread_id
+                           AND q.status = 'pending'
+                           AND q.kind NOT IN ('user_input', 'auth_refresh')),
+                EXISTS (SELECT 1
+                          FROM orchestration_v2_projection_runtime_requests q
+                         WHERE q.thread_id = t.thread_id
+                           AND q.status = 'pending'
+                           AND q.kind = 'user_input'),
+                EXISTS (SELECT 1
+                          FROM orchestration_v2_projection_plans n
+                         WHERE n.thread_id = t.thread_id
+                           AND n.kind = 'proposed_plan'
+                           AND n.status = 'active'),
                 t.interaction_mode
-           FROM provider_session_runtime r
-           JOIN projection_threads t USING (thread_id)
+           FROM orchestration_v2_projection_provider_threads p
+           JOIN orchestration_v2_projection_threads t
+             ON p.provider_thread_id = t.active_provider_thread_id
+           LEFT JOIN projection_projects j ON j.project_id = t.project_id
           WHERE t.deleted_at IS NULL
-          ORDER BY r.last_seen_at DESC
+          ORDER BY p.updated_at DESC
           LIMIT 200",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -218,13 +252,16 @@ fn read_threads(base_dir: &Path) -> rusqlite::Result<Vec<Thread>> {
 /// lives in [`SessionRegistry::apply_t3_thread`](crate::session::SessionRegistry::apply_t3_thread);
 /// a change to T3's pill has to be answered in both places.
 ///
-/// The plan counter is the one that needs a second opinion, because it counts
-/// nothing outstanding: `has_actionable_proposed_plan` says the latest plan has
-/// no `implementedAt`, and approving one and watching the agent build it never
-/// sets that. What ends the ask is the thread leaving plan mode, which is what
+/// The plan flag is the one that needs a second opinion, because it marks
+/// nothing outstanding: a `proposed_plan` stays `active` until something
+/// supersedes it, and approving one and watching the agent build it never
+/// does. What ends the ask is the thread leaving plan mode, which is what
 /// accepting a plan does — so the mode is the condition T3's own pill checks
 /// alongside the flag, and without it a thread says `plan ready` for the rest
 /// of its life, from the moment it was told to go.
+///
+/// The three arguments arrive as `EXISTS` results, 0 or 1 — the projection
+/// keeps one pending runtime request per thread, so there is nothing to count.
 #[cfg(feature = "t3")]
 fn ask_from_counts(approvals: i64, inputs: i64, plan: i64, interaction_mode: &str) -> Option<Ask> {
     if approvals > 0 {
@@ -433,51 +470,190 @@ mod tests {
         assert_eq!(ask_from_counts(0, 1, 1, "default"), Some(Ask::Input));
     }
 
-    /// Both T3 cursor shapes resolve to the provider's exact session id.
+    /// A T3 state database with just the columns [`read_threads`] reads.
     #[cfg(feature = "t3")]
-    #[test]
-    fn reads_provider_session_ids_from_both_cursor_shapes() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = rusqlite::Connection::open(dir.path().join("state.sqlite")).unwrap();
+    fn write_state_db(dir: &Path) {
+        let conn = rusqlite::Connection::open(state_db_path(dir)).unwrap();
         conn.execute_batch(
             r#"
-            CREATE TABLE provider_session_runtime (
-                thread_id TEXT PRIMARY KEY,
-                resume_cursor_json TEXT,
-                runtime_payload_json TEXT,
-                last_seen_at TEXT
+            CREATE TABLE orchestration_v2_projection_provider_threads (
+                provider_thread_id TEXT PRIMARY KEY,
+                thread_id TEXT,
+                payload_json TEXT,
+                updated_at TEXT
             );
-            CREATE TABLE projection_threads (
+            CREATE TABLE orchestration_v2_projection_threads (
                 thread_id TEXT PRIMARY KEY,
+                project_id TEXT,
                 title TEXT,
-                pending_approval_count INTEGER,
-                pending_user_input_count INTEGER,
-                has_actionable_proposed_plan INTEGER,
                 interaction_mode TEXT,
+                active_provider_thread_id TEXT,
+                payload_json TEXT,
                 deleted_at TEXT
             );
-            INSERT INTO provider_session_runtime VALUES
-                ('t-claude', '{"threadId":"t-claude","resume":"claude-session"}',
-                 '{"cwd":"/repo"}', '2026-08-27T00:00:00Z'),
-                ('t-codex', '{"threadId":"codex-session"}',
-                 '{"cwd":"/repo"}', '2026-08-27T00:00:01Z');
-            INSERT INTO projection_threads VALUES
-                ('t-claude', 'Claude thread', 0, 0, 0, 'default', NULL),
-                ('t-codex', 'Codex thread', 0, 0, 0, 'default', NULL);
+            CREATE TABLE orchestration_v2_projection_runtime_requests (
+                thread_id TEXT,
+                kind TEXT,
+                status TEXT
+            );
+            CREATE TABLE orchestration_v2_projection_plans (
+                thread_id TEXT,
+                kind TEXT,
+                status TEXT
+            );
+            CREATE TABLE projection_projects (
+                project_id TEXT PRIMARY KEY,
+                workspace_root TEXT
+            );
+            INSERT INTO projection_projects VALUES ('p-api', '/w/api');
+            INSERT INTO orchestration_v2_projection_provider_threads VALUES
+                ('pt-worktree', 't-worktree',
+                 '{"nativeThreadRef":{"nativeId":"claude-session"}}',
+                 '2026-10-05T00:00:01Z'),
+                ('pt-root', 't-root',
+                 '{"nativeThreadRef":{"nativeId":"codex-session"}}',
+                 '2026-10-05T00:00:00Z'),
+                ('pt-superseded', 't-worktree',
+                 '{"nativeThreadRef":{"nativeId":"handed-off-session"}}',
+                 '2026-10-05T00:00:02Z');
+            INSERT INTO orchestration_v2_projection_threads VALUES
+                ('t-worktree', 'p-api', 'Worktree thread', 'default', 'pt-worktree',
+                 '{"worktreePath":"/w/api-feature"}', NULL),
+                ('t-root', 'p-api', 'Project-root thread', 'default', 'pt-root',
+                 '{"worktreePath":null}', NULL);
             "#,
         )
         .unwrap();
-        drop(conn);
+    }
+
+    /// The session id is the provider thread's *native* id — the `--session-id`
+    /// the agent was launched with — and not T3's own composite
+    /// `provider_session_id`, whose trailing uuid is an earlier session of the
+    /// same thread and so matches nothing the hooks report.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn reads_the_native_session_id_of_the_active_provider_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        write_state_db(dir.path());
 
         let threads = read_threads(dir.path()).unwrap();
+        // `pt-superseded` is the newest row of all and still contributes
+        // nothing: a thread that handed off has one current provider thread,
+        // and a second row would be a second card for one conversation.
+        assert_eq!(threads.len(), 2);
         assert_eq!(
             threads[0].provider_session_id.as_deref(),
-            Some("codex-session")
+            Some("claude-session")
         );
         assert_eq!(
             threads[1].provider_session_id.as_deref(),
-            Some("claude-session")
+            Some("codex-session")
         );
+    }
+
+    /// Where the agent is working: its worktree, or — for a thread that has
+    /// none — the root of the project it belongs to.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn a_thread_outside_a_worktree_reports_its_project_root() {
+        let dir = tempfile::tempdir().unwrap();
+        write_state_db(dir.path());
+
+        let threads = read_threads(dir.path()).unwrap();
+        assert_eq!(threads[0].cwd.as_deref(), Some("/w/api-feature"));
+        assert_eq!(threads[1].cwd.as_deref(), Some("/w/api"));
+    }
+
+    /// The asks are rows now. One pending runtime request per thread, split by
+    /// kind the way T3 splits it for its own sidebar: `user_input` is the
+    /// question, `auth_refresh` is the app's own business and no ask at all,
+    /// and everything else is a gate the agent is stopped at.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn a_pending_runtime_request_becomes_the_ask_its_kind_means() {
+        let dir = tempfile::tempdir().unwrap();
+        write_state_db(dir.path());
+        let conn = rusqlite::Connection::open(state_db_path(dir.path())).unwrap();
+        // The only pending request, replaced each round: the ask it produces.
+        let ask_for = |kind: &str| {
+            conn.execute(
+                "DELETE FROM orchestration_v2_projection_runtime_requests",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO orchestration_v2_projection_runtime_requests
+                 VALUES ('t-worktree', ?1, 'pending')",
+                [kind],
+            )
+            .unwrap();
+            read_threads(dir.path()).unwrap()[0].blocked
+        };
+
+        assert_eq!(read_threads(dir.path()).unwrap()[0].blocked, None);
+        assert_eq!(ask_for("permission"), Some(Ask::Approval));
+        assert_eq!(ask_for("file-change"), Some(Ask::Approval));
+        assert_eq!(ask_for("user_input"), Some(Ask::Input));
+        // Refreshing its own credentials is not a question for the user.
+        assert_eq!(ask_for("auth_refresh"), None);
+
+        // A resolved request is not an ask either.
+        ask_for("permission");
+        conn.execute(
+            "UPDATE orchestration_v2_projection_runtime_requests SET status = 'resolved'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(read_threads(dir.path()).unwrap()[0].blocked, None);
+    }
+
+    /// A proposed plan asks for a verdict only while the thread is still in
+    /// plan mode — and `active` is how the projection spells "not superseded",
+    /// which outlives the go-ahead.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn an_active_proposed_plan_asks_only_in_plan_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        write_state_db(dir.path());
+        let conn = rusqlite::Connection::open(state_db_path(dir.path())).unwrap();
+        conn.execute(
+            "INSERT INTO orchestration_v2_projection_plans
+             VALUES ('t-worktree', 'proposed_plan', 'active')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(read_threads(dir.path()).unwrap()[0].blocked, None);
+        conn.execute(
+            "UPDATE orchestration_v2_projection_threads
+                SET interaction_mode = 'plan' WHERE thread_id = 't-worktree'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            read_threads(dir.path()).unwrap()[0].blocked,
+            Some(Ask::Plan)
+        );
+    }
+
+    /// A deleted thread is gone from the panel, whatever its provider thread
+    /// still says.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn a_deleted_thread_is_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        write_state_db(dir.path());
+        let conn = rusqlite::Connection::open(state_db_path(dir.path())).unwrap();
+        conn.execute(
+            "UPDATE orchestration_v2_projection_threads
+                SET deleted_at = '2026-10-05T00:00:00Z' WHERE thread_id = 't-worktree'",
+            [],
+        )
+        .unwrap();
+
+        let threads = read_threads(dir.path()).unwrap();
+        assert_eq!(threads.len(), 1);
+        assert_eq!(threads[0].thread_id, "t-root");
     }
 
     fn thread(id: &str, session: Option<&str>, cwd: Option<&str>) -> Thread {
