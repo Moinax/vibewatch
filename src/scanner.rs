@@ -313,6 +313,12 @@ pub async fn run_scanner(
             }
         }
 
+        // The finished mark is the one row state nothing else ever ends: a
+        // finish is an event, not a condition, so unlike `working` or
+        // `awaiting approval` it cannot go false on its own. Aged out here so
+        // it behaves like the rest — see `SessionRegistry::expire_finishes`.
+        registry.expire_finishes(config.finish_ttl());
+
         status_notify.notify_waiters();
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }

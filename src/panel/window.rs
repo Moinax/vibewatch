@@ -459,10 +459,10 @@ pub fn build_window(
         // Only a session awaiting approval holds the drawer open, because only
         // that one cannot proceed without you. A finish used to hold it too, and
         // in use that was wrong: the drawer stayed parked over the work for as
-        // long as it took to notice it. The finish is not lost by closing —
-        // `just_finished` is not time-based, so the card stays peach and the row
-        // keeps its check until the click acknowledges it or that agent picks
-        // the work back up. Announcing pops the drawer open again anyway, and
+        // long as it took to notice it. The finish is not lost by closing — the
+        // card stays peach and the row keeps its check for the whole of
+        // `general.finish_ttl_ms`, or until that agent picks the work back up.
+        // Announcing pops the drawer open again anyway, and
         // `keep_alive` on show gives it a fresh dwell each time.
         if panel_cfg.auto_close {
             let needs_attention = sessions

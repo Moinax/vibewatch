@@ -52,6 +52,19 @@ pub struct GeneralConfig {
     /// sits for minutes — so the two are trivially separable by waiting.
     /// `0` restores announcing on every request.
     pub approval_debounce_ms: u64,
+    /// How long a finished turn keeps its `done` mark before it ages back into
+    /// the idle band, in milliseconds.
+    ///
+    /// The mark used to hold until the row was clicked, which left every finish
+    /// pinned to the top of the panel — and to the bar's name slot — until it
+    /// was dismissed by hand; over a fleet of a dozen agents that is a stack of
+    /// dismissals to work through. A finish announces itself when it happens,
+    /// with a chime and a panel pop, so the row only owes you the mark for as
+    /// long as you might come and look — and then it goes false by itself, like
+    /// every other state. Expiry is the scan's housekeeping, so it lands within
+    /// a tick of the deadline rather than on it. `0` keeps the mark for the
+    /// life of the turn, which only the agent picking the work back up ends.
+    pub finish_ttl_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -81,9 +94,8 @@ pub struct PanelConfig {
     /// holds the panel open indefinitely — the timer is reset, not merely
     /// deferred — because it is the one state that cannot proceed without you.
     /// A finished turn does not hold the drawer: closing loses nothing, since
-    /// `Session::just_finished` is not time-based, so the row stays lit until
-    /// the row's `Seen` bar or a click on the card acknowledges it, or that
-    /// agent picks the work back up.
+    /// the row stays lit after it — until `general.finish_ttl_ms` expires the
+    /// mark, or that agent picks the work back up.
     pub auto_close: bool,
     /// How long the pointer has to stay away before the panel closes, in
     /// milliseconds. Only starts counting once nothing needs attention in the
@@ -164,6 +176,7 @@ impl Default for GeneralConfig {
             idle_debounce_ms: 3000,
             hold_ceiling_ms: 300_000,
             approval_debounce_ms: 400,
+            finish_ttl_ms: 60_000,
         }
     }
 }
@@ -231,6 +244,12 @@ impl Config {
         std::time::Duration::from_millis(self.general.approval_debounce_ms)
     }
 
+    /// How long a finished row keeps its mark before the scan drops it. See
+    /// [`GeneralConfig::finish_ttl_ms`]; zero never drops it.
+    pub fn finish_ttl(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.general.finish_ttl_ms)
+    }
+
     /// Returns the IPC socket path.
     /// Uses `$XDG_RUNTIME_DIR/vibewatch.sock` if available,
     /// otherwise falls back to `/tmp/vibewatch-$USER.sock`.
@@ -272,6 +291,7 @@ mod tests {
         assert_eq!(config.general.idle_debounce_ms, 3000);
         assert_eq!(config.general.hold_ceiling_ms, 300_000);
         assert_eq!(config.general.approval_debounce_ms, 400);
+        assert_eq!(config.general.finish_ttl_ms, 60_000);
         assert!(config.sounds.enabled);
         assert_eq!(config.sounds.approval_needed, "builtin:chime");
         assert_eq!(config.sounds.idle, "builtin:success");
@@ -291,13 +311,15 @@ mod tests {
         // `[general]` section. The container-level `#[serde(default)]` has to
         // fill the gaps from `GeneralConfig::default()` and not from
         // `u64::default()` — 0 would silently mean "announce every Stop" for the
-        // debounce and "keep a stalled turn silent forever" for the ceiling,
-        // i.e. exactly the two failures these settings exist to remove.
+        // debounce, "keep a stalled turn silent forever" for the ceiling, and
+        // "keep every finish pinned for the life of the turn" for the finish
+        // TTL — i.e. exactly the failures these settings exist to remove.
         let config: Config = toml::from_str("[general]\ncompositor = \"hyprland\"\n").unwrap();
         assert_eq!(config.general.compositor, "hyprland");
         assert_eq!(config.general.idle_debounce_ms, 3000);
         assert_eq!(config.general.hold_ceiling_ms, 300_000);
         assert_eq!(config.general.approval_debounce_ms, 400);
+        assert_eq!(config.general.finish_ttl_ms, 60_000);
     }
 
     #[test]

@@ -93,13 +93,6 @@ pub enum InboundEvent {
         request_id: String,
         choice_index: usize,
     },
-    /// The user clicked a session card in the panel — they are on their way
-    /// to that pane, so the row stops asking for attention: the "just
-    /// finished" mark is cleared. A pending approval is left alone, since
-    /// only answering it (here or in the agent's own TUI) resolves that.
-    AcknowledgeSession {
-        session_id: String,
-    },
     /// Someone outside vibewatch has a better name for this session than the
     /// agent's own title — a multiplexer tab the user renamed by hand. Their
     /// words outrank the agent's account of the work, so this name holds until

@@ -1252,15 +1252,6 @@ async fn handle_connection(
                     status_notify.notified().await;
                 }
             }
-            InboundEvent::AcknowledgeSession { session_id } => {
-                if let Some(mut session) = registry.get(&session_id) {
-                    if session.just_finished() {
-                        session.acknowledge();
-                        registry.register(session);
-                        status_notify.notify_waiters();
-                    }
-                }
-            }
             InboundEvent::TogglePanel => {
                 if let Some(ref sender) = panel_hooks.toggle {
                     sender();

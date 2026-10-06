@@ -60,7 +60,8 @@ pub fn tool_icon(tool: &str) -> &'static str {
     }
 }
 
-/// What a turn that has ended and not been acknowledged is called, everywhere.
+/// What a turn that has ended and is still wearing its mark is called,
+/// everywhere.
 ///
 /// The word only. The check mark belongs to the *shape*, not the name of the
 /// state — see [`Session::indicator_glyph`] — so a surface with an indicator
@@ -444,7 +445,7 @@ pub enum StateKind {
     /// re-invoke it — a background shell it parked on. Not a finish, and not
     /// activity either: nothing is being written right now.
     Monitoring,
-    /// The turn ended and the finish has not been acknowledged yet.
+    /// The turn ended and the mark has not expired yet.
     Done,
     /// Nothing to say: asleep, or seen by the scan and never heard from.
     Resting,
@@ -715,9 +716,9 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_on: Option<Ask>,
     /// Unix epoch seconds of the last `Stop` — the moment the agent finished
-    /// its turn — for as long as the user hasn't acknowledged it. Drives
-    /// [`Session::just_finished`]; cleared by [`Session::acknowledge`] when
-    /// the card is clicked.
+    /// its turn — for as long as the mark stands. Drives
+    /// [`Session::just_finished`], and cleared only by
+    /// [`SessionRegistry::expire_finishes`] once the mark has had its time.
     #[serde(default)]
     pub finished_at: Option<u64>,
     /// Bumped on every [`Session::mark_finished`]. The idle chime is announced
@@ -967,18 +968,27 @@ impl Session {
         self.status == SessionStatus::Idle && self.finished_at.is_some()
     }
 
-    /// The user clicked this session's card: they are heading for the pane,
-    /// so the row goes back to a plain idle one. Only the finished mark is
-    /// dropped — a pending approval still needs a real answer.
-    pub fn acknowledge(&mut self) {
+    /// Drop the finished mark, putting the row back among the plain idle ones.
+    ///
+    /// The one way out other than the agent picking the work back up, and
+    /// [`SessionRegistry::expire_finishes`] is its only caller: `done` ends on
+    /// the clock, like every other state goes false on its own. A click used to
+    /// end it too, which is what made it the one row state that waited on a
+    /// mouse.
+    fn clear_finish(&mut self) {
         self.finished_at = None;
     }
 
-    /// True from the moment the agent finishes its turn until the user
-    /// clicks the card — or until the agent picks the work back up, since
-    /// the state is gated on it still being idle. The panel lights these
-    /// rows, ranks them near the top, and stays open while any exists, so
-    /// the agent that chimed can't scroll past unnoticed.
+    /// True from the moment the agent finishes its turn until the mark is
+    /// dropped — by the scan once `general.finish_ttl_ms` has passed, or by the
+    /// agent picking the work back up, since the state is gated on it still
+    /// being idle. The panel
+    /// lights these rows and ranks them near the top, so the agent that chimed
+    /// can't scroll past unnoticed.
+    ///
+    /// Not time-based itself: the deadline is enforced by clearing
+    /// `finished_at` on the scan tick, so every surface keeps reading one
+    /// stored fact rather than racing a clock of its own.
     /// Background work holds this shut: the turn is stamped finished the moment
     /// the agent stops, but a session that stopped only to wait on twelve runs
     /// it launched has not finished anything, and saying so is what chimed and
@@ -1181,7 +1191,7 @@ impl Session {
     /// 4 = gone. `Running` is the scanner's "alive, but no hook data yet"
     /// state — it reads as `idle` everywhere else in the UI, so it bands with
     /// `Idle`. Band 1 is transient: a freshly finished agent sits there until
-    /// the click acknowledging it drops it back into the idle band.
+    /// the finish TTL drops it back into the idle band.
     ///
     /// Bands 0–2 are read off [`state_kind`](Self::state_kind) rather than
     /// re-matched on `status`: "blocked on the user" and "just finished" are
@@ -1484,6 +1494,33 @@ impl SessionRegistry {
         let had = std::mem::replace(&mut session.background_shells, live);
         (had > 0 && live == 0 && session.announceable())
             .then(|| (session.id.clone(), session.finish_seq))
+    }
+
+    /// Drop the finished mark from every row that has worn it for longer than
+    /// `ttl` — the scan tick's housekeeping, and the only thing that ends a
+    /// `done`. A finish announces itself when it happens, so the row owes you
+    /// the mark only for as long as you might come and look; it used to hold
+    /// until the card or its `Seen` bar was clicked, which pinned every
+    /// finished agent above the working ones until it was dismissed by hand.
+    ///
+    /// Only a row that has actually finished ages out. A turn
+    /// [`held_open`](Session::held_open) by background work carries the very
+    /// same `finished_at` while it waits, and clearing that one would throw away
+    /// a finish still owed — the chime included, since `hold_ceiling_ms` is
+    /// several times this wait and reads the stamp when it fires.
+    ///
+    /// Zero `ttl` keeps every mark until it is acknowledged.
+    pub fn expire_finishes(&self, ttl: std::time::Duration) {
+        if ttl.is_zero() {
+            return;
+        }
+        let cutoff = now_epoch().saturating_sub(ttl.as_secs());
+        let mut map = self.sessions.write().unwrap();
+        for session in map.values_mut() {
+            if session.just_finished() && session.finished_at.is_some_and(|at| at <= cutoff) {
+                session.clear_finish();
+            }
+        }
     }
 
     /// Look up a session by id; if missing and any session exists for the
@@ -2413,7 +2450,7 @@ mod tests {
         assert_eq!(ids, ["approval", "thinking", "idle", "stopped"]);
     }
 
-    /// An idle session whose `Stop` landed at epoch `at`, still unacknowledged.
+    /// An idle session whose `Stop` landed at epoch `at`, still marked.
     fn finished(id: &str, at: u64) -> Session {
         let mut s = ordered(id, SessionStatus::Idle, 10, 10);
         s.finished_at = Some(at);
@@ -2586,11 +2623,39 @@ mod tests {
     }
 
     #[test]
-    fn just_finished_holds_until_the_card_is_clicked() {
+    fn finishes_age_out_but_a_held_turn_keeps_its_stamp() {
+        use std::time::Duration;
+        let registry = SessionRegistry::new();
+        // Finished a minute ago, finished just now, and a turn still held open
+        // by a task it launched — which carries the same stamp as the first.
+        registry.register(finished("stale", now_epoch().saturating_sub(60)));
+        registry.register(finished("fresh", now_epoch()));
+        let mut held = finished("held", now_epoch().saturating_sub(60));
+        held.background_shells = 1;
+        registry.register(held);
+
+        registry.expire_finishes(Duration::from_secs(30));
+        assert!(
+            registry.get("stale").is_some_and(|s| !s.just_finished()),
+            "past the TTL, so it bands with the idle ones again"
+        );
+        assert!(registry.get("fresh").is_some_and(|s| s.just_finished()));
+        assert!(
+            registry.get("held").is_some_and(|s| s.held_open()),
+            "a hold outlasts the TTL — the finish it owes has not landed yet"
+        );
+
+        // Zero is the opt-out: the mark holds until something clears it.
+        registry.expire_finishes(Duration::ZERO);
+        assert!(registry.get("fresh").is_some_and(|s| s.just_finished()));
+    }
+
+    #[test]
+    fn just_finished_holds_until_the_mark_is_dropped() {
         let mut s = finished("done", 100);
-        assert!(s.just_finished(), "stays lit however long it waits");
-        s.acknowledge();
-        assert!(!s.just_finished(), "the click clears it");
+        assert!(s.just_finished(), "the predicate itself keeps no clock");
+        s.clear_finish();
+        assert!(!s.just_finished(), "dropping the stamp clears it");
         // Never stamped at all — a scanner-discovered idle session.
         assert!(!ordered("never-ran", SessionStatus::Idle, 10, 10).just_finished());
     }
@@ -2928,22 +2993,6 @@ mod tests {
     }
 
     #[test]
-    fn acknowledge_leaves_a_pending_approval_alone() {
-        // Clicking the card means "I'm heading over there", not "allow" —
-        // the prompt must still be answered somewhere.
-        let mut s = ordered("asking", SessionStatus::WaitingApproval, 10, 10);
-        s.pending_approval = Some(PendingApproval {
-            request_id: "r1".into(),
-            tool: "Bash".into(),
-            detail: None,
-            choices: vec![],
-        });
-        s.acknowledge();
-        assert!(s.pending_approval.is_some());
-        assert_eq!(s.status, SessionStatus::WaitingApproval);
-    }
-
-    #[test]
     fn sort_puts_just_finished_under_approval_and_over_working() {
         let mut sessions = vec![
             ordered("idle", SessionStatus::Idle, 10, 10),
@@ -2969,15 +3018,15 @@ mod tests {
     }
 
     #[test]
-    fn acknowledged_session_falls_back_into_the_idle_band() {
+    fn an_expired_finish_falls_back_into_the_idle_band() {
         let mut sessions = vec![
             ordered("thinking", SessionStatus::Thinking, 10, 10),
-            finished("clicked", 100),
+            finished("aged-out", 100),
         ];
-        sessions[1].acknowledge();
+        sessions[1].clear_finish();
         sort_by_activity(&mut sessions);
         let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["thinking", "clicked"]);
+        assert_eq!(ids, ["thinking", "aged-out"]);
     }
 
     #[test]

@@ -215,6 +215,24 @@ fn headline_status(session: &Session, palette: &Palette) -> String {
     )
 }
 
+/// Which session gets the bar's one name slot: blocked on the user first,
+/// then whoever is working, then a finish, then the sleeping ones.
+///
+/// Nearly [`Session::activity_band`], and deliberately not it: the panel lists
+/// every row, so ranking a finish above the working ones there only decides
+/// what you read first. The bar shows one name, so the same ranking *replaces*
+/// live work with news about work that is over — and holds the slot for the
+/// whole of `finish_ttl_ms`, with half the fleet mid-turn behind it. Blocked
+/// still outranks everything, since that one cannot proceed without you.
+fn headline_rank(session: &Session) -> u8 {
+    match session.state_kind() {
+        k if k.needs_user() => 0,
+        StateKind::Working | StateKind::Monitoring => 1,
+        StateKind::Done => 2,
+        _ => 3,
+    }
+}
+
 fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusResponse {
     let active: Vec<&Session> = sessions
         .iter()
@@ -238,7 +256,7 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
     };
 
     // Nothing to report: no sessions at all, or a fleet where every one of them
-    // is asleep and none has an unacknowledged finish. Either way no single
+    // is asleep and none is still wearing a finish. Either way no single
     // session's name carries signal, so the widget wears the brand instead.
     // Asked of `state_kind` and not re-derived from `status`, for the reason the
     // panel row gives for the same choice: that match is exhaustive, so a state
@@ -280,14 +298,11 @@ fn build_status_with_palette(sessions: &[Session], palette: &Palette) -> StatusR
         };
     }
 
-    // Whose name to show. `activity_band` is the panel's own ranking — blocked
-    // on the user, then just finished, then working — so the bar and the list
-    // agree on what matters most instead of each having its own opinion.
-    // `interest_priority` only breaks ties inside a band (executing over
-    // thinking).
+    // Whose name to show — see [`headline_rank`]; `interest_priority` only
+    // breaks ties inside a rank (executing over thinking).
     let lead = active
         .iter()
-        .min_by_key(|s| (s.activity_band(), std::cmp::Reverse(s.interest_priority())))
+        .min_by_key(|s| (headline_rank(s), std::cmp::Reverse(s.interest_priority())))
         .expect("a non-empty fleet that is not at rest has a leader");
 
     let name = pango_escape(&truncate_name(&lead.display_name()));
@@ -452,29 +467,6 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_turn_leads_over_one_still_working() {
-        // The chime just fired for `vibewatch`; that is the row the eye wants,
-        // even though an executing session outranks an idle one on status
-        // alone. `activity_band` is what puts it first.
-        let mut finished = make_named("vibewatch", AgentKind::ClaudeCode, SessionStatus::Idle);
-        finished.mark_finished();
-        let sessions = vec![
-            make_named("dotfiles", AgentKind::Codex, SessionStatus::Executing),
-            finished,
-        ];
-        let status = dark(&sessions);
-        assert_eq!(
-            status.text,
-            format!(
-                "vibewatch {} <span foreground=\"#a6e3a1\">{} done</span>  \
-                 <span foreground=\"#cdd6f4\">+1</span>",
-                SEP_DARK, ICON_DONE
-            )
-        );
-        assert_eq!(status.logo, "logo-claude");
-    }
-
-    #[test]
     fn the_bar_says_exactly_what_the_panel_row_says() {
         // The drift this guards against, which shipped once: the bar read
         // `✔ done` while the panel read `finished`, for the same session at the
@@ -552,8 +544,49 @@ mod tests {
     }
 
     #[test]
+    fn a_finish_does_not_take_the_slot_from_a_working_agent() {
+        // The one-slot rule the panel's banding cannot give: `vibewatch` has
+        // chimed and is over, `dotfiles` is mid-tool, and the bar used to name
+        // the finished one for the whole of `finish_ttl_ms` — hiding live work
+        // behind news about work that is done.
+        let mut finished = make_named("vibewatch", AgentKind::ClaudeCode, SessionStatus::Idle);
+        finished.mark_finished();
+        let status = dark(&[
+            finished.clone(),
+            make_named("dotfiles", AgentKind::Codex, SessionStatus::Executing),
+        ]);
+        assert!(
+            status.text.starts_with("dotfiles "),
+            "expected the working agent named, got {:?}",
+            status.text
+        );
+        assert_eq!(status.logo, "logo-codex", "the lead's agent, not the first");
+
+        // Alone among sleepers it still leads: the finish is news as long as
+        // nothing is actually running.
+        let status = dark(&[
+            finished.clone(),
+            make_named("asleep", AgentKind::ClaudeCode, SessionStatus::Idle),
+        ]);
+        assert!(status.text.starts_with("vibewatch "));
+        assert!(status.text.contains(&format!("{ICON_DONE} done")));
+
+        // An approval outranks both — it is the one that cannot proceed.
+        let status = dark(&[
+            finished,
+            make_named("dotfiles", AgentKind::Codex, SessionStatus::Executing),
+            make_named("blocked", AgentKind::ClaudeCode, SessionStatus::WaitingApproval),
+        ]);
+        assert!(
+            status.text.starts_with("blocked "),
+            "expected the blocked agent named, got {:?}",
+            status.text
+        );
+    }
+
+    #[test]
     fn a_finished_turn_is_not_at_rest() {
-        // One idle session with an unacknowledged finish must not collapse to
+        // One idle session still wearing its finish must not collapse to
         // the brand: that is exactly the finish the bar used to swallow.
         let mut finished = make_named("vibewatch", AgentKind::ClaudeCode, SessionStatus::Idle);
         finished.mark_finished();

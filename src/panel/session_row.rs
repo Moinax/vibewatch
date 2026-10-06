@@ -13,9 +13,8 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     // The card's whole vocabulary, `just-finished` included: a session that
     // finished takes its own class instead of the flat `idle` one, so the row
     // that made the chime is obvious the moment the drawer slides open. It
-    // reverts when the click acknowledges the finish, or when that agent picks
-    // the work back up — never on a timer, so a chime you were away for is
-    // still marked. `state_kind` also splits the three blocked states apart,
+    // reverts when the finish ages out of the registry (`finish_ttl_ms`), or
+    // when that agent picks the work back up. `state_kind` also splits the three blocked states apart,
     // which is why this is no longer `status.css_class()`: that one cannot see
     // `current_tool` and so cannot tell a question from a permission gate.
     let status_class = session.state_kind().css_class();
@@ -105,19 +104,6 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
     action_label.set_max_width_chars(1);
     content.append(&action_label);
 
-    // "Seen it" without "take me there". The card click acknowledges too, but
-    // it also focuses the agent's pane and rolls the drawer up — no use when
-    // you are reading the fleet and only want the green row to stop claiming a
-    // finish you have already registered. It sits under the row as a bar rather
-    // than as an icon among the badges, because the panel already has one shape
-    // for "this row is asking you something" — the approval buttons — and a
-    // finish is the only other row that asks. Only on a finished row, since
-    // that is the only state acknowledgement means anything for. Being a
-    // Button, its own gesture claims the click, so the row's never sees it.
-    if session.just_finished() {
-        content.append(&ack_button(session.id.clone()));
-    }
-
     if let Some(ref pending) = session.pending_approval {
         // Empty `choices` = no actionable buttons (ExitPlanMode). The
         // indicator + "approval" state still render; the user clicks the
@@ -132,23 +118,17 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     let pid = session.pid;
     let window_id = session.window_id.clone();
-    let session_id = session.id.clone();
     let t3_thread_id = session.t3_thread_id.clone();
     let gesture = gtk::GestureClick::new();
     gesture.connect_released(move |gesture, _, _, _| {
         let wid = window_id.clone();
         let p = pid;
-        let sid = session_id.clone();
         let thread = t3_thread_id.clone();
-        std::thread::spawn(move || {
-            focus_session(wid.as_deref(), p, thread.as_deref());
-            // Off the GTK thread: the row stops asking for attention, which
-            // is also what lets the drawer's auto-close resume for a
-            // finished agent. Deliberately not tied to answering an
-            // approval — going to read the context in the pane and replying
-            // there is the common way that ends too.
-            send_to_daemon(crate::ipc::InboundEvent::AcknowledgeSession { session_id: sid });
-        });
+        // Focusing and nothing else: a click used to also clear the finished
+        // mark, which is what made `done` the one row state a mouse could end.
+        // The mark expires on the clock now, like every other state goes false
+        // on its own, so the click has one meaning left.
+        std::thread::spawn(move || focus_session(wid.as_deref(), p, thread.as_deref()));
         // Roll the drawer up right away: the click means "take me there",
         // and the overlay sits over the very window we are focusing.
         if let Some(win) = gesture
@@ -163,28 +143,6 @@ pub fn build_row(session: &Session) -> gtk::ListBoxRow {
 
     row.set_child(Some(&card));
     row
-}
-
-/// The bar under a finished row: clears `just_finished` and nothing else — no
-/// focus, no dismiss. The row repaints on the panel's next tick, which reads the
-/// registry the daemon has just written.
-///
-/// A word, not a glyph. The icon this replaced printed a second check on a row
-/// whose indicator was already one, and said nothing about what pressing it did.
-fn ack_button(session_id: String) -> gtk::Button {
-    let btn = gtk::Button::with_label("Seen");
-    btn.add_css_class("ack-bar");
-    btn.set_focusable(false); // mouse-only surface, same as the row
-    btn.set_hexpand(true);
-    btn.set_halign(gtk::Align::Fill);
-    btn.set_tooltip_text(Some("Clear the finish and stay in the panel"));
-    btn.connect_clicked(move |_| {
-        let sid = session_id.clone();
-        std::thread::spawn(move || {
-            send_to_daemon(crate::ipc::InboundEvent::AcknowledgeSession { session_id: sid });
-        });
-    });
-    btn
 }
 
 fn format_elapsed(session: &Session) -> String {
