@@ -593,7 +593,11 @@ impl Mcp {
     /// `structuredContent` is the same object the tool's success schema
     /// describes; the `content` text beside it is that object serialised for a
     /// model to read, and is the fallback for a tool that sends only the text.
-    fn call(&mut self, tool: &str, arguments: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    fn call(
+        &mut self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
         use anyhow::{bail, Context};
 
         let body = self.post(serde_json::json!({
@@ -629,7 +633,10 @@ impl Mcp {
             .send_json(body)
             .context("T3 Code refused the MCP call")?;
         // A notification answers `202 Accepted` with no body at all.
-        Ok(response.into_body().read_json().unwrap_or(serde_json::Value::Null))
+        Ok(response
+            .into_body()
+            .read_json()
+            .unwrap_or(serde_json::Value::Null))
     }
 }
 
@@ -959,9 +966,14 @@ mod tests {
 
         // Another app's MCP config, or a token shape we do not understand:
         // nothing to answer on, and the caller falls back to T3's own UI.
-        assert_eq!(parse_endpoint(r#"{"mcpServers":{"other":{"url":"x"}}}"#), None);
         assert_eq!(
-            parse_endpoint(r#"{"mcpServers":{"t3-code":{"url":"x","headers":{"Authorization":"tok"}}}}"#),
+            parse_endpoint(r#"{"mcpServers":{"other":{"url":"x"}}}"#),
+            None
+        );
+        assert_eq!(
+            parse_endpoint(
+                r#"{"mcpServers":{"t3-code":{"url":"x","headers":{"Authorization":"tok"}}}}"#
+            ),
             None,
             "a header that is not a Bearer is not a token"
         );

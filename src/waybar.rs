@@ -575,7 +575,11 @@ mod tests {
         let status = dark(&[
             finished,
             make_named("dotfiles", AgentKind::Codex, SessionStatus::Executing),
-            make_named("blocked", AgentKind::ClaudeCode, SessionStatus::WaitingApproval),
+            make_named(
+                "blocked",
+                AgentKind::ClaudeCode,
+                SessionStatus::WaitingApproval,
+            ),
         ]);
         assert!(
             status.text.starts_with("blocked "),

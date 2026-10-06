@@ -2676,7 +2676,8 @@ mod tests {
             destination: "session".into(),
         };
         // Held here: the Yes/No pair answers on the socket the hook is holding.
-        let gate = ApprovalChoice::for_request("Bash", std::slice::from_ref(&suggestion), &[], false);
+        let gate =
+            ApprovalChoice::for_request("Bash", std::slice::from_ref(&suggestion), &[], false);
         assert!(!gate.is_empty(), "an answerable gate keeps its buttons");
 
         // Deferred: nothing is holding that socket, and T3's tools answer
