@@ -562,6 +562,32 @@ pub struct ApprovalChoice {
 }
 
 impl ApprovalChoice {
+    /// Every button one permission request earns, which is not always the same
+    /// question as what it is asking.
+    ///
+    /// A tool that offers its own options is answerable wherever it is shown —
+    /// those labels are the answer. Everything else is a permission gate, whose
+    /// Yes/No pair only means something while the hook is still holding the
+    /// socket it would travel back on: once the hook has deferred to whoever
+    /// hosts the agent's prompt, pressing Yes here would resolve nothing, and
+    /// T3's own tools answer questions but cannot approve a permission either.
+    /// So a deferred gate shows what is being asked and no buttons, and the
+    /// click does what it can — take you to the thread that is asking.
+    pub fn for_request(
+        tool_name: &str,
+        suggestions: &[PermissionSuggestion],
+        option_labels: &[String],
+        deferred: bool,
+    ) -> Vec<ApprovalChoice> {
+        if !option_labels.is_empty() {
+            return Self::from_labels(option_labels);
+        }
+        if deferred {
+            return Vec::new();
+        }
+        Self::build_from(tool_name, suggestions)
+    }
+
     /// Build the ordered Yes / suggestions… / No button list. Returns empty
     /// for tools the panel can't faithfully answer (ExitPlanMode,
     /// AskUserQuestion) — those render as warning-only and the user
@@ -1466,6 +1492,25 @@ impl SessionRegistry {
         }
         let keep: HashSet<String> = best.into_values().map(|(_, _, id)| id).collect();
         map.retain(|id, session| session.agent.is_window_backed() || keep.contains(id));
+    }
+
+    /// The session whose outstanding prompt carries `request_id`.
+    ///
+    /// The reverse of the lookup the approval registry does for free: it keys
+    /// its held sockets by request id, so a decision that arrives with one
+    /// already knows whose it is. A prompt nothing is holding a socket for —
+    /// one the hook deferred to the agent's host — has to be found the long
+    /// way, and the pending approval is the only record of it.
+    pub fn by_pending_request(&self, request_id: &str) -> Option<Session> {
+        let map = self.sessions.read().unwrap();
+        map.values()
+            .find(|session| {
+                session
+                    .pending_approval
+                    .as_ref()
+                    .is_some_and(|pending| pending.request_id == request_id)
+            })
+            .cloned()
     }
 
     /// Set the window id for a session. Returns false if the session does not exist.
@@ -2620,6 +2665,56 @@ mod tests {
         registry.register(working);
         registry.set_background_shells("working", 1);
         assert_eq!(registry.set_background_shells("working", 0), None);
+    }
+
+    #[test]
+    fn a_deferred_gate_loses_its_buttons_but_a_question_keeps_them() {
+        let suggestion = PermissionSuggestion {
+            kind: "addRules".into(),
+            rules: vec![],
+            behavior: "allow".into(),
+            destination: "session".into(),
+        };
+        // Held here: the Yes/No pair answers on the socket the hook is holding.
+        let gate = ApprovalChoice::for_request("Bash", std::slice::from_ref(&suggestion), &[], false);
+        assert!(!gate.is_empty(), "an answerable gate keeps its buttons");
+
+        // Deferred: nothing is holding that socket, and T3's tools answer
+        // questions but cannot approve a permission.
+        assert!(
+            ApprovalChoice::for_request("Bash", std::slice::from_ref(&suggestion), &[], true)
+                .is_empty(),
+            "a gate nobody can answer must not offer to answer it"
+        );
+
+        // A question's own options survive either way — that is what the click
+        // sends back, whichever surface it travels through.
+        let labels = ["Medium".to_string(), "High".to_string()];
+        let asked = ApprovalChoice::for_request(TOOL_ASK_USER_QUESTION, &[], &labels, true);
+        assert_eq!(
+            asked.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            ["Medium", "High"]
+        );
+    }
+
+    #[test]
+    fn a_pending_request_finds_the_session_that_is_asking() {
+        let registry = SessionRegistry::new();
+        registry.register(Session::new("quiet".into(), AgentKind::ClaudeCode, 1));
+        let mut asking = Session::new("asking".into(), AgentKind::ClaudeCode, 2);
+        asking.pending_approval = Some(PendingApproval {
+            request_id: "r-7".into(),
+            tool: TOOL_ASK_USER_QUESTION.into(),
+            detail: None,
+            choices: vec![],
+        });
+        registry.register(asking);
+
+        assert_eq!(
+            registry.by_pending_request("r-7").map(|s| s.id),
+            Some("asking".to_string())
+        );
+        assert!(registry.by_pending_request("r-8").is_none());
     }
 
     #[test]

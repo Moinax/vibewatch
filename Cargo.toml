@@ -52,4 +52,6 @@ hyprland-backend = ["dep:hyprland"]
 # Read T3 Code's thread titles and ids from its state database. T3 Code
 # sessions are tracked either way; without this they wear the agent's own
 # title instead of the thread's.
-t3 = ["dep:rusqlite"]
+# `ureq` because answering a T3 thread's question goes through T3's own MCP
+# server over loopback HTTP — see `t3::answer_question`.
+t3 = ["dep:rusqlite", "dep:ureq"]

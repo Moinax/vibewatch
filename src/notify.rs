@@ -149,7 +149,7 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
         }
     }
 
-    let event = match agent {
+    let mut event = match agent {
         "claude-code" => parse_claude_code(&stdin_buf, event_type)?,
         "codex" => parse_codex(&stdin_buf, event_type)?,
         other => bail!("unknown agent: {}", other),
@@ -159,16 +159,29 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
     let socket_path = config.socket_path();
 
     if agent == "claude-code" && event_type == "permission-request" {
-        // Some permission requests can't be answered via the panel:
+        // Some permission requests must not be answered on this socket:
+        //  - A T3 Code thread: T3 hosts the prompt for the agents it runs, so
+        //    it is already showing this question. Answering it here resolves
+        //    the tool behind T3's back — its card then stays up for the rest of
+        //    the thread's life, its sidebar stays on `Awaiting Input`, and the
+        //    daemon's own T3 poller keeps flipping the session back to blocked
+        //    while the agent works. The panel still gets the buttons; the click
+        //    goes back through T3 (`t3::answer_question`), so the one surface
+        //    that owns the question is the one that resolves it.
         //  - ExitPlanMode: real TUI choices ("Yes, and use auto mode", …)
         //    aren't exposed via hooks, so we'd only ever guess.
         //  - Multi-question / multiSelect AskUserQuestion: option_labels
         //    extraction only handles the single-question non-multiSelect
         //    shape; other shapes would fall back to a misleading Yes/No.
-        // In both cases notify the daemon (panel shows the "awaiting"
+        // In every case notify the daemon (panel shows the "awaiting"
         // warning + click-to-focus card) and return `ask` immediately so
-        // Claude Code renders its native TUI without waiting on us.
-        let tui_only_reason: Option<&'static str> = match &event {
+        // whoever does own the prompt renders it without waiting on us.
+        let deferred_reason: Option<&'static str> = match &event {
+            InboundEvent::PermissionRequest { pid: Some(pid), .. }
+                if crate::t3::hosted_by(*pid, &crate::t3::live_runtimes()).is_some() =>
+            {
+                Some("T3 Code owns this thread's prompt")
+            }
             InboundEvent::PermissionRequest { tool: Some(t), .. }
                 if t == crate::session::TOOL_EXIT_PLAN_MODE =>
             {
@@ -183,7 +196,16 @@ pub async fn handle_notify(event_type: &str, agent: &str) -> anyhow::Result<()> 
             }
             _ => None,
         };
-        if let Some(reason) = tui_only_reason {
+        if let Some(reason) = deferred_reason {
+            // Carried on the event rather than re-derived in the daemon: the
+            // hook is the one that decided to let go of this request, and a
+            // second opinion over `/proc` a moment later can disagree.
+            if let InboundEvent::PermissionRequest {
+                ref mut deferred, ..
+            } = event
+            {
+                *deferred = true;
+            }
             let _ = send_event(&socket_path, &event).await;
             let out = serde_json::json!({
                 "hookSpecificOutput": {
@@ -419,6 +441,9 @@ pub fn parse_claude_code(stdin: &str, event_type: &str) -> anyhow::Result<Inboun
                 pid: Some(pid),
                 permission_suggestions: hook.permission_suggestions,
                 option_labels,
+                // Decided above, once the socket path and the agent's host are
+                // known — the parse has neither.
+                deferred: false,
             })
         }
         "permission-denied" => Ok(InboundEvent::PermissionDenied {
@@ -774,6 +799,7 @@ mod tests {
             pid: Some(42),
             permission_suggestions: vec![],
             option_labels: vec![],
+            deferred: false,
         };
         let result = send_permission_request(&path, &event, std::time::Duration::from_secs(2))
             .await
@@ -797,6 +823,7 @@ mod tests {
             pid: None,
             permission_suggestions: vec![],
             option_labels: vec![],
+            deferred: false,
         };
         let result =
             send_permission_request(&path, &event, std::time::Duration::from_millis(100)).await;

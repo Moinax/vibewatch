@@ -56,6 +56,18 @@ pub enum InboundEvent {
         /// question). Empty for ordinary permission prompts.
         #[serde(default)]
         option_labels: Vec<String>,
+        /// The hook has already answered Claude Code with `ask` and closed:
+        /// whoever owns this agent's prompt is showing it, and nothing is
+        /// waiting on this socket. Set for the shapes the panel cannot answer
+        /// (`ExitPlanMode`, a multi-question `AskUserQuestion`) and for every
+        /// request on a T3 Code thread, where T3 hosts the prompt itself and an
+        /// answer given behind its back leaves its card up for good.
+        ///
+        /// The daemon still records the request — the panel shows it, and for a
+        /// question it still grows the buttons — but it holds no socket for it
+        /// and answers through T3 instead. See `t3::answer_question`.
+        #[serde(default)]
+        deferred: bool,
     },
     PermissionDenied {
         session_id: String,

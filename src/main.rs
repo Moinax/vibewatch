@@ -901,10 +901,11 @@ async fn handle_connection(
                 pid,
                 permission_suggestions,
                 option_labels,
+                deferred,
             } => {
                 eprintln!(
-                    "vibewatch: recv PermissionRequest session={} request_id={:?} tool={:?} pid={:?} suggestions={} option_labels={:?}",
-                    session_id, request_id, tool, pid,
+                    "vibewatch: recv PermissionRequest session={} request_id={:?} tool={:?} pid={:?} deferred={} suggestions={} option_labels={:?}",
+                    session_id, request_id, tool, pid, deferred,
                     serde_json::to_string(&permission_suggestions).unwrap_or_default(),
                     option_labels,
                 );
@@ -935,11 +936,12 @@ async fn handle_connection(
                 };
                 let tool_name = tool.clone().unwrap_or_else(|| "tool".into());
 
-                let choices = if option_labels.is_empty() {
-                    crate::session::ApprovalChoice::build_from(&tool_name, &permission_suggestions)
-                } else {
-                    crate::session::ApprovalChoice::from_labels(&option_labels)
-                };
+                let choices = crate::session::ApprovalChoice::for_request(
+                    &tool_name,
+                    &permission_suggestions,
+                    &option_labels,
+                    deferred,
+                );
                 let no_choices = choices.is_empty();
 
                 if let Some(mut session) = lookup_session(&registry, &session_id, pid) {
@@ -975,9 +977,11 @@ async fn handle_connection(
                     timing.approval_debounce,
                 );
 
-                // No choices ⇒ the hook already short-circuited with `ask`
-                // and closed the socket; nothing to answer back.
-                if no_choices {
+                // Nothing to answer back on: the hook either short-circuited
+                // with `ask` and closed, or had no choices to offer in the
+                // first place. A deferred request with buttons is the T3 case —
+                // the panel can still answer it, through T3 rather than here.
+                if no_choices || deferred {
                     drop(write_half);
                     return;
                 }
@@ -1011,10 +1015,11 @@ async fn handle_connection(
                     request_id, choice_index
                 );
                 let Some(entry) = approval_registry.take(&request_id).await else {
-                    eprintln!(
-                        "vibewatch: NO entry in ApprovalRegistry for request_id={}",
-                        request_id
-                    );
+                    // Nobody is holding a socket for this one. On a T3 Code
+                    // thread that is the normal path, not a failure: the hook
+                    // deferred so T3 could own its own prompt, and the answer
+                    // goes back through T3's tools.
+                    answer_through_t3(&registry, &request_id, choice_index, &status_notify).await;
                     continue;
                 };
                 let chosen = registry.get(&entry.session_id).and_then(|s| {
@@ -1324,6 +1329,96 @@ async fn release_held_approvals(
         );
         drop(entries);
     }
+}
+
+/// Answer a panel click that no held socket belongs to, by handing the chosen
+/// option to T3 Code so it resolves its own pending question.
+///
+/// The counterpart to the hook deferring every request on a T3 thread: there is
+/// exactly one surface that owns that question, and this is how the panel talks
+/// to it. Everything it needs is on the session already — the thread T3 knows
+/// it by, the labels the row drew its buttons from, and the pid whose command
+/// line carries the MCP endpoint.
+///
+/// Failure is loud in the log and silent in the UI, on purpose: the question is
+/// still outstanding in T3, which is still showing it, so the fallback is the
+/// app the click was about anyway.
+#[cfg(feature = "t3")]
+async fn answer_through_t3(
+    registry: &SessionRegistry,
+    request_id: &str,
+    choice_index: usize,
+    status_notify: &std::sync::Arc<tokio::sync::Notify>,
+) {
+    let Some(session) = registry.by_pending_request(request_id) else {
+        eprintln!("vibewatch: no session is asking request_id={request_id}");
+        return;
+    };
+    let Some(thread_id) = session.t3_thread_id.clone() else {
+        eprintln!(
+            "vibewatch: nothing holds request_id={} and session={} is not a T3 thread",
+            request_id, session.id
+        );
+        return;
+    };
+    let Some(label) = session
+        .pending_approval
+        .as_ref()
+        .and_then(|pending| pending.choices.get(choice_index))
+        .map(|choice| choice.label.clone())
+    else {
+        eprintln!(
+            "vibewatch: no choice at index {} for request_id={}",
+            choice_index, request_id
+        );
+        return;
+    };
+    let Some(endpoint) = crate::t3::endpoint(session.pid) else {
+        eprintln!(
+            "vibewatch: T3 gave pid {} no MCP endpoint to answer on",
+            session.pid
+        );
+        return;
+    };
+    // `ureq` blocks, and this runs on the runtime that also serves the panel.
+    let answered = tokio::task::spawn_blocking(move || {
+        crate::t3::answer_question(&endpoint, &thread_id, &label)
+    })
+    .await;
+    match answered {
+        Ok(Ok(())) => {
+            eprintln!(
+                "vibewatch: answered T3 thread {} for request_id={}",
+                session.t3_thread_id.as_deref().unwrap_or_default(),
+                request_id
+            );
+            // T3 resolves its request and the agent resumes; the row would
+            // catch up on the next scan tick anyway, but a click deserves to
+            // land now rather than in three seconds.
+            if let Some(mut session) = registry.get(&session.id) {
+                session.pending_approval = None;
+                session.blocked_on = None;
+                session.status = SessionStatus::Thinking;
+                session.touch();
+                registry.register(session);
+                status_notify.notify_waiters();
+            }
+        }
+        Ok(Err(e)) => eprintln!("vibewatch: T3 refused the answer for {request_id}: {e:#}"),
+        Err(e) => eprintln!("vibewatch: answering {request_id} through T3 panicked: {e}"),
+    }
+}
+
+/// Without the `t3` feature there is no second surface to answer on, so a click
+/// nothing is holding a socket for has nowhere to go.
+#[cfg(not(feature = "t3"))]
+async fn answer_through_t3(
+    _registry: &SessionRegistry,
+    request_id: &str,
+    _choice_index: usize,
+    _status_notify: &std::sync::Arc<tokio::sync::Notify>,
+) {
+    eprintln!("vibewatch: NO entry in ApprovalRegistry for request_id={request_id}");
 }
 
 fn log_transition(session_id: &str, prev: SessionStatus, next: SessionStatus, ctx: &str) {

@@ -399,6 +399,255 @@ fn write_deep_link_socket(url: &str) -> std::io::Result<()> {
     stream.write_all(b"\n")
 }
 
+/// Where T3 Code's MCP server listens, and the token that gets in.
+///
+/// Both are read from the hosted agent's own command line: T3 launches it with
+/// `--mcp-config {"mcpServers":{"t3-code":{"url":…,"headers":{"Authorization":
+/// "Bearer …"}}}}`, which `/proc/<pid>/cmdline` keeps readable for as long as
+/// the agent runs. There is no token to mint — the server hands them out per
+/// agent session — and borrowing the one T3 already trusts for this very agent
+/// is the right scope rather than a shortcut: it can act on that thread and on
+/// nothing else, and it dies with the session it belongs to.
+///
+/// This is the one thing in this module that is not a read. The state database
+/// is still spectated and never written; acting on a thread goes through the
+/// same tools T3 hands its own agents, so T3 stays the only writer of its own
+/// state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoint {
+    pub url: String,
+    pub token: String,
+}
+
+/// The MCP endpoint a T3-hosted agent was given, if it still has one.
+pub fn endpoint(agent_pid: u32) -> Option<Endpoint> {
+    let raw = std::fs::read(format!("/proc/{agent_pid}/cmdline")).ok()?;
+    let args: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
+    let config = args
+        .iter()
+        .position(|arg| *arg == b"--mcp-config")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|arg| std::str::from_utf8(arg).ok())?;
+    parse_endpoint(config)
+}
+
+/// The `--mcp-config` payload, reduced to the one server we care about.
+///
+/// Split out from [`endpoint`] so the shape T3 passes can be tested without a
+/// process to read it from.
+fn parse_endpoint(config: &str) -> Option<Endpoint> {
+    let value: serde_json::Value = serde_json::from_str(config).ok()?;
+    let server = value.get("mcpServers")?.get("t3-code")?;
+    let url = server.get("url")?.as_str()?.to_string();
+    let token = server
+        .get("headers")?
+        .get("Authorization")?
+        .as_str()?
+        .strip_prefix("Bearer ")?
+        .to_string();
+    Some(Endpoint { url, token })
+}
+
+/// The MCP revision this speaks. Sent on every call after the handshake, which
+/// is how the server knows it does not have to guess at an older client.
+#[cfg(feature = "t3")]
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+
+/// How long any one MCP round trip may take. Generous for a loopback call,
+/// which comes back in single-digit milliseconds, because the cost of being
+/// wrong is a wedged click handler rather than a slow one.
+#[cfg(feature = "t3")]
+const MCP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Answer T3's own pending question for `thread_id` with the option the user
+/// clicked in the panel.
+///
+/// The whole point of going through T3 rather than through the agent's
+/// permission hook: T3 hosts the prompt for the threads it runs, so a hook that
+/// answers behind its back leaves the question outstanding in T3 forever — its
+/// card stays up, its sidebar stays on `Awaiting Input`, and vibewatch's own T3
+/// poller keeps flipping the session back to blocked while the agent works. One
+/// owner for one question, and it is the one with the UI.
+///
+/// Five round trips on loopback: the handshake, the list, the read, the answer.
+/// The list and the read are what turn "the user clicked the second button"
+/// into the ids and the option value T3's own composer would have sent.
+#[cfg(feature = "t3")]
+pub fn answer_question(endpoint: &Endpoint, thread_id: &str, label: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    let mut mcp = Mcp::connect(endpoint)?;
+    let listed = mcp.call(
+        "t3_pending_request_list",
+        serde_json::json!({ "threadId": thread_id }),
+    )?;
+    let request_id = listed
+        .get("requestIds")
+        .and_then(|ids| ids.get(0))
+        .and_then(|id| id.as_str())
+        .context("T3 has no pending question for this thread")?
+        .to_string();
+    let read = mcp.call(
+        "t3_pending_request_read",
+        serde_json::json!({ "threadId": thread_id, "requestId": request_id }),
+    )?;
+    let (question_id, value) =
+        answer_for(&read, label).context("the clicked option is not one T3 is offering")?;
+    mcp.call(
+        "t3_pending_request_respond",
+        serde_json::json!({
+            "threadId": thread_id,
+            "requestId": request_id,
+            "answers": { question_id: value },
+        }),
+    )?;
+    Ok(())
+}
+
+/// Which question the clicked label belongs to, and the value T3 wants back for
+/// it — `option.value` when the provider gave one, the label otherwise, which
+/// is the same fallback T3's own composer applies.
+///
+/// Searches every question rather than assuming the first: the panel only grows
+/// buttons for the single-question shape today, and this way it is the label
+/// that decides rather than an index that would silently answer the wrong one.
+#[cfg(feature = "t3")]
+fn answer_for(read: &serde_json::Value, label: &str) -> Option<(String, String)> {
+    for question in read.get("questions")?.as_array()? {
+        let id = question.get("id")?.as_str()?;
+        for option in question.get("options")?.as_array()? {
+            if option.get("label").and_then(|l| l.as_str()) != Some(label) {
+                continue;
+            }
+            let value = option
+                .get("value")
+                .and_then(|v| v.as_str())
+                .unwrap_or(label)
+                .to_string();
+            return Some((id.to_string(), value));
+        }
+    }
+    None
+}
+
+/// One MCP session over T3's HTTP transport, open just long enough to answer.
+///
+/// Plain JSON both ways — the server answers `application/json` for every call
+/// made here, so none of the streaming half of the protocol is needed — but the
+/// handshake is not optional: a bare `tools/call` is a 400 until `initialize`
+/// has issued the session id that every later request carries.
+#[cfg(feature = "t3")]
+struct Mcp {
+    agent: ureq::Agent,
+    url: String,
+    token: String,
+    session_id: String,
+}
+
+#[cfg(feature = "t3")]
+impl Mcp {
+    fn connect(endpoint: &Endpoint) -> anyhow::Result<Self> {
+        use anyhow::Context;
+
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(MCP_TIMEOUT))
+            .build()
+            .into();
+        let response = agent
+            .post(&endpoint.url)
+            .header("Authorization", &format!("Bearer {}", endpoint.token))
+            .header("Accept", "application/json, text/event-stream")
+            .send_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": { "name": "vibewatch", "version": env!("CARGO_PKG_VERSION") },
+                },
+            }))
+            .context("T3 Code refused the MCP handshake")?;
+        let session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok())
+            .context("T3 Code issued no MCP session id")?
+            .to_string();
+        let mcp = Self {
+            agent,
+            url: endpoint.url.clone(),
+            token: endpoint.token.clone(),
+            session_id,
+        };
+        // Fire-and-forget by protocol: a notification has no id and no reply.
+        mcp.post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        }))?;
+        Ok(mcp)
+    }
+
+    /// Invoke one tool and return what it answered, as T3's own schema for it.
+    ///
+    /// `structuredContent` is the same object the tool's success schema
+    /// describes; the `content` text beside it is that object serialised for a
+    /// model to read, and is the fallback for a tool that sends only the text.
+    fn call(&mut self, tool: &str, arguments: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        use anyhow::{bail, Context};
+
+        let body = self.post(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments },
+        }))?;
+        if let Some(error) = body.get("error") {
+            bail!("T3 Code rejected {tool}: {error}");
+        }
+        let result = body.get("result").context("T3 Code sent no result")?;
+        if result.get("isError").and_then(|flag| flag.as_bool()) == Some(true) {
+            bail!("{tool} failed: {}", tool_text(result).unwrap_or_default());
+        }
+        if let Some(structured) = result.get("structuredContent") {
+            return Ok(structured.clone());
+        }
+        let text = tool_text(result).context("T3 Code sent an empty result")?;
+        serde_json::from_str(&text).context("T3 Code sent a result that is not JSON")
+    }
+
+    fn post(&self, body: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        use anyhow::Context;
+
+        let response = self
+            .agent
+            .post(&self.url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Accept", "application/json, text/event-stream")
+            .header("mcp-session-id", &self.session_id)
+            .header("mcp-protocol-version", MCP_PROTOCOL_VERSION)
+            .send_json(body)
+            .context("T3 Code refused the MCP call")?;
+        // A notification answers `202 Accepted` with no body at all.
+        Ok(response.into_body().read_json().unwrap_or(serde_json::Value::Null))
+    }
+}
+
+/// The text half of a tool result, which carries the error message when a tool
+/// fails and the payload when it has no structured schema.
+#[cfg(feature = "t3")]
+fn tool_text(result: &serde_json::Value) -> Option<String> {
+    Some(
+        result
+            .get("content")?
+            .as_array()?
+            .iter()
+            .filter_map(|block| block.get("text")?.as_str())
+            .collect::<Vec<_>>()
+            .join(""),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -693,5 +942,57 @@ mod tests {
         ];
         assert_eq!(match_thread(&shared, "unknown", Some("/w/api")), None);
         assert_eq!(match_thread(&threads, "unknown", None), None);
+    }
+
+    /// The exact `--mcp-config` shape T3 launches a Claude thread with, which
+    /// is where the endpoint and its token come from.
+    #[test]
+    fn the_mcp_endpoint_comes_off_the_agents_own_command_line() {
+        let config = r#"{"mcpServers":{"t3-code":{"type":"http","url":"http://127.0.0.1:3773/mcp","headers":{"Authorization":"Bearer tok-123"},"timeout":3900000}}}"#;
+        assert_eq!(
+            parse_endpoint(config),
+            Some(Endpoint {
+                url: "http://127.0.0.1:3773/mcp".to_string(),
+                token: "tok-123".to_string(),
+            })
+        );
+
+        // Another app's MCP config, or a token shape we do not understand:
+        // nothing to answer on, and the caller falls back to T3's own UI.
+        assert_eq!(parse_endpoint(r#"{"mcpServers":{"other":{"url":"x"}}}"#), None);
+        assert_eq!(
+            parse_endpoint(r#"{"mcpServers":{"t3-code":{"url":"x","headers":{"Authorization":"tok"}}}}"#),
+            None,
+            "a header that is not a Bearer is not a token"
+        );
+        assert_eq!(parse_endpoint("not json"), None);
+    }
+
+    /// What the click has to become: T3 wants the option's `value` when the
+    /// provider gave one, and the label otherwise — the same fallback its own
+    /// composer applies, so an answer from the panel is indistinguishable from
+    /// one typed in the app.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn the_clicked_label_becomes_the_value_t3_asked_for() {
+        let read = serde_json::json!({
+            "requestId": "r-1",
+            "questions": [
+                { "id": "q1", "options": [{ "label": "Medium" }, { "label": "High" }] },
+                { "id": "q2", "options": [{ "label": "Later", "value": "defer" }] },
+            ],
+        });
+        assert_eq!(
+            answer_for(&read, "High"),
+            Some(("q1".to_string(), "High".to_string()))
+        );
+        assert_eq!(
+            answer_for(&read, "Later"),
+            Some(("q2".to_string(), "defer".to_string())),
+            "the provider's value wins over the label it is drawn as"
+        );
+        // A label T3 is not offering: the row is stale, and answering anyway
+        // would put a made-up string in the thread.
+        assert_eq!(answer_for(&read, "Urgent"), None);
     }
 }
