@@ -74,11 +74,15 @@ pub(crate) fn profile_dirs() -> Vec<PathBuf> {
         .collect()
 }
 
+/// What a profile's `server-runtime.json` says about its server, if it has one.
+fn runtime_file(base_dir: &Path) -> Option<serde_json::Value> {
+    let raw = std::fs::read_to_string(base_dir.join("server-runtime.json")).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 /// The server pid recorded in a profile's `server-runtime.json`, if it has one.
 fn runtime_pid(base_dir: &Path) -> Option<u32> {
-    let raw = std::fs::read_to_string(base_dir.join("server-runtime.json")).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    u32::try_from(value.get("pid")?.as_u64()?).ok()
+    u32::try_from(runtime_file(base_dir)?.get("pid")?.as_u64()?).ok()
 }
 
 /// Is `pid` a live process that could be a T3 Code server?
@@ -399,53 +403,250 @@ fn write_deep_link_socket(url: &str) -> std::io::Result<()> {
     stream.write_all(b"\n")
 }
 
-/// Where T3 Code's MCP server listens, and the token that gets in.
+/// Where T3 Code's MCP server listens, and a token that gets in.
 ///
-/// Both are read from the hosted agent's own command line: T3 launches it with
-/// `--mcp-config {"mcpServers":{"t3-code":{"url":…,"headers":{"Authorization":
-/// "Bearer …"}}}}`, which `/proc/<pid>/cmdline` keeps readable for as long as
-/// the agent runs. There is no token to mint — the server hands them out per
-/// agent session — and borrowing the one T3 already trusts for this very agent
-/// is the right scope rather than a shortcut: it can act on that thread and on
-/// nothing else, and it dies with the session it belongs to.
+/// T3 used to hand the hosted agent its credential as an inline `--mcp-config`
+/// argument, and this read it back off `/proc/<pid>/cmdline`. It does not any
+/// more: `mcpServers` goes over the CLI's stdin control channel precisely so
+/// the credential stays out of an argv every local process can read, which is
+/// the right call and leaves nothing to borrow. So vibewatch mints its own
+/// through T3's CLI instead — the same `mcp-client` session shape T3 issues to
+/// the MCP clients it pairs with, scoped to orchestration and nothing else.
 ///
 /// This is the one thing in this module that is not a read. The state database
 /// is still spectated and never written; acting on a thread goes through the
 /// same tools T3 hands its own agents, so T3 stays the only writer of its own
 /// state.
+#[cfg(feature = "t3")]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Endpoint {
-    pub url: String,
-    pub token: String,
+struct Endpoint {
+    url: String,
+    token: String,
 }
 
-/// The MCP endpoint a T3-hosted agent was given, if it still has one.
-pub fn endpoint(agent_pid: u32) -> Option<Endpoint> {
-    let raw = std::fs::read(format!("/proc/{agent_pid}/cmdline")).ok()?;
-    let args: Vec<&[u8]> = raw.split(|b| *b == 0).collect();
-    let config = args
-        .iter()
-        .position(|arg| *arg == b"--mcp-config")
-        .and_then(|i| args.get(i + 1))
-        .and_then(|arg| std::str::from_utf8(arg).ok())?;
-    parse_endpoint(config)
-}
-
-/// The `--mcp-config` payload, reduced to the one server we care about.
+/// The access vibewatch asks T3 to approve it for.
 ///
-/// Split out from [`endpoint`] so the shape T3 passes can be tested without a
-/// process to read it from.
-fn parse_endpoint(config: &str) -> Option<Endpoint> {
-    let value: serde_json::Value = serde_json::from_str(config).ok()?;
-    let server = value.get("mcpServers")?.get("t3-code")?;
-    let url = server.get("url")?.as_str()?.to_string();
-    let token = server
-        .get("headers")?
-        .get("Authorization")?
-        .as_str()?
-        .strip_prefix("Bearer ")?
-        .to_string();
-    Some(Endpoint { url, token })
+/// It has to match the threads it answers for, not the panel's ambitions: T3
+/// refuses a write to a thread running in a broader mode than the caller's,
+/// and its own threads run in full access. Nothing wider exists to ask for.
+#[cfg(feature = "t3")]
+const MCP_CLIENT_ACCESS: &str = "full-access";
+
+/// The scopes a `full-access` approval is spent from, mirroring T3's own
+/// `mcpClientScopes`: the pairing code must already hold every one of them.
+#[cfg(feature = "t3")]
+const MCP_PAIRING_SCOPES: [&str; 4] = [
+    "orchestration:read",
+    "orchestration:operate",
+    "settings:write",
+    "source-control:write",
+];
+
+/// Where the profile's server says it is listening, as an MCP URL.
+#[cfg(feature = "t3")]
+fn mcp_url(base_dir: &Path) -> Option<String> {
+    let runtime = runtime_file(base_dir)?;
+    let origin = runtime.get("origin")?.as_str()?.trim_end_matches('/');
+    Some(format!("{origin}/mcp"))
+}
+
+/// Where the credential is kept between daemon runs. T3 issues it for 30 days
+/// and has no refresh grant, so losing it means pairing again — cheap, but not
+/// something to do on every click.
+#[cfg(feature = "t3")]
+fn token_path() -> PathBuf {
+    crate::config::state_dir().join("t3-mcp-token")
+}
+
+/// An endpoint on `base_dir`'s server, with the credential vibewatch is paired
+/// with. `renew` throws the stored one away and pairs again.
+///
+/// Blocking, and the pairing leg is about a second of it: it runs T3's CLI.
+/// Call it off the panel's thread.
+#[cfg(feature = "t3")]
+fn endpoint(base_dir: &Path, renew: bool) -> anyhow::Result<Endpoint> {
+    use anyhow::Context;
+
+    let url = mcp_url(base_dir).context("T3 is not running from this profile")?;
+    let stored = if renew {
+        None
+    } else {
+        std::fs::read_to_string(token_path())
+            .ok()
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty())
+    };
+    let token = match stored {
+        Some(token) => token,
+        None => {
+            let token = pair(base_dir, &url)?;
+            // Best-effort: a credential that cannot be stored still answers
+            // this click, and the next one pairs again.
+            let _ = std::fs::create_dir_all(crate::config::state_dir());
+            let _ = std::fs::write(token_path(), &token);
+            let _ = std::fs::set_permissions(
+                token_path(),
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+            );
+            token
+        }
+    };
+    Ok(Endpoint { url, token })
+}
+
+/// Pair vibewatch with T3's MCP server, and return the credential it issues.
+///
+/// This is the flow T3's "connect an agent" page runs, with its one human step
+/// — approving the client — spent from a pairing code instead. T3's CLI mints
+/// those locally, for a caller that can already read its state directory, so
+/// the approval stays as local as the panel it is for.
+#[cfg(feature = "t3")]
+fn pair(base_dir: &Path, mcp_url: &str) -> anyhow::Result<String> {
+    use anyhow::{bail, Context};
+
+    let origin = mcp_url
+        .strip_suffix("/mcp")
+        .context("an MCP URL that is not T3's")?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(MCP_TIMEOUT))
+        .build()
+        .into();
+    // Any loopback address registers; nothing listens on it, because the
+    // redirect is read here rather than followed by a browser.
+    let redirect_uri = "http://127.0.0.1:1/vibewatch";
+    let registered: serde_json::Value = agent
+        .post(format!("{origin}/oauth/mcp/register"))
+        .send_json(serde_json::json!({
+            "client_name": "vibewatch",
+            "redirect_uris": [redirect_uri],
+            "token_endpoint_auth_method": "none",
+        }))
+        .context("T3 refused to register the panel as an MCP client")?
+        .body_mut()
+        .read_json()?;
+    let client_id = registered
+        .get("client_id")
+        .and_then(|id| id.as_str())
+        .context("T3 registered no client id")?;
+
+    let verifier = pkce_verifier()?;
+    let approved: serde_json::Value = agent
+        .post(format!("{origin}/oauth/mcp/decision"))
+        .send_json(serde_json::json!({
+            "authorization": {
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "code_challenge": pkce_challenge(&verifier),
+                "code_challenge_method": "S256",
+                "resource": mcp_url,
+            },
+            "decision": {
+                "_tag": "pairing-code",
+                "code": pairing_code(base_dir)?,
+                "access": MCP_CLIENT_ACCESS,
+            },
+        }))
+        .context("T3 refused the panel's pairing code")?
+        .body_mut()
+        .read_json()?;
+    let redirect = approved
+        .get("redirectTo")
+        .and_then(|to| to.as_str())
+        .context("T3 approved without saying where to")?;
+    let Some(code) = redirect
+        .split(['?', '&'])
+        .find_map(|param| param.strip_prefix("code="))
+    else {
+        bail!("T3 approved without an authorization code: {redirect}");
+    };
+
+    let issued: serde_json::Value = agent
+        .post(format!("{origin}/oauth/mcp/token"))
+        .send_form([
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("code_verifier", verifier.as_str()),
+            ("client_id", client_id),
+            ("redirect_uri", redirect_uri),
+            ("resource", mcp_url),
+        ])
+        .context("T3 refused to exchange the authorization code")?
+        .body_mut()
+        .read_json()?;
+    issued
+        .get("access_token")
+        .and_then(|token| token.as_str())
+        .map(ToString::to_string)
+        .context("T3 issued no access token")
+}
+
+/// A one-time approval code, minted by T3's own CLI in `base_dir`'s store.
+#[cfg(feature = "t3")]
+fn pairing_code(base_dir: &Path) -> anyhow::Result<String> {
+    use anyhow::Context;
+
+    let home = base_dir.parent().context("a profile with no T3 home")?;
+    let cli = home.join("bin").join("t3");
+    let mut command = std::process::Command::new(if cli.is_file() {
+        cli.as_os_str()
+    } else {
+        std::ffi::OsStr::new("t3")
+    });
+    command.arg("auth").arg("pairing").arg("create");
+    for scope in MCP_PAIRING_SCOPES {
+        command.arg("--scope").arg(scope);
+    }
+    // Spent within the second, so the window is slack rather than a lifetime.
+    command.args(["--ttl", "2m", "--label", "vibewatch", "--json"]);
+    // Which profile's store to mint in. The CLI reads the release profile by
+    // default and the dev one only when it is told there is a dev server, and
+    // an explicit base directory would override that back to the release one.
+    if base_dir.file_name() == Some(std::ffi::OsStr::new("dev")) {
+        command.args(["--dev-url", "http://localhost"]);
+    } else {
+        command.arg("--base-dir").arg(home);
+    }
+    let output = command.output().context("T3's CLI did not run")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "t3 auth pairing create failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let issued: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("T3's CLI printed something other than a pairing code")?;
+    issued
+        .get("credential")
+        .and_then(|code| code.as_str())
+        .map(ToString::to_string)
+        .context("T3's CLI issued no pairing credential")
+}
+
+/// 32 random bytes as hex, which is inside PKCE's allowed alphabet and length.
+#[cfg(feature = "t3")]
+fn pkce_verifier() -> anyhow::Result<String> {
+    use anyhow::Context;
+    use std::io::Read;
+
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .context("no randomness to build a PKCE verifier from")?;
+    Ok(bytes.iter().fold(String::new(), |mut hex, byte| {
+        use std::fmt::Write;
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    }))
+}
+
+/// The S256 challenge for a verifier: its SHA-256, base64url and unpadded.
+#[cfg(feature = "t3")]
+fn pkce_challenge(verifier: &str) -> String {
+    use base64::Engine;
+
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()).as_ref())
 }
 
 /// The MCP revision this speaks. Sent on every call after the handshake, which
@@ -472,8 +673,32 @@ const MCP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Five round trips on loopback: the handshake, the list, the read, the answer.
 /// The list and the read are what turn "the user clicked the second button"
 /// into the ids and the option value T3's own composer would have sent.
+///
+/// Paired lazily, and again when the stored credential has expired — which is
+/// only visible as the handshake being turned away.
 #[cfg(feature = "t3")]
-pub fn answer_question(endpoint: &Endpoint, thread_id: &str, label: &str) -> anyhow::Result<()> {
+pub fn answer_question(base_dir: &Path, thread_id: &str, label: &str) -> anyhow::Result<()> {
+    match answer_with(&endpoint(base_dir, false)?, thread_id, label) {
+        Err(error) if refused_credential(&error) => {
+            answer_with(&endpoint(base_dir, true)?, thread_id, label)
+        }
+        answered => answered,
+    }
+}
+
+/// Did T3 turn the credential away, rather than the answer?
+#[cfg(feature = "t3")]
+fn refused_credential(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<ureq::Error>(),
+            Some(ureq::Error::StatusCode(401))
+        )
+    })
+}
+
+#[cfg(feature = "t3")]
+fn answer_with(endpoint: &Endpoint, thread_id: &str, label: &str) -> anyhow::Result<()> {
     use anyhow::Context;
 
     let mut mcp = Mcp::connect(endpoint)?;
@@ -951,33 +1176,36 @@ mod tests {
         assert_eq!(match_thread(&threads, "unknown", None), None);
     }
 
-    /// The exact `--mcp-config` shape T3 launches a Claude thread with, which
-    /// is where the endpoint and its token come from.
+    /// The endpoint comes off the same file the server's pid does, so a
+    /// profile on another port is answered on that port.
+    #[cfg(feature = "t3")]
     #[test]
-    fn the_mcp_endpoint_comes_off_the_agents_own_command_line() {
-        let config = r#"{"mcpServers":{"t3-code":{"type":"http","url":"http://127.0.0.1:3773/mcp","headers":{"Authorization":"Bearer tok-123"},"timeout":3900000}}}"#;
+    fn the_mcp_url_comes_off_the_running_servers_own_runtime_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("server-runtime.json"),
+            r#"{"version":1,"pid":1,"host":"0.0.0.0","port":4100,"origin":"http://127.0.0.1:4100/"}"#,
+        )
+        .expect("write");
         assert_eq!(
-            parse_endpoint(config),
-            Some(Endpoint {
-                url: "http://127.0.0.1:3773/mcp".to_string(),
-                token: "tok-123".to_string(),
-            })
+            mcp_url(dir.path()).as_deref(),
+            Some("http://127.0.0.1:4100/mcp")
         );
+        // No T3 running from this profile, or a file from a version that does
+        // not record one: nothing to answer on, and the click falls back.
+        assert_eq!(mcp_url(&dir.path().join("empty")), None);
+    }
 
-        // Another app's MCP config, or a token shape we do not understand:
-        // nothing to answer on, and the caller falls back to T3's own UI.
+    /// RFC 7636's own S256 example, which is the one thing in the pairing
+    /// flow T3 cannot be asked to check for us: a wrong challenge is only
+    /// visible as the token exchange refusing a correct verifier.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn the_pkce_challenge_is_the_verifiers_sha256() {
         assert_eq!(
-            parse_endpoint(r#"{"mcpServers":{"other":{"url":"x"}}}"#),
-            None
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
-        assert_eq!(
-            parse_endpoint(
-                r#"{"mcpServers":{"t3-code":{"url":"x","headers":{"Authorization":"tok"}}}}"#
-            ),
-            None,
-            "a header that is not a Bearer is not a token"
-        );
-        assert_eq!(parse_endpoint("not json"), None);
     }
 
     /// What the click has to become: T3 wants the option's `value` when the

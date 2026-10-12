@@ -1373,16 +1373,15 @@ async fn answer_through_t3(
         );
         return;
     };
-    let Some(endpoint) = crate::t3::endpoint(session.pid) else {
-        eprintln!(
-            "vibewatch: T3 gave pid {} no MCP endpoint to answer on",
-            session.pid
-        );
+    let Some(runtime) = crate::t3::hosted_by(session.pid, &crate::t3::live_runtimes()).cloned()
+    else {
+        eprintln!("vibewatch: no running T3 server hosts pid {}", session.pid);
         return;
     };
-    // `ureq` blocks, and this runs on the runtime that also serves the panel.
+    // Minting the token runs T3's CLI and `ureq` blocks, and this runs on the
+    // runtime that also serves the panel.
     let answered = tokio::task::spawn_blocking(move || {
-        crate::t3::answer_question(&endpoint, &thread_id, &label)
+        crate::t3::answer_question(&runtime.base_dir, &thread_id, &label)
     })
     .await;
     match answered {

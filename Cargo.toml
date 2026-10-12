@@ -20,6 +20,11 @@ async-trait = "0.1"
 # Compositor
 hyprland = { version = "0.3", features = ["tokio"], optional = true }
 
+# PKCE for the one-time pairing with T3's MCP server (`t3::pair`). Both already
+# ride in under `ureq`'s TLS stack, so neither is a new crate to build.
+base64 = { version = "0.23", optional = true }
+ring = { version = "0.17", optional = true }
+
 # GUI (optional, only for panel subcommand)
 gtk4 = { version = "0.9", features = ["v4_12"], optional = true }
 libadwaita = { version = "0.7", optional = true }
@@ -54,4 +59,4 @@ hyprland-backend = ["dep:hyprland"]
 # title instead of the thread's.
 # `ureq` because answering a T3 thread's question goes through T3's own MCP
 # server over loopback HTTP — see `t3::answer_question`.
-t3 = ["dep:rusqlite", "dep:ureq"]
+t3 = ["dep:rusqlite", "dep:ureq", "dep:base64", "dep:ring"]
