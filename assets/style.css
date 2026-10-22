@@ -90,7 +90,7 @@ window.vibewatch-panel {
     font-weight: 600;
 }
 
-/* The folded row's chips: one per account, its tightest window's figure, the
+/* The folded row's chips: one per account, its session and weekly figures, the
    rest on hover. The pill-badge shape, so a chip reads as a badge rather than
    as a second row of meters. */
 .limits-summary {
@@ -107,6 +107,12 @@ window.vibewatch-panel {
 .limit-chip .limit-percent {
     font-size: 10px;
     font-weight: 600;
+}
+
+/* Between the two figures: enough to part them, not enough to be read. */
+.limit-chip-sep {
+    font-size: 10px;
+    color: alpha(@cat_text_time, 0.6);
 }
 
 /* T3's instance badge: a dot in the account's own colour on the corner of the

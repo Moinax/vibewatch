@@ -6,7 +6,7 @@
 //! the panel has one door to limits rather than two.
 //!
 //! Folded, the section is one row: the disclosure, then a chip per account
-//! carrying its tightest window's figure, with the rest on hover. Unfolded, it
+//! carrying its session and weekly figures, with the rest on hover. Unfolded, it
 //! is T3 Code's usage hover card: one block per account, one summary line and
 //! one meter per rolling window, with the same labels, colours and relative
 //! reset text.
@@ -92,12 +92,23 @@ fn pressure_class(used_percent: f64) -> Option<&'static str> {
     }
 }
 
-/// The window nearest to running out — the one figure the folded row shows.
-fn tightest(snapshot: &Snapshot) -> Option<&Window> {
+/// The figures the folded row shows: the two rolling windows everyone has, in
+/// reading order. A snapshot reporting neither — only model-scoped weeklies —
+/// falls back to the one nearest to running out, so a chip is never empty.
+fn chip_windows(snapshot: &Snapshot) -> Vec<&Window> {
+    let rolling: Vec<&Window> = ["five_hour", "seven_day"]
+        .iter()
+        .filter_map(|id| snapshot.windows.iter().find(|w| w.id == *id))
+        .collect();
+    if !rolling.is_empty() {
+        return rolling;
+    }
     snapshot
         .windows
         .iter()
         .max_by(|a, b| a.used_percent.total_cmp(&b.used_percent))
+        .into_iter()
+        .collect()
 }
 
 fn provider_name(provider: &str) -> String {
@@ -275,16 +286,21 @@ fn disclosure(
     button
 }
 
-/// One account on the folded row: its mark and its tightest figure, the rest
-/// on hover. The pill-badge shape, so it reads as a badge rather than as a
-/// second row of meters.
+/// One account on the folded row: its mark, its session and weekly figures,
+/// the rest on hover. The pill-badge shape, so it reads as a badge rather than
+/// as a second row of meters.
 fn chip(snapshot: &Snapshot, now: i64) -> gtk::Box {
     let chip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     chip.add_css_class("limit-chip");
     if let Some(mark) = account_mark(snapshot, 12) {
         chip.append(&mark);
     }
-    if let Some(window) = tightest(snapshot) {
+    for (i, window) in chip_windows(snapshot).iter().enumerate() {
+        if i > 0 {
+            let sep = gtk::Label::new(Some("·"));
+            sep.add_css_class("limit-chip-sep");
+            chip.append(&sep);
+        }
         chip.append(&percent_label(window, &snapshot.provider));
     }
     chip.set_tooltip_markup(Some(&tooltip_markup(snapshot, now)));
@@ -483,18 +499,36 @@ mod tests {
     }
 
     #[test]
-    fn the_chip_shows_the_window_nearest_to_running_out() {
-        let snapshot = Snapshot {
+    fn the_chip_shows_the_rolling_windows_and_falls_back_to_the_tightest() {
+        let ids = |s: &Snapshot| -> Vec<String> {
+            chip_windows(s).iter().map(|w| w.id.clone()).collect()
+        };
+        let claude = Snapshot {
             provider: "claude".to_string(),
             windows: vec![
-                window("five_hour", 41.0),
-                window("seven_day", 62.0),
                 window("fable", 71.0),
+                window("seven_day", 62.0),
+                window("five_hour", 41.0),
             ],
             ..Default::default()
         };
-        assert_eq!(tightest(&snapshot).map(|w| w.id.as_str()), Some("fable"));
-        assert_eq!(tightest(&Snapshot::default()), None);
+        assert_eq!(ids(&claude), ["five_hour", "seven_day"]);
+
+        // Codex reports the weekly alone until OpenAI turns the 5-hour back on.
+        let codex = Snapshot {
+            provider: "codex".to_string(),
+            windows: vec![window("seven_day", 2.0)],
+            ..Default::default()
+        };
+        assert_eq!(ids(&codex), ["seven_day"]);
+
+        // Model-scoped weeklies only: the tightest stands in.
+        let scoped = Snapshot {
+            windows: vec![window("fable", 3.0), window("opus", 9.0)],
+            ..Default::default()
+        };
+        assert_eq!(ids(&scoped), ["opus"]);
+        assert!(chip_windows(&Snapshot::default()).is_empty());
     }
 
     #[test]
