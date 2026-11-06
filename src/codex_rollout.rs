@@ -10,6 +10,7 @@
 use crate::session::SessionStatus;
 use serde_json::Value;
 use std::collections::HashSet;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// Resolve the rollout currently held open by a live Codex process.
@@ -76,24 +77,30 @@ pub fn find_latest_for_cwd(
             if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
                 continue;
             }
-            let Ok(first) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Some(line) = first.lines().next() else {
-                continue;
-            };
-            let Ok(value) = serde_json::from_str::<Value>(line) else {
-                continue;
-            };
-            let payload = &value["payload"];
-            if payload.get("cwd").and_then(Value::as_str).map(Path::new) != Some(cwd) {
-                continue;
-            }
+            // The mtime first, then the first line and nothing past it. This runs
+            // on every scan tick for as long as a live Codex process has no rollout
+            // open — a `codex app-server` probe never gets one — over a tree that
+            // only grows: reading each file whole cost gigabytes per tick to look
+            // at one line of it, and charged all of them to the daemon's cgroup.
             let modified = entry
                 .metadata()
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
             if modified < not_before {
+                continue;
+            }
+            let mut line = String::new();
+            let Ok(file) = std::fs::File::open(&path) else {
+                continue;
+            };
+            if BufReader::new(file).read_line(&mut line).is_err() {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let payload = &value["payload"];
+            if payload.get("cwd").and_then(Value::as_str).map(Path::new) != Some(cwd) {
                 continue;
             }
             if best
@@ -237,6 +244,39 @@ mod tests {
         symlink(&rollout, fd_dir.join("4")).unwrap();
 
         assert_eq!(find_open_in(&tmp.path().join("proc"), 42), Some(rollout));
+    }
+
+    /// Only the first line is any of this search's business: a tail that would
+    /// fail a whole-file UTF-8 read must not hide the rollout, and one untouched
+    /// since before the process started must not be pinned on it.
+    #[test]
+    fn latest_for_cwd_reads_the_first_line_of_recent_rollouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = Path::new("/repo");
+        let meta = b"{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/repo\"}}\n";
+        let write = |name: &str| {
+            let path = tmp.path().join(name);
+            let mut bytes = meta.to_vec();
+            bytes.extend_from_slice(b"\xff\xfe not utf-8\n");
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let floor = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let old = write("old.jsonl");
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(floor - std::time::Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(find_latest_for_cwd(tmp.path(), cwd, floor), None);
+
+        let recent = write("recent.jsonl");
+        assert_eq!(find_latest_for_cwd(tmp.path(), cwd, floor), Some(recent));
+        assert_eq!(
+            find_latest_for_cwd(tmp.path(), Path::new("/x"), floor),
+            None
+        );
     }
 
     #[test]
