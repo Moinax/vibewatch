@@ -670,9 +670,10 @@ const MCP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// poller keeps flipping the session back to blocked while the agent works. One
 /// owner for one question, and it is the one with the UI.
 ///
-/// Five round trips on loopback: the handshake, the list, the read, the answer.
-/// The list and the read are what turn "the user clicked the second button"
-/// into the ids and the option value T3's own composer would have sent.
+/// Round trips on loopback: the handshake, the list, one read per pending
+/// question, the answer. The list and the reads are what turn "the user clicked
+/// the second button" into the ids and the option value T3's own composer would
+/// have sent.
 ///
 /// Paired lazily, and again when the stored credential has expired — which is
 /// only visible as the handshake being turned away.
@@ -699,34 +700,58 @@ fn refused_credential(error: &anyhow::Error) -> bool {
 
 #[cfg(feature = "t3")]
 fn answer_with(endpoint: &Endpoint, thread_id: &str, label: &str) -> anyhow::Result<()> {
-    use anyhow::Context;
-
     let mut mcp = Mcp::connect(endpoint)?;
     let listed = mcp.call(
-        "t3_pending_request_list",
-        serde_json::json!({ "threadId": thread_id }),
+        "t3_pending_request",
+        serde_json::json!({ "action": "list", "threadId": thread_id }),
     )?;
-    let request_id = listed
+    let mut reads = Vec::new();
+    for request_id in listed
         .get("requestIds")
-        .and_then(|ids| ids.get(0))
-        .and_then(|id| id.as_str())
-        .context("T3 has no pending question for this thread")?
-        .to_string();
-    let read = mcp.call(
-        "t3_pending_request_read",
-        serde_json::json!({ "threadId": thread_id, "requestId": request_id }),
-    )?;
-    let (question_id, value) =
-        answer_for(&read, label).context("the clicked option is not one T3 is offering")?;
+        .and_then(|ids| ids.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|id| id.as_str())
+    {
+        let read = mcp.call(
+            "t3_pending_request",
+            serde_json::json!({ "action": "read", "threadId": thread_id, "requestId": request_id }),
+        )?;
+        reads.push((request_id, read));
+    }
+    let (request_id, question_id, value) = request_offering(&reads, label)?;
     mcp.call(
-        "t3_pending_request_respond",
+        "t3_pending_request",
         serde_json::json!({
+            "action": "respond",
             "threadId": thread_id,
             "requestId": request_id,
             "answers": { question_id: value },
         }),
     )?;
     Ok(())
+}
+
+/// The one pending request the clicked label answers, as its id, question id and
+/// value.
+///
+/// T3 can hold several for a thread and the panel only knows the label, so two
+/// requests offering the same label are refused: answering one of them would be
+/// a guess, and the question stays answerable in T3 itself.
+#[cfg(feature = "t3")]
+fn request_offering<'a>(
+    reads: &'a [(&'a str, serde_json::Value)],
+    label: &str,
+) -> anyhow::Result<(&'a str, String, String)> {
+    let mut offering = reads.iter().filter_map(|(request_id, read)| {
+        let (question_id, value) = answer_for(read, label)?;
+        Some((*request_id, question_id, value))
+    });
+    match (offering.next(), offering.next()) {
+        (Some(answer), None) => Ok(answer),
+        (None, _) => anyhow::bail!("no pending T3 question offers {label:?}"),
+        (Some(_), Some(_)) => anyhow::bail!("several pending T3 questions offer {label:?}"),
+    }
 }
 
 /// Which question the clicked label belongs to, and the value T3 wants back for
@@ -1234,5 +1259,26 @@ mod tests {
         // A label T3 is not offering: the row is stale, and answering anyway
         // would put a made-up string in the thread.
         assert_eq!(answer_for(&read, "Urgent"), None);
+    }
+
+    /// The panel only knows the label, so it decides only when exactly one
+    /// pending request offers it.
+    #[cfg(feature = "t3")]
+    #[test]
+    fn a_label_answers_only_the_one_request_offering_it() {
+        let offers = |label: &str| {
+            serde_json::json!({
+                "questions": [{ "id": "q", "options": [{ "label": label }] }],
+            })
+        };
+        let reads = [("r-1", offers("Deploy")), ("r-2", offers("Rollback"))];
+        assert_eq!(
+            request_offering(&reads, "Rollback").unwrap(),
+            ("r-2", "q".to_string(), "Rollback".to_string())
+        );
+        assert!(request_offering(&reads, "Urgent").is_err());
+
+        let ambiguous = [("r-1", offers("Yes")), ("r-2", offers("Yes"))];
+        assert!(request_offering(&ambiguous, "Yes").is_err());
     }
 }
