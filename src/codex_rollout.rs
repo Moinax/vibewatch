@@ -68,9 +68,16 @@ pub fn find_latest_for_cwd(
     let mut stack = vec![root.to_path_buf()];
     let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        // One unreadable directory costs only itself: a `?` here would throw away
+        // the rest of the tree, and any match already in hand.
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            // `file_type` rides along with the directory read on Linux, where
+            // `path.is_dir()` is a second stat per file on top of the mtime's.
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 stack.push(path);
                 continue;
             }
@@ -90,10 +97,10 @@ pub fn find_latest_for_cwd(
                 continue;
             }
             let mut line = String::new();
-            let Ok(file) = std::fs::File::open(&path) else {
-                continue;
-            };
-            if BufReader::new(file).read_line(&mut line).is_err() {
+            if std::fs::File::open(&path)
+                .and_then(|file| BufReader::new(file).read_line(&mut line))
+                .is_err()
+            {
                 continue;
             }
             let Ok(value) = serde_json::from_str::<Value>(&line) else {
@@ -277,6 +284,31 @@ mod tests {
             find_latest_for_cwd(tmp.path(), Path::new("/x"), floor),
             None
         );
+    }
+
+    /// The root's files are walked before the subdirectory it pushes, so the
+    /// match is already in hand when the unreadable directory comes up. Passes
+    /// vacuously as root, which ignores the mode.
+    #[cfg(unix)]
+    #[test]
+    fn latest_for_cwd_survives_an_unreadable_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let rollout = tmp.path().join("rollout.jsonl");
+        std::fs::write(
+            &rollout,
+            "{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/repo\"}}\n",
+        )
+        .unwrap();
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let found = find_latest_for_cwd(tmp.path(), Path::new("/repo"), std::time::UNIX_EPOCH);
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(found, Some(rollout));
     }
 
     #[test]
